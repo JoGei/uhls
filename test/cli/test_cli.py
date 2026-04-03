@@ -289,12 +289,13 @@ block entry:
                 self.assertEqual(main(["verify", str(path)]), 0)
             self.assertEqual(stdout.getvalue().strip(), "ok")
 
-    def test_opt_command_exposes_pipeline_but_reports_unimplemented_passes(self) -> None:
+    def test_opt_command_runs_constprop_pipeline(self) -> None:
         uir = """func add1(x:i32) -> i32
 
 block entry:
-    t0:i32 = add x, 1
-    ret t0
+    t0:i32 = const 1:i32
+    t1:i32 = add t0, 1
+    ret t1
 """
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "add1.uir"
@@ -303,13 +304,14 @@ block entry:
 
             stderr = io.StringIO()
             with redirect_stderr(stderr):
-                self.assertEqual(main(["opt", str(path), "-p", "constprop,dce", "-o", str(out_path)]), 1)
-            self.assertIn("implement constant propagation here", stderr.getvalue())
+                self.assertEqual(main(["opt", str(path), "-p", "constprop,dce", "-o", str(out_path)]), 0)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("ret 2:i32", out_path.read_text(encoding="utf-8"))
 
-            stderr_stdout = io.StringIO()
-            with redirect_stderr(stderr_stdout):
-                self.assertEqual(main(["opt", str(path), "-p", "constprop,dce"]), 1)
-            self.assertIn("implement constant propagation here", stderr_stdout.getvalue())
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["opt", str(path), "-p", "constprop,dce"]), 0)
+            self.assertIn("ret 2:i32", stdout.getvalue())
 
     def test_opt_command_runs_implemented_cfg_transform_passes(self) -> None:
         uir = """func cleanup() -> i32
@@ -585,7 +587,7 @@ block entry:
         result = CliRunner().invoke(cli, ["opt", "-h"])
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("Implemented passes: simplify_cfg, inline_calls, copyprop, cse, dce,", result.output)
+        self.assertIn("Implemented passes: simplify_cfg, inline_calls, constprop, copyprop, cse, dce,", result.output)
         self.assertIn("prune_functions.", result.output)
         self.assertIn("Registered pass", result.output)
         self.assertIn("simplify_cfg, inline_calls, constprop,", result.output)

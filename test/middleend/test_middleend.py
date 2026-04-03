@@ -7,6 +7,7 @@ from uhls.frontend import lower_source_to_uir
 from uhls.interpreter import run_uir
 from uhls.middleend.passes.analyze import LivenessInfo, build_dfg, compute_dominators, detect_loops, dfg_pass, liveliness, liveliness_pass
 from uhls.middleend.passes.opt import SimplifyCFGPass, inline_calls, simplify_cfg_function
+from uhls.middleend.passes.opt.const_prop import const_prop_function
 from uhls.middleend.passes.opt.copy_prop import copy_prop_function
 from uhls.middleend.passes.opt.cse import cse_function
 from uhls.middleend.passes.opt.dce import dce_function
@@ -677,6 +678,62 @@ class DFGPassTests(unittest.TestCase):
 class OptPassTests(unittest.TestCase):
     """Behavioral coverage for optimization and transform passes."""
 
+    def test_const_prop_function_folds_constant_arithmetic_and_return_operands(self) -> None:
+        function = Function(
+            name="const_fold",
+            params=[],
+            return_type="i32",
+            blocks=[
+                Block(
+                    "entry",
+                    instructions=[
+                        ConstOp("a", "i32", 7),
+                        BinaryOp("add", "b", "i32", "a", 1),
+                        BinaryOp("mul", "c", "i32", "b", 2),
+                    ],
+                    terminator=ReturnOp("c"),
+                )
+            ],
+        )
+
+        result = const_prop_function(function)
+        verify_function(result)
+
+        self.assertTrue(all(isinstance(instruction, ConstOp) for instruction in result.blocks[0].instructions))
+        self.assertIsInstance(result.blocks[0].terminator.value, Literal)
+        self.assertEqual(result.blocks[0].terminator.value.value, 16)
+        self.assertEqual(run_uir(result, {}).return_value, 16)
+
+    def test_const_prop_function_folds_constant_branches_and_phi_values(self) -> None:
+        function = Function(
+            name="const_branch",
+            params=[],
+            return_type="i32",
+            blocks=[
+                Block(
+                    "entry",
+                    instructions=[ConstOp("cond", "i1", 1)],
+                    terminator=CondBranchOp("cond", "then_blk", "else_blk"),
+                ),
+                Block("then_blk", instructions=[ConstOp("x_then", "i32", 5)], terminator=BranchOp("merge")),
+                Block("else_blk", instructions=[ConstOp("x_else", "i32", 5)], terminator=BranchOp("merge")),
+                Block(
+                    "merge",
+                    instructions=[PhiOp("x", "i32", [("then_blk", "x_then"), ("else_blk", "x_else")])],
+                    terminator=ReturnOp("x"),
+                ),
+            ],
+        )
+
+        result = const_prop_function(function)
+        verify_function(result)
+
+        self.assertIsInstance(result.blocks[0].terminator, BranchOp)
+        self.assertEqual(result.blocks[0].terminator.target, "then_blk")
+        self.assertIsInstance(result.blocks[-1].instructions[0], ConstOp)
+        self.assertEqual(result.blocks[-1].instructions[0].value, 5)
+        self.assertEqual(run_uir(result, {}).return_value, 5)
+
     def test_simplify_cfg_function_prunes_and_simplifies_cfg(self) -> None:
         function = Function(
             name="cleanup",
@@ -906,3 +963,40 @@ class OptPassTests(unittest.TestCase):
         exit_instruction = result.blocks[1].instructions[0]
         self.assertEqual(exit_instruction.lhs, "a0")
         self.assertEqual(run_uir(result, {"x": 7}).return_value, 16)
+
+    def test_copy_prop_function_rewrites_phi_incoming_values_from_mov_copies(self) -> None:
+        function = Function(
+            name="phi_cleanup",
+            params=[Parameter("sel", "i1"), Parameter("a", "i32"), Parameter("b", "i32")],
+            return_type="i32",
+            blocks=[
+                Block("entry", instructions=[], terminator=CondBranchOp("sel", "then_blk", "else_blk")),
+                Block(
+                    "then_blk",
+                    instructions=[
+                        BinaryOp("add", "t0", "i32", "a", 1),
+                        UnaryOp("mov", "x_then", "i32", "t0"),
+                    ],
+                    terminator=BranchOp("merge"),
+                ),
+                Block(
+                    "else_blk",
+                    instructions=[BinaryOp("sub", "x_else", "i32", "b", 1)],
+                    terminator=BranchOp("merge"),
+                ),
+                Block(
+                    "merge",
+                    instructions=[PhiOp("x", "i32", [("then_blk", "x_then"), ("else_blk", "x_else")])],
+                    terminator=ReturnOp("x"),
+                ),
+            ],
+        )
+
+        result = copy_prop_function(function)
+        verify_function(result)
+
+        merge_phi = result.block_map()["merge"].instructions[0]
+        self.assertEqual(merge_phi.incoming[0].value, "t0")
+        self.assertEqual(merge_phi.incoming[1].value, "x_else")
+        self.assertEqual(run_uir(result, {"sel": 1, "a": 7, "b": 20}).return_value, 8)
+        self.assertEqual(run_uir(result, {"sel": 0, "a": 7, "b": 20}).return_value, 19)

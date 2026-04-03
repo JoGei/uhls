@@ -1,0 +1,14 @@
+= µhLS - the micro high-level synthesis tool
+
+image:doc/figs/uhls_logo_white.svg[align="center"]
+
+µhLS spec tldrs::
+[quote]
+____
+µhLS uses a typed, block-based Three-Address-Code IR, µIR, with explicit control-flow edges and no implicit fallthrough and scalar SSA form for easy middle-end analyses and optimizations. Memory accesses are explicit through load/store operations. For software code generation, µIR is extended with direct calls; a later backend-lowering stage may introduce pseudo-operations such as `param` to model calling conventions.
+____
+
+[quote]
+____
+µC is a small, structured, side-effect-limited subset of C designed to keep the compiler legible and high-level synthesis algorithms implementable. It supports scalar integers, static arrays, structured conditionals, and canonical `for` loops, and lowers deterministically into µIR with explicit control-flow edges.
+____

@@ -1,0 +1,327 @@
+= µhLS IR Specification
+:doctype: article
+:toc:
+:toclevels: 3
+:sectnums:
+
+µhLS uses a single canonical intermediate representation:
+
+* *µIR*: typed, block-based scalar-SSA IR with explicit control-flow edges
+* µIR source files use the `.uir` extension
+
+Design note:
+
+* Earlier drafts defined both non-SSA `µTAC` and SSA `µSSA` IRs.
+* That split is removed completely.
+* The frontend now lowers directly to `µIR`.
+* No non-SSA IR remains in the specification, implementation model, or pass pipeline.
+* µIR is heavily inspired by the LLVM-IR, but is not nearly as feature-rich
+
+The IR has the following properties:
+
+* use *explicit basic blocks*
+* require *explicit terminators*
+* allow *no implicit fallthrough*
+* model memory explicitly via `load` and `store`
+
+The core HLS flow uses the call-free subset.
+An extended form supports direct function calls for software code generation topics.
+
+== µIR Specification
+
+=== Purpose
+
+µIR is the canonical IR of µhLS. It is a typed, block-based scalar-SSA representation used directly after frontend lowering from µC while preserving explicit control-flow edges and explicit memory operations.
+
+=== Program structure
+
+A program consists of one or more functions.
+
+A function contains:
+
+* a name
+* typed parameters
+* a return type
+* a sequence of named basic blocks
+
+=== Basic blocks
+
+A basic block:
+
+* has a unique label
+* contains zero or more non-terminator instructions
+* ends with exactly one explicit terminator
+
+Allowed terminators:
+
+* `br target`
+* `cbr cond, true_blk, false_blk`
+* `ret v`
+* `ret` for `void` functions
+
+*No implicit fallthrough is allowed.*
+Every control-flow edge must be explicit in a terminator.
+
+=== Types
+
+Supported scalar types:
+
+* `i1`
+* `i8`, `i16`, `i32`
+* `u8`, `u16`, `u32`
+
+Supported memory object type:
+
+* `T[]` for arrays of scalar element type `T`
+
+Optional later extension:
+
+* `void` as function return type only
+
+=== Values
+
+A value is one of:
+
+* function argument
+* named variable
+* temporary
+* typed literal constant
+
+All scalar values obey SSA naming.
+
+=== SSA discipline
+
+For scalar values:
+
+* each SSA name is defined exactly once
+* every use refers to exactly one definition
+* merge points use `phi`
+
+Function parameters are SSA definitions.
+
+=== Memory model
+
+* Memory is represented explicitly through arrays.
+* Arrays are distinct named memory objects.
+* Accesses occur only through `load` and `store`.
+* No pointers.
+* No aliasing between distinct arrays.
+* Memory is not converted to SSA.
+* Calls may conservatively be treated as memory-effecting operations.
+
+NOTE: The non-SSA memory relaxation is a strong simplification for ease-of-understanding.
+
+=== Core scalar instructions
+
+* `x:T = const k:T`
+* `x:T = mov y`
+* `x:T = add a, b`
+* `x:T = sub a, b`
+* `x:T = mul a, b`
+* `x:T = and a, b`
+* `x:T = or a, b`
+* `x:T = xor a, b`
+* `x:T = shl a, b`
+* `x:T = shr a, b`
+* `x:T = neg a`
+* `x:T = not a`
+
+=== Comparison instructions
+
+* `x:i1 = eq a, b`
+* `x:i1 = ne a, b`
+* `x:i1 = lt a, b`
+* `x:i1 = le a, b`
+* `x:i1 = gt a, b`
+* `x:i1 = ge a, b`
+
+=== Memory instructions
+
+* `x:T = load A[idx]`
+* `store A[idx], v`
+
+where:
+
+* `A` is an array object of type `T[]`
+* `idx` is an integer scalar
+* `v` has type `T`
+
+=== Additional instruction
+
+==== Phi
+
+* `x:T = phi(pred1: v1, pred2: v2, ..., predN: vN)`
+
+Rules:
+
+* `phi` may appear only at the start of a basic block
+* all `phi` instructions of a block must precede all non-phi instructions
+* there must be exactly one incoming value per predecessor block
+* predecessor labels must match the CFG exactly
+* all incoming values must have type `T`
+
+=== Extended call instructions
+
+Extended µIR may include direct calls:
+
+* `x:T = call f(a1, a2, ..., an)`
+* `call f(a1, a2, ..., an)`
+
+Semantics:
+
+* arguments are scalar values evaluated before the call
+* `f` is a statically named function
+* the call returns zero or one scalar value
+* the call may have side effects unless otherwise specified
+
+Restrictions:
+
+* no indirect calls
+* no recursion
+* no variadic calls
+* no aggregate return values
+* no function pointers
+
+=== Backend-lowered call pseudo-ops
+
+For a minimalistic software backend, a later lowering stage may introduce:
+
+* `param k, v`
+* `x:T = call f, n`
+* `call f, n`
+
+Example:
+
+[source,text]
+----
+param 0, t1_0
+param 1, t2_0
+param 2, t3_0
+t4_0:i32 = call foo, 3
+----
+
+These are *not part of canonical µIR*.
+They are optional pseudo-ops used only after call lowering for ABI/codegen discussion.
+
+=== Call-effect policy
+
+For optimization and scheduling, the default rule is:
+
+* a call is a *side-effecting barrier*
+* it may read or write memory unless additional metadata says otherwise
+
+Optional later attributes may classify calls as:
+
+* `pure`
+* `readonly`
+* `inline`
+
+But these attributes are not required in the base spec.
+
+=== Well-formedness rules
+
+A µIR function is well-formed iff:
+
+* every block has a unique name
+* every referenced block exists
+* every block ends with exactly one terminator
+* no instruction follows a terminator
+* operand types match the opcode
+* every scalar SSA name is assigned exactly once
+* `cbr` condition has type `i1`
+* every `phi` has exactly one input per CFG predecessor
+* all `phi` nodes appear before non-phi instructions in a block
+* `ret` matches the function return type
+* direct call targets refer to valid function symbols or declared externals
+* canonical µIR contains no `param` instructions
+
+=== Intended use
+
+µIR is suitable for:
+
+* frontend lowering
+* control flow graph construction
+* dataflow analysis
+* constant propagation
+* copy propagation
+* dead code elimination
+* sparse dataflow reasoning
+* scalar dependence graph construction
+* HLS scheduling inputs, together with explicit memory dependence edges
+
+== HLS vs SW Subset Policy
+
+=== Core HLS subset
+
+For HLS scheduling, binding, and FSM generation:
+
+* all user-visible computation is single-procedure
+* non-inlined calls are not allowed
+* extended-call µIR must be transformed before HLS proper
+* calls must be:
+** inlined, or
+** rejected, or
+** replaced by modeled intrinsics
+
+This keeps the HLS backend simple and algorithm-focused.
+
+=== Software backend subset
+
+For software code generation lectures and labs:
+
+* direct `call` in extended µIR is allowed
+* later lowering may introduce `param` pseudo-ops
+* backend passes may then map calls to the target ISA calling convention
+
+== Canonical syntax examples
+
+=== Canonical µIR
+
+[source,text]
+----
+func foo(a_0:i32, b_0:i32, c_0:i32, d_0:i32, sel_0:i1) -> i32
+
+block entry:
+    t0_0:i1 = ne sel_0, 0:i1
+    cbr t0_0, then_blk, else_blk
+
+block then_blk:
+    t1_0:i32 = add a_0, b_0
+    x_1:i32 = mov t1_0
+    br merge_blk
+
+block else_blk:
+    t2_0:i32 = add c_0, d_0
+    x_2:i32 = mov t2_0
+    br merge_blk
+
+block merge_blk:
+    x_3:i32 = phi(then_blk: x_1, else_blk: x_2)
+    t3_0:i32 = mul x_3, 2:i32
+    ret t3_0
+----
+
+=== Extended call form
+
+[source,text]
+----
+func caller(t1_0:i32, t2_0:i32, t3_0:i32) -> i32
+
+block entry:
+    t4_0:i32 = call foo(t1_0, t2_0, t3_0)
+    ret t4_0
+----
+
+=== Backend-lowered call pseudo-form
+
+[source,text]
+----
+func caller(t1_0:i32, t2_0:i32, t3_0:i32) -> i32
+
+block entry:
+    param 0, t1_0
+    param 1, t2_0
+    param 2, t3_0
+    t4_0:i32 = call foo, 3
+    ret t4_0
+----

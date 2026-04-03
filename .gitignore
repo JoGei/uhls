@@ -1,0 +1,6 @@
+**build**
+/*.vcd
+/*.log
+**_pycache_**
+/*.dot
+/*.png

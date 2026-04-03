@@ -21,6 +21,8 @@ from uhls.middleend.uir import (
     format_instruction,
 )
 from uhls.middleend.passes.analyze import BasicBlockDFG, DFGInfo, build_cfg, build_dfg
+from uhls.utils.dot import escape_dot_label as _escape
+from uhls.utils.dot import indent_lines as _indent
 
 
 @singledispatch
@@ -312,12 +314,6 @@ def _block_entry_node_id(graph: BasicBlockDFG, node_prefix: str = "") -> str:
 
 def _block_exit_node_id(graph: BasicBlockDFG, node_prefix: str = "") -> str:
     return _dfg_node_id(graph, graph.nodes[-1].id, node_prefix=node_prefix)
-
-
-def _indent(lines: list[str], prefix: str) -> list[str]:
-    return [f"{prefix}{line}" for line in lines]
-
-
 def _dfg_cluster_id(block_label: str, cluster_prefix: str = "") -> str:
     return f"cluster_{cluster_prefix}{block_label}"
 
@@ -400,7 +396,3 @@ def _operation_input_names(operation: object) -> tuple[tuple[str, str], ...]:
 def _compact_node_label(operation: object) -> str:
     opcode = str(getattr(operation, "opcode", operation.__class__.__name__))
     return COMPACT_OPCODE_LABELS.get(opcode, opcode)
-
-
-def _escape(text: str) -> str:
-    return text.replace("\\", "\\\\").replace('"', '\\"')

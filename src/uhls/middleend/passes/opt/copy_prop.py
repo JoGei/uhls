@@ -30,15 +30,13 @@ from uhls.middleend.passes.util.pass_manager import function_or_module_pass
 def copy_prop_function(function: Function) -> Function:
     """Propagate SSA copies produced by ``mov`` instructions."""
     result = deepcopy(function)
-    replacements: dict[str, str] = {}
+    replacements = _collect_copy_replacements(result)
     rewritten_blocks: list[Block] = []
 
     for block in result.blocks:
         new_instructions: list[object] = []
         for instruction in block.instructions:
             rewritten = _rewrite_instruction_operands(instruction, replacements)
-            if isinstance(rewritten, UnaryOp) and rewritten.opcode == "mov" and isinstance(rewritten.value, str):
-                replacements[rewritten.dest] = _rewrite_name(rewritten.value, replacements)
             new_instructions.append(rewritten)
 
         rewritten_blocks.append(
@@ -57,6 +55,19 @@ def copy_prop_function(function: Function) -> Function:
         local_arrays=deepcopy(result.local_arrays),
     )
     return result
+
+
+def _collect_copy_replacements(function: Function) -> dict[str, str]:
+    raw: dict[str, str] = {}
+    for block in function.blocks:
+        for instruction in block.instructions:
+            if not isinstance(instruction, UnaryOp) or instruction.opcode != "mov":
+                continue
+            source = _copy_source_name(instruction.value)
+            if source is None:
+                continue
+            raw[instruction.dest] = source
+    return {dest: _rewrite_name(source, raw) for dest, source in raw.items()}
 
 
 def copy_prop_module(module: Module) -> Module:
@@ -155,6 +166,14 @@ def _rewrite_operand(operand: object, replacements: dict[str, str]) -> object:
     if isinstance(operand, str):
         return _rewrite_name(operand, replacements)
     return operand
+
+
+def _copy_source_name(value: object) -> str | None:
+    if isinstance(value, Variable):
+        return value.name
+    if isinstance(value, str):
+        return value
+    return None
 
 
 def _rewrite_name(name: str, replacements: dict[str, str]) -> str:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from uhls.middleend.uir import ArrayType, ScalarType, type_name
+from uhls.utils.graph import assert_acyclic
 
 from . import ast
 
@@ -326,19 +327,10 @@ def _reject_recursive_calls(program_info: ProgramInfo) -> None:
         }
         for function_name, info in program_info.functions.items()
     }
-    visiting: set[str] = set()
-    visited: set[str] = set()
-
-    def visit(function_name: str) -> None:
-        if function_name in visited:
-            return
-        if function_name in visiting:
-            raise SemanticError(f"recursive cycle involving '{function_name}' is not supported")
-        visiting.add(function_name)
-        for callee in edges[function_name]:
-            visit(callee)
-        visiting.remove(function_name)
-        visited.add(function_name)
-
-    for function_name in edges:
-        visit(function_name)
+    assert_acyclic(
+        edges,
+        lambda function_name: edges[function_name],
+        cycle_error=lambda function_name: SemanticError(
+            f"recursive cycle involving '{function_name}' is not supported"
+        ),
+    )

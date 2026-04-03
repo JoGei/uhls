@@ -31,6 +31,7 @@ from uhls.middleend.uir import (
 )
 from uhls.middleend.passes.opt.simplify_cfg import simplify_cfg_module
 from uhls.middleend.passes.util.pass_manager import PassContext
+from uhls.utils.graph import assert_acyclic
 
 
 class InlineError(ValueError):
@@ -330,22 +331,13 @@ def _reject_recursive_cycles(function_map: dict[str, Function]) -> None:
                 if isinstance(instruction, CallOp) and instruction.callee in function_map:
                     edges[function.name].add(instruction.callee)
 
-    visiting: set[str] = set()
-    visited: set[str] = set()
-
-    def visit(name: str) -> None:
-        if name in visited:
-            return
-        if name in visiting:
-            raise InlineError(f"recursive cycle involving '{name}' cannot be inlined")
-        visiting.add(name)
-        for target in edges[name]:
-            visit(target)
-        visiting.remove(name)
-        visited.add(name)
-
-    for function_name in function_map:
-        visit(function_name)
+    assert_acyclic(
+        function_map,
+        lambda function_name: edges[function_name],
+        cycle_error=lambda function_name: InlineError(
+            f"recursive cycle involving '{function_name}' cannot be inlined"
+        ),
+    )
 
 
 def _called_callee_names(module: Module) -> set[str]:

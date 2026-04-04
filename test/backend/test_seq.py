@@ -316,9 +316,24 @@ class SequencingGraphLoweringTests(unittest.TestCase):
 
         loop_node = next(node for node in proc.nodes if node.opcode == "loop")
         compare_node = next(node for node in proc.nodes if node.opcode == "lt" and node.operands == ("sum_1", "0:i32"))
+        branch_node = next(node for node in proc.nodes if node.opcode == "branch")
+        phi_node = next(node for node in proc.nodes if node.opcode == "phi")
+        ret_node = next(node for node in proc.nodes if node.opcode == "ret")
         proc_data_edges = {(edge.source, edge.target) for edge in proc.edges if edge.kind == "data"}
 
         self.assertIn((loop_node.id, compare_node.id), proc_data_edges)
+        self.assertIn((branch_node.id, phi_node.id), proc_data_edges)
+        self.assertIn((phi_node.id, ret_node.id), proc_data_edges)
+        self.assertNotIn((loop_node.id, phi_node.id), proc_data_edges)
+        self.assertIsNone(design.get_region("bb_dot4_if_end_7"))
+
+        then_region = design.get_region("bb_dot4_if_then_5")
+        self.assertIsNotNone(then_region)
+        assert then_region is not None
+        then_source = next(node for node in then_region.nodes if node.opcode == "nop" and node.attributes.get("role") == "source")
+        then_sink = next(node for node in then_region.nodes if node.opcode == "nop" and node.attributes.get("role") == "sink")
+        then_data_edges = {(edge.source, edge.target) for edge in then_region.edges if edge.kind == "data"}
+        self.assertIn((then_source.id, then_sink.id), then_data_edges)
 
     def test_dot_renders_hierarchy_edges_as_dashed(self) -> None:
         callee = Function(

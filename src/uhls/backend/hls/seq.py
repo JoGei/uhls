@@ -217,6 +217,18 @@ class _LoopSummary:
 
 
 @dataclass
+class _BranchSummary:
+    header: str
+    true_target: str
+    false_target: str
+    true_region_id: str
+    false_region_id: str
+    child_blocks: frozenset[str]
+    join_target: str | None = None
+    empty_region_id: str | None = None
+
+
+@dataclass
 class _SeqLowerer:
     module: Module
     reachable: list[Function]
@@ -238,6 +250,7 @@ class _SeqLowerer:
         for unit in units:
             self._close_dangling_vertices(unit)
             self._prune_redundant_boundary_edges(unit)
+            self._prune_transitive_data_edges(unit)
             self._dedupe_edges(unit)
         design.units = units
         self._relabel_nodes_breadth_first(design, _function_region_id(self.top.name))
@@ -258,8 +271,14 @@ class _SeqLowerer:
         loop_infos = detect_loops(function)
         top_level_loops = self._top_level_loops(function, loop_infos)
         loop_by_header = {loop.header: loop for loop in top_level_loops}
-        branch_child_blocks = self._branch_child_blocks(function, loop_by_header)
+        branch_layouts = self._branch_layouts(function, loop_by_header)
+        branch_child_blocks = {label for layout in branch_layouts.values() for label in layout.child_blocks}
         block_units = [self._lower_block(function, label, proc_id) for label in sorted(branch_child_blocks)]
+        block_units.extend(
+            self._lower_branch_empty_unit(layout.empty_region_id, proc_id)
+            for layout in branch_layouts.values()
+            if layout.empty_region_id is not None
+        )
         loop_units: list[SGUnit] = []
         for loop in top_level_loops:
             loop_units.append(self._lower_loop_unit(function, loop, proc_id))
@@ -271,23 +290,62 @@ class _SeqLowerer:
         sink = self._nop_node("sink")
         proc_unit.nodes.extend([source, sink])
 
-        proc_unit.region_refs.extend(sorted({_block_region_id(function.name, label) for label in branch_child_blocks}))
+        proc_unit.region_refs.extend(
+            sorted(
+                {_block_region_id(function.name, label) for label in branch_child_blocks}
+                | {layout.empty_region_id for layout in branch_layouts.values() if layout.empty_region_id is not None}
+            )
+        )
         proc_unit.region_refs.extend(sorted(loop.region_id for loop in top_level_loops))
-        self._lower_top_level_proc(function, proc_unit, source.id, sink.id, loop_by_header, branch_child_blocks)
+        self._lower_top_level_proc(
+            function,
+            proc_unit,
+            source.id,
+            sink.id,
+            loop_by_header,
+            branch_child_blocks,
+            branch_layouts,
+        )
 
         return [proc_unit, *loop_units, *block_units]
 
-    def _branch_child_blocks(self, function: Function, loop_by_header: dict[str, _LoopSummary]) -> set[str]:
-        labels: set[str] = set()
+    def _branch_layouts(self, function: Function, loop_by_header: dict[str, _LoopSummary]) -> dict[str, _BranchSummary]:
+        layouts: dict[str, _BranchSummary] = {}
         for block in function.blocks:
             terminator = block.terminator
             if not isinstance(terminator, CondBranchOp):
                 continue
             if block.label in loop_by_header:
                 continue
-            labels.add(terminator.true_target)
-            labels.add(terminator.false_target)
-        return labels
+            join_target = self._branch_join_target(function, terminator.true_target, terminator.false_target)
+            empty_region_id: str | None = None
+            true_region_id = _block_region_id(function.name, terminator.true_target)
+            false_region_id = _block_region_id(function.name, terminator.false_target)
+            child_blocks = {terminator.true_target, terminator.false_target}
+            if join_target is None:
+                if _target_reaches_target(function, terminator.true_target, terminator.false_target):
+                    join_target = terminator.false_target
+                elif _target_reaches_target(function, terminator.false_target, terminator.true_target):
+                    join_target = terminator.true_target
+            if join_target == terminator.true_target:
+                empty_region_id = _branch_empty_region_id(function.name, block.label, "true")
+                true_region_id = empty_region_id
+                child_blocks.discard(terminator.true_target)
+            elif join_target == terminator.false_target:
+                empty_region_id = _branch_empty_region_id(function.name, block.label, "false")
+                false_region_id = empty_region_id
+                child_blocks.discard(terminator.false_target)
+            layouts[block.label] = _BranchSummary(
+                header=block.label,
+                true_target=terminator.true_target,
+                false_target=terminator.false_target,
+                true_region_id=true_region_id,
+                false_region_id=false_region_id,
+                child_blocks=frozenset(child_blocks),
+                join_target=join_target,
+                empty_region_id=empty_region_id,
+            )
+        return layouts
 
     def _lower_top_level_proc(
         self,
@@ -297,6 +355,7 @@ class _SeqLowerer:
         sink_id: str,
         loop_by_header: dict[str, _LoopSummary],
         branch_child_blocks: set[str],
+        branch_layouts: dict[str, _BranchSummary],
     ) -> None:
         block_map = function.block_map()
         node_defs: dict[str, str] = {}
@@ -349,6 +408,7 @@ class _SeqLowerer:
                 continue
 
             if isinstance(terminator, CondBranchOp):
+                layout = branch_layouts[current]
                 helper_id = self._new_node_id()
                 helper = SGNode(
                     helper_id,
@@ -356,27 +416,16 @@ class _SeqLowerer:
                     (_format_operand_name(terminator.cond),),
                     resource_class="ctrl",
                     delay=0,
-                    children=(
-                        _block_region_id(function.name, terminator.true_target),
-                        _block_region_id(function.name, terminator.false_target),
-                    ),
+                    children=(layout.true_region_id, layout.false_region_id),
                 )
                 proc_unit.nodes.append(helper)
                 proc_unit.edges.append(SGEdge("data", cursor, helper.id))
-                proc_unit.edges.append(
-                    _hier_edge(helper.id, _block_region_id(function.name, terminator.true_target), {"when": True})
-                )
-                proc_unit.edges.append(
-                    _hier_edge(helper.id, _block_region_id(function.name, terminator.false_target), {"when": False})
-                )
-                proc_unit.edges.append(
-                    _hier_edge(_block_region_id(function.name, terminator.true_target), helper.id, {"when": True})
-                )
-                proc_unit.edges.append(
-                    _hier_edge(_block_region_id(function.name, terminator.false_target), helper.id, {"when": False})
-                )
+                proc_unit.edges.append(_hier_edge(helper.id, layout.true_region_id, {"when": True}))
+                proc_unit.edges.append(_hier_edge(helper.id, layout.false_region_id, {"when": False}))
+                proc_unit.edges.append(_hier_edge(layout.true_region_id, helper.id, {"when": True}))
+                proc_unit.edges.append(_hier_edge(layout.false_region_id, helper.id, {"when": False}))
                 cursor = helper.id
-                join_target = self._branch_join_target(function, terminator.true_target, terminator.false_target)
+                join_target = layout.join_target
                 if join_target is None or join_target in branch_child_blocks:
                     proc_unit.edges.append(SGEdge("data", cursor, sink_id))
                     return
@@ -428,6 +477,9 @@ class _SeqLowerer:
             unit.nodes.append(node)
             produced_nodes.append(node.id)
             unit.mappings.extend(_instruction_maps(node.id, instruction))
+
+            if len(produced_nodes) == 1 and cursor != source_id:
+                unit.edges.append(SGEdge("data", cursor, node.id))
 
             for operand_name in _instruction_uses(instruction):
                 producer = node_defs.get(operand_name, source_id)
@@ -606,6 +658,14 @@ class _SeqLowerer:
         unit.edges.append(SGEdge("data", source.id, sink.id))
         return unit
 
+    def _lower_branch_empty_unit(self, region_id: str, parent_id: str) -> SGUnit:
+        unit = SGUnit(id=region_id, kind="empty", parent=parent_id)
+        source = self._nop_node("source")
+        sink = self._nop_node("sink")
+        unit.nodes.extend([source, sink])
+        unit.edges.append(SGEdge("data", source.id, sink.id))
+        return unit
+
     def _lower_block(self, function: Function, block_label: str, parent_id: str) -> SGUnit:
         block = function.block_map()[block_label]
         unit = SGUnit(id=_block_region_id(function.name, block_label), kind="basicblock", parent=parent_id)
@@ -625,6 +685,8 @@ class _SeqLowerer:
 
         if isinstance(block.terminator, ReturnOp):
             last_node_id = self._append_return_node(unit, block.terminator, last_node_id, node_defs)
+        elif not produced_nodes:
+            unit.edges.append(SGEdge("data", source.id, sink.id))
         self._connect_produced_nodes_to_sink(unit, produced_nodes)
         return unit
 
@@ -728,6 +790,43 @@ class _SeqLowerer:
                 if has_other_outgoing:
                     continue
 
+            kept.append(edge)
+        unit.edges = kept
+
+    def _prune_transitive_data_edges(self, unit: SGUnit) -> None:
+        data_edges = [edge for edge in unit.edges if edge.kind == "data"]
+        if len(data_edges) < 2:
+            return
+
+        adjacency: dict[str, list[str]] = {}
+        for edge in data_edges:
+            adjacency.setdefault(edge.source, []).append(edge.target)
+
+        def reaches(source: str, target: str, skipped_edge: SGEdge) -> bool:
+            visited: set[str] = set()
+
+            def successors(node_id: str) -> Iterator[str]:
+                for succ_id in adjacency.get(node_id, []):
+                    if node_id == skipped_edge.source and succ_id == skipped_edge.target:
+                        continue
+                    if succ_id not in visited:
+                        yield succ_id
+
+            for node_id in breadth_first_walk([source], successors):
+                if node_id == source:
+                    continue
+                if node_id == target:
+                    return True
+                visited.add(node_id)
+            return False
+
+        kept: list[SGEdge] = []
+        for edge in unit.edges:
+            if edge.kind != "data":
+                kept.append(edge)
+                continue
+            if reaches(edge.source, edge.target, edge):
+                continue
             kept.append(edge)
         unit.edges = kept
 
@@ -841,6 +940,10 @@ def _loop_empty_region_id(function_name: str, header: str) -> str:
     return f"loop_empty_{_sanitize(function_name)}_{_sanitize(header)}"
 
 
+def _branch_empty_region_id(function_name: str, header: str, arm: str) -> str:
+    return f"branch_empty_{_sanitize(function_name)}_{_sanitize(header)}_{_sanitize(arm)}"
+
+
 def _sanitize(text: str) -> str:
     safe = "".join(char if char.isalnum() or char == "_" else "_" for char in text)
     if not safe:
@@ -935,6 +1038,17 @@ def _direct_successor_label(terminator: object) -> str | None:
     if isinstance(terminator, BranchOp):
         return terminator.target
     return None
+
+
+def _target_reaches_target(function: Function, start: str, target: str) -> bool:
+    block_map = function.block_map()
+
+    def successors(label: str) -> Iterator[str]:
+        successor = _direct_successor_label(block_map[label].terminator)
+        if successor is not None:
+            yield successor
+
+    return target in set(breadth_first_walk([start], successors))
 
 
 def _loop_exit_target(terminator: object) -> str | None:

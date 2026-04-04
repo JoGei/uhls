@@ -1,5 +1,7 @@
 """Textual µhIR model and parser infrastructure."""
 
+from typing import TYPE_CHECKING
+
 from .model import (
     UHIRConstant,
     UHIRDesign,
@@ -17,7 +19,9 @@ from .model import (
 from .dot import to_dot
 from .pretty import format_uhir
 from .text import UHIRParseError, parse_uhir, parse_uhir_file
-from uhls.backend.hls import ExecutabilityGraph
+
+if TYPE_CHECKING:
+    from uhls.backend.hls.alloc import ExecutabilityGraph
 
 
 def build_sequencing_graph(*args: object, **kwargs: object) -> object:
@@ -41,6 +45,13 @@ def lower_seq_to_alloc(*args: object, **kwargs: object) -> object:
     return _impl(*args, **kwargs)
 
 
+def lower_alloc_to_sched(*args: object, **kwargs: object) -> object:
+    """Lower alloc-stage µhIR to sched-stage µhIR."""
+    from uhls.backend.hls.sched import lower_alloc_to_sched as _impl
+
+    return _impl(*args, **kwargs)
+
+
 def dummy_executability_graph(*args: object, **kwargs: object) -> object:
     """Build one starter executability graph covering canonical µIR ops."""
     from uhls.backend.hls.alloc import dummy_executability_graph as _impl
@@ -53,6 +64,14 @@ def executability_graph_from_uhir(*args: object, **kwargs: object) -> object:
     from uhls.backend.hls.alloc import executability_graph_from_uhir as _impl
 
     return _impl(*args, **kwargs)
+
+
+def __getattr__(name: str) -> object:
+    if name == "ExecutabilityGraph":
+        from uhls.backend.hls.alloc import ExecutabilityGraph as _impl
+
+        return _impl
+    raise AttributeError(name)
 
 __all__ = [
     "ExecutabilityGraph",
@@ -73,6 +92,7 @@ __all__ = [
     "dummy_executability_graph",
     "executability_graph_from_uhir",
     "format_uhir",
+    "lower_alloc_to_sched",
     "lower_module_to_seq",
     "lower_seq_to_alloc",
     "to_dot",

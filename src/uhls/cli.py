@@ -458,11 +458,21 @@ def alloc_cmd(
 @cli.command(
     "opt",
     help=(
-        "Run optimization pass pipelines.\n\n"
+        "Run optimization pass pipelines.\n"
+        "\n"
         f"Implemented passes: {_implemented_opt_help()}.\n"
-        f"Registered pass names: {', '.join(spec.name for spec in _OPT_PASS_SPECS)}.\n"
-        "External pass syntax: /path/to/pass.py:Symbol\n\n"
-        "Example: uhls opt input.uir -p simplify_cfg,inline_calls --pass-arg dot4 -o output.uir"
+        "External pass syntax: /path/to/pass.py:Symbol\n"
+        "\n"
+        "Examples:\n"
+        "\n"
+        "\b\n"
+        "  uhls opt input.uir -p simplify_cfg,constprop -o output.uir\n"
+        "\n"
+        "\b\n"
+        "  uhls opt input.uir -p inline_calls --pass-arg dot4 -o output.uir\n"
+        "\n"
+        "\b\n"
+        "  uhls opt input.uir -p /path/to/pass.py:Symbol -o output.uir\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -472,9 +482,7 @@ def alloc_cmd(
     required=True,
     help=(
         "Comma-separated optimization passes. "
-        f"Implemented: {_implemented_opt_help()}. "
-        f"Registered: {', '.join(spec.name for spec in _OPT_PASS_SPECS)}. "
-        "External: /path/to/pass.py:Symbol"
+        "Use registered pass names or external /path/to/pass.py:Symbol values."
     ),
 )
 @click.option(
@@ -510,9 +518,15 @@ def opt_cmd(input_path: Path, passes: str, pass_args: tuple[str, ...], output: P
 @cli.command(
     "run",
     help=(
-        "Execute IR with the interpreter.\n\n"
-        "Examples: uhls run input.uir --function add1 --arg x=7; "
-        "uhls run input.uir --function dot4 --arg A=[1,2,3,4] --arg B=[4,3,2,1]"
+        "Execute IR with the interpreter.\n"
+        "\n"
+        "Examples:\n"
+        "\n"
+        "\b\n"
+        "  uhls run input.uir --function add1 --arg x=7\n"
+        "\n"
+        "\b\n"
+        "  uhls run input.uir --function dot4 --arg A=[1,2,3,4] --arg B=[4,3,2,1]\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))

@@ -9,6 +9,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from uhls.cli import cli, main
+from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 
 
 class CLITests(unittest.TestCase):
@@ -68,6 +69,365 @@ class CLITests(unittest.TestCase):
                 self.assertEqual(main(["cdfg", str(uir_path), "--dot", "--compact"]), 0)
             self.assertIn('"entry:0" [label="+"];', compact_cdfg_dot_out.getvalue())
             self.assertIn('"entry:0" -> "entry:term" [label="t0_0"', compact_cdfg_dot_out.getvalue())
+
+    def test_seq_command_lowers_uir_to_seq_uhir_and_renders_dot(self) -> None:
+        uir = """func add1(x:i32) -> i32
+
+block entry:
+    y:i32 = add x, 1
+    ret y
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uir_path = root / "add1.uir"
+            seq_path = root / "add1.seq.uhir"
+            dot_path = root / "add1.dot"
+            uir_path.write_text(uir, encoding="utf-8")
+
+            self.assertEqual(main(["seq", str(uir_path), "-o", str(seq_path)]), 0)
+            seq_text = seq_path.read_text(encoding="utf-8")
+            self.assertIn("stage seq", seq_text)
+            self.assertIn("region proc_add1 kind=procedure {", seq_text)
+            self.assertIn("nop", seq_text)
+
+            self.assertEqual(main(["seq", str(seq_path), "--dot", "-o", str(dot_path)]), 0)
+            dot_text = dot_path.read_text(encoding="utf-8")
+            self.assertIn('digraph "add1.seq"', dot_text)
+            self.assertIn('cluster_proc_add1', dot_text)
+
+    def test_alloc_command_lowers_seq_to_alloc_uhir_and_renders_dot(self) -> None:
+        seq = """design add1
+stage seq
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        graph = """
+{
+  "functional_units": ["fu_generic", "fu_fast_add"],
+  "operations": ["add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr", "eq", "ne", "lt", "le", "gt", "ge", "neg", "not", "mov", "const", "load", "store", "phi", "call", "print", "param", "br", "cbr", "ret"],
+  "edges": [
+    ["fu_generic", "add", {"ii": 2, "d": 2}],
+    ["fu_generic", "sub", {"ii": 1, "d": 1}],
+    ["fu_generic", "mul", {"ii": 1, "d": 1}],
+    ["fu_generic", "div", {"ii": 1, "d": 1}],
+    ["fu_generic", "mod", {"ii": 1, "d": 1}],
+    ["fu_generic", "and", {"ii": 1, "d": 1}],
+    ["fu_generic", "or", {"ii": 1, "d": 1}],
+    ["fu_generic", "xor", {"ii": 1, "d": 1}],
+    ["fu_generic", "shl", {"ii": 1, "d": 1}],
+    ["fu_generic", "shr", {"ii": 1, "d": 1}],
+    ["fu_generic", "eq", {"ii": 1, "d": 1}],
+    ["fu_generic", "ne", {"ii": 1, "d": 1}],
+    ["fu_generic", "lt", {"ii": 1, "d": 1}],
+    ["fu_generic", "le", {"ii": 1, "d": 1}],
+    ["fu_generic", "gt", {"ii": 1, "d": 1}],
+    ["fu_generic", "ge", {"ii": 1, "d": 1}],
+    ["fu_generic", "neg", {"ii": 1, "d": 1}],
+    ["fu_generic", "not", {"ii": 1, "d": 1}],
+    ["fu_generic", "mov", {"ii": 1, "d": 1}],
+    ["fu_generic", "const", {"ii": 1, "d": 1}],
+    ["fu_generic", "load", {"ii": 1, "d": 1}],
+    ["fu_generic", "store", {"ii": 1, "d": 1}],
+    ["fu_generic", "phi", {"ii": 1, "d": 1}],
+    ["fu_generic", "call", {"ii": 1, "d": 1}],
+    ["fu_generic", "print", {"ii": 1, "d": 1}],
+    ["fu_generic", "param", {"ii": 1, "d": 1}],
+    ["fu_generic", "br", {"ii": 1, "d": 1}],
+    ["fu_generic", "cbr", {"ii": 1, "d": 1}],
+    ["fu_generic", "ret", {"ii": 1, "d": 1}],
+    ["fu_fast_add", "add", {"ii": 1, "d": 1}]
+  ]
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seq_path = root / "add1.seq.uhir"
+            graph_path = root / "exec.json"
+            alloc_path = root / "add1.alloc.uhir"
+            dot_path = root / "add1.alloc.dot"
+            seq_path.write_text(seq, encoding="utf-8")
+            graph_path.write_text(graph, encoding="utf-8")
+
+            self.assertEqual(
+                main(["alloc", str(seq_path), "-exg", str(graph_path), "-o", str(alloc_path)]),
+                0,
+            )
+            alloc_text = alloc_path.read_text(encoding="utf-8")
+            self.assertIn("stage alloc", alloc_text)
+            self.assertIn("class=FU_FAST_ADD", alloc_text)
+            self.assertIn("ii=1", alloc_text)
+            self.assertIn("delay=1", alloc_text)
+            self.assertIn("region executability_graph kind=executability {", alloc_text)
+            self.assertIn("node FU_FAST_ADD = fu partition=fu", alloc_text)
+            self.assertIn("node CTRL = fu partition=fu", alloc_text)
+            self.assertIn("edge exg FU_FAST_ADD -- add ii=1 d=1", alloc_text)
+            self.assertIn("edge exg CTRL -- nop ii=0 d=0", alloc_text)
+
+            self.assertEqual(
+                main(["alloc", str(seq_path), "-exg", str(graph_path), "--dot", "-o", str(dot_path)]),
+                0,
+            )
+            dot_text = dot_path.read_text(encoding="utf-8")
+            self.assertIn('digraph "add1.alloc"', dot_text)
+            self.assertIn('cluster_proc_add1', dot_text)
+
+    def test_alloc_command_supports_min_ii_algorithm(self) -> None:
+        seq = """design add1
+stage seq
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        graph = """
+{
+  "functional_units": ["fu_fast_ii", "fu_fast_delay"],
+  "operations": ["add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr", "eq", "ne", "lt", "le", "gt", "ge", "neg", "not", "mov", "const", "load", "store", "phi", "call", "print", "param", "br", "cbr", "ret"],
+  "edges": [
+    ["fu_fast_delay", "add", {"ii": 2, "d": 2}],
+    ["fu_fast_ii", "add", {"ii": 1, "d": 3}],
+    ["fu_fast_delay", "sub", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "mul", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "div", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "mod", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "and", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "or", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "xor", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "shl", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "shr", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "eq", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "ne", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "lt", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "le", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "gt", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "ge", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "neg", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "not", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "mov", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "const", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "load", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "store", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "phi", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "call", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "print", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "param", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "br", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "cbr", {"ii": 1, "d": 1}],
+    ["fu_fast_delay", "ret", {"ii": 1, "d": 1}]
+  ]
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seq_path = root / "add1.seq.uhir"
+            graph_path = root / "exec.json"
+            alloc_path = root / "add1.alloc.uhir"
+            seq_path.write_text(seq, encoding="utf-8")
+            graph_path.write_text(graph, encoding="utf-8")
+
+            self.assertEqual(main(["alloc", str(seq_path), "-exg", str(graph_path), "--algo", "min_ii", "-o", str(alloc_path)]), 0)
+
+            alloc_text = alloc_path.read_text(encoding="utf-8")
+            self.assertIn("class=FU_FAST_II", alloc_text)
+            self.assertIn("ii=1", alloc_text)
+            self.assertIn("delay=3", alloc_text)
+
+    def test_alloc_command_can_emit_dummy_executability_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dummy_path = root / "exec.json"
+
+            self.assertEqual(main(["alloc", "--gen_dummy_exg", "-o", str(dummy_path)]), 0)
+
+            dummy_text = dummy_path.read_text(encoding="utf-8")
+            self.assertIn('"functional_units": [', dummy_text)
+            self.assertIn('"EWMS"', dummy_text)
+            self.assertIn('"edges": [', dummy_text)
+            self.assertIn('"add"', dummy_text)
+            self.assertIn('"ii": 1', dummy_text)
+            self.assertIn('"d": 1', dummy_text)
+
+    def test_alloc_command_can_pretty_print_executability_graph_without_input(self) -> None:
+        graph = """
+{
+  "functional_units": ["fu_generic"],
+  "operations": ["add"],
+  "edges": [
+    ["fu_generic", "add", {"ii": 1, "d": 1}]
+  ]
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            graph_path = root / "exec.json"
+            graph_path.write_text(graph, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["alloc", "-exg", str(graph_path)]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn("executability_graph {", rendered)
+            self.assertIn("fu FU_GENERIC", rendered)
+            self.assertIn("op add", rendered)
+            self.assertIn("edge FU_GENERIC -- add ii=1 d=1", rendered)
+
+    def test_alloc_command_accepts_exg_uhir_collateral(self) -> None:
+        seq = """design add1
+stage seq
+
+region proc_add1 kind=procedure {
+  node src = nop role=source
+  node y = add x, 1 : i32
+  node ret0 = ret y
+
+  edge data y -> ret0
+}
+"""
+        graph = (
+            """
+design demo_exg
+stage exg
+
+region G0 kind=executability {
+  node FU_GENERIC = fu partition=fu
+  node FU_FAST_ADD = fu partition=fu
+"""
+            + "\n".join(f"  node {operation} = op partition=op" for operation in sorted(COMPACT_OPCODE_LABELS))
+            + "\n"
+            + "\n".join(
+                f"  edge exg FU_GENERIC -- {operation} ii=1 d=1"
+                for operation in sorted(COMPACT_OPCODE_LABELS)
+                if operation != "add"
+            )
+            + "\n"
+            + "  edge exg FU_GENERIC -- add ii=2 d=2\n"
+            + "  edge exg FU_FAST_ADD -- add ii=1 d=1\n"
+            + "}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seq_path = root / "add1.seq.uhir"
+            graph_path = root / "exec.uhir"
+            alloc_path = root / "add1.alloc.uhir"
+            seq_path.write_text(seq, encoding="utf-8")
+            graph_path.write_text(graph, encoding="utf-8")
+
+            self.assertEqual(main(["alloc", str(seq_path), "-exg", str(graph_path), "-o", str(alloc_path)]), 0)
+
+            alloc_text = alloc_path.read_text(encoding="utf-8")
+            self.assertIn("stage alloc", alloc_text)
+            self.assertIn("class=FU_FAST_ADD", alloc_text)
+            self.assertIn("ii=1", alloc_text)
+            self.assertIn("delay=1", alloc_text)
+            self.assertIn("region executability_graph kind=executability {", alloc_text)
+
+    def test_alloc_command_can_render_executability_graph_dot_without_input(self) -> None:
+        graph = """
+{
+  "functional_units": ["fu_generic"],
+  "operations": ["add"],
+  "edges": [
+    ["fu_generic", "add", {"ii": 1, "d": 1}]
+  ]
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            graph_path = root / "exec.json"
+            graph_path.write_text(graph, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["alloc", "-exg", str(graph_path), "--dot"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn('graph "executability_graph"', rendered)
+            self.assertIn('"fu:FU_GENERIC"', rendered)
+            self.assertIn('"op:add"', rendered)
+            self.assertIn('label="ii=1, d=1"', rendered)
+
+    def test_seq_command_accepts_top_for_multi_function_modules(self) -> None:
+        uir = """func helper(x:i32) -> i32
+
+block entry:
+    y:i32 = add x, 1
+    ret y
+
+func top(x:i32) -> i32
+
+block entry:
+    z:i32 = call helper(x)
+    ret z
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "multi.uir"
+            path.write_text(uir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["seq", str(path), "--top", "top"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn("design top", rendered)
+            self.assertIn("region proc_top kind=procedure {", rendered)
+            self.assertIn("region proc_helper kind=procedure {", rendered)
+
+    def test_seq_command_can_render_dot_directly_from_uir_input(self) -> None:
+        uir = """func dot4(A:i32[], B:i32[]) -> i32
+
+block entry:
+    sum_0:i32 = const 0:i32
+    ret sum_0
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "dot4.uir"
+            path.write_text(uir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["seq", str(path), "--top", "dot4", "--dot"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn('digraph "dot4.seq"', rendered)
+            self.assertIn('cluster_proc_dot4', rendered)
+
+    def test_seq_command_supports_compact_dot_labels(self) -> None:
+        uir = """func dot4(A:i32[], B:i32[]) -> i32
+
+block entry:
+    sum_0:i32 = const 0:i32
+    ret sum_0
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "dot4.uir"
+            path.write_text(uir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["seq", str(path), "--top", "dot4", "--dot", "--compact"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn('"v0" [label="v0: nop"', rendered)
+            self.assertIn('"v1" [label="v1: const"', rendered)
+            self.assertIn('"v2" [label="v2: ret"', rendered)
+            self.assertNotIn("ret sum_0", rendered)
 
     def test_dfg_command_can_select_one_block(self) -> None:
         uir = """func select(sel:i1, a:i32, b:i32) -> i32

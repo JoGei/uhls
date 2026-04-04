@@ -14,12 +14,14 @@ from typing import Callable
 
 import click
 
+from uhls.backend.hls import CallableSGUScheduler, builtin_scheduler_names, create_builtin_scheduler
 from uhls.backend.uhir import (
     ExecutabilityGraph,
     UHIRParseError,
     dummy_executability_graph,
     executability_graph_from_uhir,
     format_uhir,
+    lower_alloc_to_sched,
     lower_seq_to_alloc,
     lower_module_to_seq,
     parse_uhir_file,
@@ -574,15 +576,22 @@ def run_cmd(
         click.echo(result.return_value)
 
 
-@cli.command("hls-sched")
-@click.argument("input_path", metavar="input")
-@click.option("--algo")
-@click.option("--resources")
-@click.option("-o", "--output")
-def hls_sched_cmd(input_path: str, algo: str | None, resources: str | None, output: str | None) -> None:
-    """Placeholder for scheduling flows."""
-    del input_path, algo, resources, output
-    raise NotImplementedError("'hls-sched' is not implemented yet")
+@cli.command("sched")
+@click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--algo", help="Flat SGU scheduler name or external /path/to/scheduler.py:Symbol.")
+@click.option(
+    "--sgu_latency_max",
+    help="External scheduler latency target map: region:value,... or asap[+slack].",
+)
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
+def sched_cmd(input_path: Path, algo: str | None, sgu_latency_max: str | None, output: Path | None) -> None:
+    """Schedule alloc-stage µhIR hierarchically."""
+    design = parse_uhir_file(input_path)
+    if design.stage != "alloc":
+        raise CLIError(f"'sched' expects alloc-stage µhIR input, got stage '{design.stage}'")
+    scheduler_kwargs = _parse_scheduler_cli_kwargs(sgu_latency_max=sgu_latency_max)
+    scheduled = lower_alloc_to_sched(design, scheduler=_lookup_flat_sgu_scheduler(algo, scheduler_kwargs=scheduler_kwargs))
+    _write_or_print_text(format_uhir(scheduled), output)
 
 
 @cli.command("hls-bind")
@@ -837,6 +846,53 @@ def _parse_array_argument(name: str, payload: str) -> dict[str, object]:
     return {"data": data, "element_type": element_type.strip() or "i32"}
 
 
+def _parse_scheduler_cli_kwargs(*, sgu_latency_max: str | None) -> dict[str, object]:
+    scheduler_kwargs: dict[str, object] = {}
+    if sgu_latency_max is not None:
+        scheduler_kwargs["sgu_latency_max"] = _parse_sgu_latency_max_spec(sgu_latency_max)
+    return scheduler_kwargs
+
+
+def _parse_sgu_latency_max_spec(spec_text: str) -> dict[str, object]:
+    text = spec_text.strip()
+    if not text:
+        raise CLIError("--sgu_latency_max must not be empty")
+    if text.startswith("asap"):
+        slack = 0
+        remainder = text[4:]
+        if remainder:
+            if not remainder.startswith("+"):
+                raise CLIError("--sgu_latency_max=asap only supports an optional non-negative '+slack' suffix")
+            try:
+                slack = int(remainder[1:])
+            except ValueError as exc:
+                raise CLIError("--sgu_latency_max=asap+<slack> requires one integer slack value") from exc
+            if slack < 0:
+                raise CLIError("--sgu_latency_max=asap+<slack> requires slack >= 0")
+        return {"mode": "asap", "slack": slack}
+
+    values: dict[str, int] = {}
+    for item in text.split(","):
+        entry = item.strip()
+        if not entry:
+            raise CLIError("--sgu_latency_max region list must not contain empty entries")
+        if ":" not in entry:
+            raise CLIError("--sgu_latency_max region list must use region:value entries")
+        region_name, value_text = entry.split(":", 1)
+        region_name = region_name.strip()
+        value_text = value_text.strip()
+        if not region_name:
+            raise CLIError("--sgu_latency_max region list must use non-empty region names")
+        try:
+            value = int(value_text)
+        except ValueError as exc:
+            raise CLIError(f"--sgu_latency_max region '{region_name}' must map to an integer latency") from exc
+        if value < 0:
+            raise CLIError(f"--sgu_latency_max region '{region_name}' must use latency >= 0")
+        values[region_name] = value
+    return {"mode": "explicit", "values": values}
+
+
 def _validate_run_invocation(
     function: object,
     scalar_arguments: dict[str, int],
@@ -874,8 +930,20 @@ def _validate_run_invocation(
             f"{', '.join(missing_arrays)}; pass --arg name=[v1,v2,...][:type]"
         )
 
+
+def _lookup_flat_sgu_scheduler(name: str | None, scheduler_kwargs: dict[str, object] | None = None) -> object:
+    spec_text = "asap" if name is None else name.strip()
+    effective_scheduler_kwargs = {} if scheduler_kwargs is None else dict(scheduler_kwargs)
+    if _looks_like_external_python_symbol_spec(spec_text):
+        return _load_external_flat_sgu_scheduler(spec_text, effective_scheduler_kwargs)
+    try:
+        return create_builtin_scheduler(spec_text, **effective_scheduler_kwargs)
+    except ValueError as exc:
+        supported = ", ".join(builtin_scheduler_names())
+        raise CLIError(f"unknown flat SGU scheduler '{spec_text}'; expected one of: {supported} or /path/to/scheduler.py:Symbol") from exc
+
 def _lookup_opt_pass(name: str, pass_args: tuple[str, ...] = ()) -> object:
-    if _looks_like_external_opt_pass(name):
+    if _looks_like_external_python_symbol_spec(name):
         return _load_external_opt_pass(name, pass_args)
     normalized = name.strip().lower().replace("-", "_")
     try:
@@ -884,13 +952,38 @@ def _lookup_opt_pass(name: str, pass_args: tuple[str, ...] = ()) -> object:
         raise CLIError(f"unknown optimization pass '{name}'") from exc
 
 
-def _looks_like_external_opt_pass(name: str) -> bool:
+def _looks_like_external_python_symbol_spec(name: str) -> bool:
     head = name.strip().split(":", 1)[0].strip()
     return head.endswith(".py")
 
 
+def _load_external_flat_sgu_scheduler(spec_text: str, scheduler_kwargs: dict[str, object] | None = None) -> object:
+    path_text, symbol_name = _split_external_symbol_spec(
+        spec_text,
+        kind="flat SGU scheduler",
+        syntax="/path/to/scheduler.py:Symbol",
+    )
+    module_path = Path(path_text).expanduser()
+    if not module_path.is_absolute():
+        module_path = Path.cwd() / module_path
+    module_path = module_path.resolve()
+    if not module_path.is_file():
+        raise CLIError(f"external flat SGU scheduler file does not exist: '{module_path}'")
+
+    module = _load_external_python_module(module_path, _external_python_module_name("sched", module_path), "flat SGU scheduler")
+    try:
+        target = getattr(module, symbol_name)
+    except AttributeError as exc:
+        raise CLIError(f"external flat SGU scheduler '{spec_text}' is missing symbol '{symbol_name}'") from exc
+    return _materialize_external_flat_sgu_scheduler(target, spec_text, {} if scheduler_kwargs is None else scheduler_kwargs)
+
+
 def _load_external_opt_pass(spec_text: str, pass_args: tuple[str, ...] = ()) -> object:
-    path_text, symbol_name = _split_external_opt_pass_spec(spec_text)
+    path_text, symbol_name = _split_external_symbol_spec(
+        spec_text,
+        kind="external optimization pass",
+        syntax="/path/to/pass.py:Symbol",
+    )
     module_path = Path(path_text).expanduser()
     if not module_path.is_absolute():
         module_path = Path.cwd() / module_path
@@ -900,20 +993,11 @@ def _load_external_opt_pass(spec_text: str, pass_args: tuple[str, ...] = ()) -> 
     if not module_path.is_file():
         raise CLIError(f"external optimization pass file does not exist: '{module_path}'")
 
-    module_name = _external_opt_module_name(module_path)
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise CLIError(f"could not load external optimization pass module from '{module_path}'")
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception as exc:
-        sys.modules.pop(module_name, None)
-        raise CLIError(
-            f"failed to import external optimization pass module '{module_path}': {exc}"
-        ) from exc
+    module = _load_external_python_module(
+        module_path,
+        _external_python_module_name("opt", module_path),
+        "optimization pass",
+    )
     try:
         target = getattr(module, symbol_name)
     except AttributeError as exc:
@@ -923,17 +1007,13 @@ def _load_external_opt_pass(spec_text: str, pass_args: tuple[str, ...] = ()) -> 
     return _materialize_external_opt_pass(target, spec_text, pass_args)
 
 
-def _split_external_opt_pass_spec(spec_text: str) -> tuple[str, str]:
+def _split_external_symbol_spec(spec_text: str, *, kind: str, syntax: str) -> tuple[str, str]:
     raw = spec_text.strip()
     if ":" not in raw:
-        raise CLIError(
-            f"external optimization pass '{spec_text}' must use '/path/to/pass.py:Symbol'"
-        )
+        raise CLIError(f"{kind} '{spec_text}' must use '{syntax}'")
     path_text, symbol_name = raw.rsplit(":", 1)
     if not path_text.strip() or not symbol_name.strip():
-        raise CLIError(
-            f"external optimization pass '{spec_text}' must use '/path/to/pass.py:Symbol'"
-        )
+        raise CLIError(f"{kind} '{spec_text}' must use '{syntax}'")
     return path_text.strip(), symbol_name.strip()
 
 
@@ -949,10 +1029,130 @@ def _remap_legacy_external_opt_path(module_path: Path) -> Path:
     return module_path
 
 
-def _external_opt_module_name(path: Path) -> str:
+def _external_python_module_name(kind: str, path: Path) -> str:
     digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12]
     stem = "".join(char if char.isalnum() or char == "_" else "_" for char in path.stem)
-    return f"uhls_external_opt_{stem}_{digest}"
+    return f"uhls_external_{kind}_{stem}_{digest}"
+
+
+def _load_external_python_module(module_path: Path, module_name: str, kind: str) -> object:
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise CLIError(f"could not load external {kind} module from '{module_path}'")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        sys.modules.pop(module_name, None)
+        raise CLIError(f"failed to import external {kind} module '{module_path}': {exc}") from exc
+    return module
+
+
+def _materialize_external_flat_sgu_scheduler(target: object, spec_text: str, scheduler_kwargs: dict[str, object]) -> object:
+    if isinstance(target, type):
+        return _instantiate_external_flat_sgu_scheduler_class(target, spec_text, scheduler_kwargs)
+    if hasattr(target, "schedule_sgu"):
+        if scheduler_kwargs:
+            raise CLIError(
+                f"external flat SGU scheduler '{spec_text}' is already instantiated and cannot consume scheduler arguments"
+            )
+        return target
+    if callable(target):
+        return _materialize_external_flat_sgu_scheduler_callable(target, spec_text, scheduler_kwargs)
+    raise CLIError(
+        f"external flat SGU scheduler '{spec_text}' must resolve to a scheduler object, callable, or no-arg scheduler class"
+    )
+
+
+def _instantiate_external_flat_sgu_scheduler_class(target: type, spec_text: str, scheduler_kwargs: dict[str, object]) -> object:
+    try:
+        params = list(signature(target).parameters.values())
+    except (TypeError, ValueError):
+        params = []
+
+    positional = [
+        param
+        for param in params
+        if param.kind in {InspectParameter.POSITIONAL_ONLY, InspectParameter.POSITIONAL_OR_KEYWORD}
+    ]
+    required = [param for param in positional if param.default is InspectParameter.empty]
+    try:
+        if scheduler_kwargs:
+            try:
+                instance = target(**scheduler_kwargs)
+            except TypeError:
+                if len(required) <= 1 and len(positional) <= 1:
+                    instance = target(scheduler_kwargs)
+                else:
+                    raise
+        elif not required:
+            instance = target()
+        elif len(required) <= 1 and len(positional) <= 1:
+            instance = target(())
+        else:
+            raise CLIError(
+                f"external flat SGU scheduler '{spec_text}' must be instantiable with no arguments, one scheduler_args tuple/dict, or keyword scheduler arguments"
+            )
+    except TypeError as exc:
+        raise CLIError(
+            f"external flat SGU scheduler '{spec_text}' must be instantiable with no arguments, one scheduler_args tuple/dict, or keyword scheduler arguments"
+        ) from exc
+    if hasattr(instance, "schedule_sgu"):
+        return instance
+    raise CLIError(f"external flat SGU scheduler '{spec_text}' class must provide schedule_sgu(region)")
+
+
+def _materialize_external_flat_sgu_scheduler_callable(
+    target: Callable[..., object],
+    spec_text: str,
+    scheduler_kwargs: dict[str, object],
+) -> object:
+    try:
+        params = list(signature(target).parameters.values())
+    except (TypeError, ValueError):
+        if scheduler_kwargs:
+            raise CLIError(
+                f"external flat SGU scheduler '{spec_text}' with scheduler arguments must be a class or keyword-accepting factory"
+            )
+        return CallableSGUScheduler(target)  # type: ignore[arg-type]
+
+    positional = [
+        param
+        for param in params
+        if param.kind in {InspectParameter.POSITIONAL_ONLY, InspectParameter.POSITIONAL_OR_KEYWORD}
+    ]
+    required = [param for param in positional if param.default is InspectParameter.empty]
+    if scheduler_kwargs:
+        keyword_capable = any(param.kind == InspectParameter.VAR_KEYWORD for param in params) or all(
+            key in {param.name for param in params if param.kind in {InspectParameter.KEYWORD_ONLY, InspectParameter.POSITIONAL_OR_KEYWORD}}
+            for key in scheduler_kwargs
+        )
+        if keyword_capable:
+            try:
+                produced = target(**scheduler_kwargs)
+            except TypeError as exc:
+                raise CLIError(
+                    f"external flat SGU scheduler factory '{spec_text}' could not be called with scheduler arguments"
+                ) from exc
+            return _materialize_external_flat_sgu_scheduler(produced, spec_text, {})
+        raise CLIError(
+            f"external flat SGU scheduler '{spec_text}' with scheduler arguments must be a class or keyword-accepting factory"
+        )
+    if len(required) <= 1 and len(positional) <= 1:
+        if len(positional) == 1:
+            return CallableSGUScheduler(target)  # type: ignore[arg-type]
+        try:
+            produced = target()
+        except TypeError as exc:
+            raise CLIError(
+                f"external flat SGU scheduler factory '{spec_text}' could not be called with no arguments"
+            ) from exc
+        return _materialize_external_flat_sgu_scheduler(produced, spec_text)
+    raise CLIError(
+        f"external flat SGU scheduler '{spec_text}' must be a schedule_sgu(region) callable or no-arg factory"
+    )
 
 
 def _materialize_external_opt_pass(target: object, spec_text: str, pass_args: tuple[str, ...]) -> object:

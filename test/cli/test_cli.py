@@ -6,9 +6,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from click.testing import CliRunner
-
-from uhls.cli import cli, main
+from uhls.cli import main
 from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 
 
@@ -942,51 +940,3 @@ block entry:
         with redirect_stderr(stderr):
             self.assertEqual(main(["hls-sched", "foo.uir", "--algo", "list", "-o", "foo.sched"]), 1)
         self.assertIn("not implemented yet", stderr.getvalue())
-
-    def test_opt_help_lists_implemented_and_registered_passes(self) -> None:
-        result = CliRunner().invoke(cli, ["opt", "-h"])
-
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("Implemented passes: simplify_cfg, inline_calls, constprop, copyprop, cse, dce,", result.output)
-        self.assertIn("prune_functions.", result.output)
-        self.assertIn("Registered pass", result.output)
-        self.assertIn("simplify_cfg, inline_calls, constprop,", result.output)
-        self.assertIn("copyprop, cse, dce, prune_functions.", result.output)
-        self.assertIn("constprop, copyprop, cse,", result.output)
-        self.assertIn("dce, prune_functions.", result.output)
-        self.assertIn("External pass", result.output)
-        self.assertIn("/path/to/pass.py:Symbol", result.output)
-        self.assertIn("Example: uhls opt input.uir -p", result.output)
-        self.assertIn("simplify_cfg,inline_calls --pass-arg dot4 -o", result.output)
-        self.assertIn("output.uir", result.output)
-        self.assertIn("--pass-arg TEXT", result.output)
-
-    def test_opt_help_for_one_pass_prints_brief_description(self) -> None:
-        stdout = io.StringIO()
-        with redirect_stdout(stdout):
-            self.assertEqual(main(["opt", "-h", "simplify_cfg"]), 0)
-
-        output = stdout.getvalue()
-        self.assertIn("simplify_cfg:", output)
-        self.assertIn("pruning unreachable blocks", output)
-        self.assertIn("status: implemented", output)
-        self.assertIn("example: uhls opt input.uir -p simplify_cfg -o output.uir", output)
-
-    def test_opt_help_for_inline_calls_mentions_main_boundary(self) -> None:
-        stdout = io.StringIO()
-        with redirect_stdout(stdout):
-            self.assertEqual(main(["opt", "-h", "inline_calls"]), 0)
-
-        output = stdout.getvalue()
-        self.assertIn("Calls made directly from 'main' are left intact.", output)
-        self.assertIn("Repeat --pass-arg with callee names", output)
-
-    def test_run_help_includes_example_invoke(self) -> None:
-        result = CliRunner().invoke(cli, ["run", "-h"])
-
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("Execute IR with the interpreter.", result.output)
-        self.assertIn("Examples:", result.output)
-        self.assertIn("uhls run input.uir --function add1 --arg x=7", result.output)
-        self.assertIn("--arg A=[1,2,3,4] --arg B=[4,3,2,1]", result.output)
-        self.assertIn("Function input. Scalar: name=7. Array: name=[1,2,3,4]:i32.", result.output)

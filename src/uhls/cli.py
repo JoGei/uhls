@@ -125,6 +125,10 @@ def _implemented_opt_help() -> str:
     return ", ".join(implemented) if implemented else "none"
 
 
+def _registered_opt_help() -> str:
+    return ", ".join(spec.name for spec in _OPT_PASS_SPECS) if _OPT_PASS_SPECS else "none"
+
+
 def _implemented_opt_pass_names() -> list[str]:
     return [spec.name for spec in _OPT_PASS_SPECS if _is_implemented_opt_pass(spec)]
 
@@ -461,15 +465,18 @@ def alloc_cmd(
         "Run optimization pass pipelines.\n"
         "\n"
         f"Implemented passes: {_implemented_opt_help()}.\n"
+        f"Registered passes: {_registered_opt_help()}.\n"
         "External pass syntax: /path/to/pass.py:Symbol\n"
         "\n"
-        "Examples:\n"
+        "Example: uhls opt input.uir -p simplify_cfg,inline_calls --pass-arg dot4 -o output.uir\n"
+        "\n"
+        "More examples:\n"
         "\n"
         "\b\n"
         "  uhls opt input.uir -p simplify_cfg,constprop -o output.uir\n"
         "\n"
         "\b\n"
-        "  uhls opt input.uir -p inline_calls --pass-arg dot4 -o output.uir\n"
+        "  uhls opt input.uir -p simplify_cfg,inline_calls --pass-arg dot4 -o output.uir\n"
         "\n"
         "\b\n"
         "  uhls opt input.uir -p /path/to/pass.py:Symbol -o output.uir\n"

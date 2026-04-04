@@ -356,7 +356,27 @@ def seq_cmd(
     "alloc",
     help=(
         "Lower seq-stage µhIR with -exg, inspect an executability graph when no input is given, "
-        "or emit a starter graph with --gen_dummy_exg."
+        "or emit a starter graph with --gen_dummy_exg.\n"
+        "\n"
+        "Examples:\n"
+        "\n"
+        "\b\n"
+        "  uhls alloc input.seq.uhir -exg graph.json\n"
+        "\n"
+        "\b\n"
+        "  uhls alloc input.seq.uhir -exg graph.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls alloc input.seq.uhir -exg graph.json --dot\n"
+        "\n"
+        "\b\n"
+        "  uhls alloc -exg graph.json\n"
+        "\n"
+        "\b\n"
+        "  uhls alloc -exg graph.uhir --dot\n"
+        "\n"
+        "\b\n"
+        "  uhls alloc --gen_dummy_exg\n"
     ),
 )
 @click.argument("input_path", metavar="input", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path))

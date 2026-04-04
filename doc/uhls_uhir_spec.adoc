@@ -1,0 +1,1210 @@
+= µhLS µhIR Hardware IR Specification
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Overview
+
+This document specifies the *µhIR* textual intermediate representation family used by *µhLS* for hardware-side refinement after canonical compiler IR processing.
+
+The common file extension for all µhIR artifacts is:
+
+[source,text]
+----
+.uhir
+----
+
+The refinement stage is declared *inside* the file via the `stage` header field.
+
+Typical filenames are:
+
+[source,text]
+----
+fir.seq.uhir
+fir.alloc.uhir
+fir.sched.uhir
+fir.bind.uhir
+----
+
+The intended flow is:
+
+[source,text]
+----
+µIR
+  -> seq.uhir
+  -> alloc.uhir
+  -> sched.uhir
+  -> bind.uhir
+  -> HW-MIR
+  -> Verilog
+  -> Yosys / ASIC flow
+----
+
+The four standard refinement µhIR stages are:
+
+* `seq`   — hierarchical sequencing graph representation built from sequencing graph units (SGUs)
+* `alloc` — resource-type allocated design representation
+* `sched` — scheduled design representation
+* `bind`  — resource-bound design representation
+
+One auxiliary µhIR stage is also defined for collateral exchange:
+
+* `exg`   — executability graph collateral used by allocation
+
+== Design goals
+
+µhIR is designed to be:
+
+* human-readable
+* line-oriented
+* easy to diff
+* easy to parse in Python
+* explicit about hierarchy, dependencies, scheduling, and binding
+* stable across refinement stages
+
+A central design rule is:
+
+____
+The same operation identities should be preserved across `seq`, `alloc`, `sched`, and `bind`.
+____
+
+This means that a node such as `v17` should denote the same conceptual operation across all refinement stages.
+
+== Common structure
+
+All µhIR files share a common outer structure.
+
+A file contains:
+
+* a `design` declaration
+* a `stage` declaration
+* optional global declarations
+* one or more `region` blocks
+* optional resource declarations in `bind` stage
+
+Minimal example:
+
+[source,text]
+----
+design fir
+stage seq
+
+region R0 kind=procedure {
+  node v1 = add a, b : i32
+}
+----
+
+== Common lexical conventions
+
+=== Comments
+
+Comments begin with `#` and continue to the end of the line.
+
+[source,text]
+----
+# this is a comment
+----
+
+=== Identifiers
+
+Identifiers are used for:
+
+* design names
+* region names
+* node names
+* resource names
+* symbolic attributes
+
+Examples:
+
+[source,text]
+----
+fir
+R0
+v17
+mul0
+true_path
+----
+
+Recommended style:
+
+* regions: `R0`, `R1`, ...
+* nodes: `v1`, `v2`, ...
+* resources: `mul0`, `add0`, `r_acc`, ...
+
+=== Types
+
+Scalar examples:
+
+[source,text]
+----
+i1
+i8
+i16
+i32
+u8
+u16
+u32
+----
+
+Memory-like examples:
+
+[source,text]
+----
+memref<i32>
+memref<u32>
+----
+
+=== Attribute syntax
+
+Attributes are expressed as `key=value`.
+
+Examples:
+
+[source,text]
+----
+kind=procedure
+class=mul
+delay=2
+step=3
+bind=mul0
+----
+
+Lists use brackets:
+
+[source,text]
+----
+input=[r0, r1, r2]
+----
+
+=== File naming convention
+
+The recommended filename form is:
+
+[source,text]
+----
+<design>.<stage>.uhir
+----
+
+Examples:
+
+[source,text]
+----
+fir.seq.uhir
+fir.sched.uhir
+fir.bind.uhir
+----
+
+== Common top-level declarations
+
+=== Design declaration
+
+Every file must begin with exactly one design declaration.
+
+Syntax:
+
+[source,text]
+----
+design <design-name>
+----
+
+Example:
+
+[source,text]
+----
+design fir
+----
+
+=== Stage declaration
+
+Every file must declare exactly one stage.
+
+Syntax:
+
+[source,text]
+----
+stage <seq|alloc|sched|bind>
+----
+
+Examples:
+
+[source,text]
+----
+stage seq
+stage alloc
+stage sched
+stage bind
+----
+
+=== Global declarations
+
+Optional global declarations may be used to document interface objects.
+
+Syntax:
+
+[source,text]
+----
+input  <name> : <type>
+output <name> : <type>
+const  <name> = <literal> : <type>
+----
+
+Example:
+
+[source,text]
+----
+input  A : memref<i32>
+input  B : memref<i32>
+output C : memref<i32>
+const  N = 16 : i32
+----
+
+== Regions
+
+Regions are the primary structural unit of µhIR.
+
+In the `seq` stage, each region denotes one sequencing graph unit (SGU).
+An SGU is a directed acyclic graph with explicit hierarchy.
+Every SGU is polar: it contains exactly one source `nop` node and exactly one sink `nop` node.
+
+A region may represent:
+
+* a procedure
+* a loop body or loop controller SGU
+* a branch arm
+* an empty alternative SGU
+* a subgraph used for hierarchical scheduling
+
+Syntax:
+
+[source,text]
+----
+region <region-id> kind=<kind> [parent=<region-id>] {
+  ...
+}
+----
+
+Examples:
+
+[source,text]
+----
+region R0 kind=procedure {
+  ...
+}
+
+region R1 kind=then parent=R0 {
+  ...
+}
+----
+
+Suggested region kinds:
+
+* `procedure`
+* `then`
+* `else`
+* `loop`
+* `body`
+* `empty`
+* `pipeline`
+* `subgraph`
+
+== Nodes
+
+Nodes represent operations or special control constructs.
+
+In the `seq` stage, nodes fall into three classes:
+
+* polar boundary nodes labeled `nop`
+* datapath operation nodes such as `add`, `mul`, `lt`, `load`, `store`
+* hierarchical control nodes such as `call`, `branch`, and `loop`
+
+General syntax:
+
+[source,text]
+----
+node <node-id> = <op> <args> [: <type>] class=<resource-class> delay=<int> [additional-attributes]
+----
+
+Examples:
+
+[source,text]
+----
+node v1 = add a, b      : i32 class=add   delay=1
+node v2 = load A[i]     : i32 class=memrd delay=1
+node v3 = store C[i], x       class=memwr delay=1
+node v4 = mul v1, v2    : i32 class=mul   delay=2
+----
+
+Notes:
+
+* `store` usually has no result type
+* `nop` is reserved for SGU source and sink nodes
+* `call` references exactly one child SGU that is executed once
+* `loop` references exactly one child SGU that is executed zero to many times
+* `branch` references exactly two child SGUs, of which exactly one is executed once
+* hierarchical nodes are pseudo vertices in the parent SGU; child SGUs conceptually return to that same vertex, and parent-level execution continues after it
+* the datapath belonging to a callee, a looped code region, or a branch arm lives in the child SGU, not in the parent pseudo vertex
+* the exact operation vocabulary is intentionally lightweight and parser-friendly
+
+== Edges
+
+Edges represent relationships between nodes and regions.
+
+Supported edge kinds:
+
+* `data`    — value/data dependency
+* `control` — control dependency
+* `order`   — serialization or sequencing constraint
+* `mem`     — memory dependence
+* `seq`     — region sequencing relation
+* `exg`     — executability relation in `exg` collateral
+
+General syntax:
+
+[source,text]
+----
+edge <kind> <src> (->|--) <dst> [when=true|false]
+----
+
+Examples:
+
+[source,text]
+----
+edge data v1 -> v4
+edge control c0 -> br0
+edge order v2 -> v5
+edge rel v3 -- v4
+edge mem v3 -> v7
+edge seq br0 -> R1 when=true
+edge seq br0 -> R2 when=false
+----
+
+For the `seq` stage, the literature baseline is:
+
+* `data` edges connect operations inside a single SGU
+* `seq` edges connect SGU boundaries and hierarchical nodes to child SGUs
+* a hierarchical node is both the dispatch point into its child SGU(s) and the join point from which execution continues in the parent SGU
+* child SGUs contain the datapath of the called procedure, looped region, or selected branch arm
+* explicit CFG-like `control` edges should be minimized in favor of `call`, `branch`, and `loop` hierarchy
+
+== Source mapping
+
+Source mapping is optional but recommended for provenance tracking.
+
+Syntax:
+
+[source,text]
+----
+map <node-id> <- <source-id>
+----
+
+Example:
+
+[source,text]
+----
+map v3 <- %t17
+----
+
+This may refer to:
+
+* a µIR value
+* a frontend source label
+* another implementation-defined source origin
+
+== Stage: `seq`
+
+=== Purpose
+
+The `seq` stage is the allocation input representation.
+
+It captures:
+
+* a hierarchy of sequencing graph units (SGUs)
+* datapath operations within each SGU
+* data dependencies within each SGU
+* hierarchical execution structure through `call`, `branch`, and `loop`
+* explicit SGU boundaries via source and sink `nop` nodes
+
+The `seq` stage is the natural place to represent the SG literature model directly.
+It should not merely mirror the canonical µIR control-flow graph.
+Instead, it should restore a hierarchical HLS-oriented sequencing graph whose regions are SGUs.
+
+=== Required elements
+
+A valid `seq` file must contain:
+
+* `design`
+* `stage seq`
+* at least one `region`
+* zero or more `node`, `edge`, and `map` statements inside regions
+* for every SGU region, exactly one source `nop` node and exactly one sink `nop` node
+
+Additional structural rules for `seq`:
+
+* every SGU region is acyclic
+* `call` nodes reference exactly one child SGU
+* `loop` nodes reference exactly one child SGU
+* `branch` nodes reference exactly two child SGUs
+* child SGUs of a hierarchical node return to that same parent-level pseudo vertex
+* child SGUs contain the datapath of the hierarchical construct itself; later parent-level operations remain sequenced after the pseudo vertex
+* operations that execute after a hierarchical construct are sequenced after the hierarchical node itself, not after the child region identifier
+* if one branch alternative is structurally empty, it should still be represented explicitly as an empty `nop -> nop` SGU
+
+=== Allowed attributes on nodes
+
+Optional attributes:
+
+* width/type information via `: <type>`
+* implementation-specific annotations
+
+The canonical `seq` emission carries only structural sequencing attributes such as `role`, `child`, `true_child`, and `false_child`.
+Allocation attributes such as `class`, `ii`, and `delay` are introduced by the `alloc` stage.
+
+=== Example: flat SGU
+
+[source,text]
+----
+design fir
+stage seq
+
+input  A : memref<i32>
+input  B : memref<i32>
+output C : memref<i32>
+
+region R0 kind=procedure {
+  node v0 = nop                 role=source
+  node v1 = load A[i]           : i32
+  node v2 = load B[i]           : i32
+  node v3 = mul  v1, v2         : i32
+  node v4 = add  acc, v3        : i32
+  node v5 = store C[i], v4
+  node v6 = nop                 role=sink
+
+  edge data v1 -> v3
+  edge data v2 -> v3
+  edge data v3 -> v4
+  edge data v4 -> v5
+
+  edge seq v0 -> v1
+  edge seq v0 -> v2
+  edge seq v3 -> v4
+  edge seq v5 -> v6
+
+  map v1 <- %t1
+  map v2 <- %t2
+  map v3 <- %t3
+  map v4 <- %t4
+}
+----
+
+=== Example: call SGU hierarchy
+
+[source,text]
+----
+design call_example
+stage seq
+
+region R0 kind=procedure {
+  node v0  = nop                 role=source
+  region_ref R1
+  node v1  = call cos_kernel          child=R1
+  node v2  = mul x, gain         : i32
+  node v3  = nop                 role=sink
+
+  edge seq v0 -> v1
+  edge seq v1 -> v2
+  edge seq v2 -> v3
+}
+
+region R1 kind=subgraph parent=R0 {
+  node v4 = nop                 role=source
+  node v5 = mul a, b            : i32
+  node v6 = sub v5, c           : i32
+  node v7 = nop                 role=sink
+
+  edge data v5 -> v6
+  edge seq  v4 -> v5
+  edge seq  v6 -> v7
+}
+----
+
+=== Example: branch SGU hierarchy
+
+[source,text]
+----
+design branch_example
+stage seq
+
+region R0 kind=procedure {
+  node v0  = nop                 role=source
+  region_ref R1
+  region_ref R2
+  node v1  = lt x, y             : i1
+  node v2  = branch v1                true_child=R1 false_child=R2
+  node v3  = mul z, 2            : i32
+  node v4  = nop                 role=sink
+
+  edge seq  v0 -> v1
+  edge data v1 -> v2
+  edge seq  v2 -> R1 when=true
+  edge seq  v2 -> R2 when=false
+  edge seq  v2 -> v3
+  edge seq  v3 -> v4
+}
+
+region R1 kind=then parent=R0 {
+  node v5 = nop        role=source
+  node v6 = add a, b : i32
+  node v7 = nop        role=sink
+
+  edge seq v5 -> v6
+  edge seq v6 -> v7
+}
+
+region R2 kind=else parent=R0 {
+  node v8 = nop        role=source
+  node v9 = sub a, b : i32
+  node v10 = nop        role=sink
+
+  edge seq v8 -> v9
+  edge seq v9 -> v10
+}
+----
+
+=== Example: loop SGU with explicit empty alternative
+
+[source,text]
+----
+design loop_example
+stage seq
+
+region R0 kind=procedure {
+  node v0  = nop                 role=source
+  region_ref R1
+  node v1  = loop i                   child=R1
+  node v2  = store Y[i], acc
+  node v3  = nop                 role=sink
+
+  edge seq v0 -> v1
+  edge seq v1 -> v2
+  edge seq v2 -> v3
+}
+
+region R1 kind=loop parent=R0 {
+  node v4  = nop                 role=source
+  region_ref R2
+  region_ref R3
+  node v5  = lt i, N             : i1
+  node v6  = branch v5                true_child=R2 false_child=R3
+  node v7  = nop                 role=sink
+
+  edge seq  v4 -> v5
+  edge data v5 -> v6
+  edge seq  v6 -> R2 when=true
+  edge seq  v6 -> R3 when=false
+  edge seq  v6 -> v7
+}
+
+region R2 kind=body parent=R1 {
+  node v8  = nop                 role=source
+  node v9  = mul x, coeff        : i32
+  node v10 = add acc, v9         : i32
+  node v11 = nop                 role=sink
+
+  edge data v9 -> v10
+  edge seq  v8 -> v9
+  edge seq  v10 -> v11
+}
+
+region R3 kind=empty parent=R1 {
+  node v12 = nop                 role=source
+  node v13 = nop                 role=sink
+
+  edge seq v12 -> v13
+}
+----
+
+== Stage: `alloc`
+
+=== Purpose
+
+The `alloc` stage records resource-type allocation decisions before scheduling.
+
+It extends the `seq` structure with:
+
+* one chosen resource type for each operation node
+* one concrete initiation interval for each allocated operation node
+* one concrete delay for each allocated operation node
+
+The `alloc` stage is the canonical output of allocation and the canonical input to scheduling.
+Its output also embeds the normalized executability collateral so later passes can inspect the same FU/op capability data without reopening the original side input.
+
+=== Executability collateral
+
+Allocation consumes one external executability graph supplied by the user.
+This collateral may be supplied either as JSON or as one auxiliary `stage exg` µhIR file.
+
+The graph is bipartite:
+
+* one partition contains functional-unit vertices
+* the other partition contains canonical µIR operation vertices
+* functional-unit vertex names are CAPITALIZED
+* operation vertex names are lower case
+* each edge states that one operation may execute on one functional-unit vertex
+* the weight of an edge carries both `ii` and `d`
+* `ii` is the initiation interval of executing that operation on that functional-unit vertex
+* `d` is the delay of executing that operation on that functional-unit vertex
+
+Because executability is symmetric, textual and DOT renderings of executability graphs should use undirected edges.
+
+When serialized as µhIR, an executability graph uses:
+
+* `stage exg`
+* one or more `region` blocks
+* `node <fu_name> = fu partition=fu` for functional-unit vertices
+* `node <op_name> = op partition=op` for canonical µIR operation vertices
+* undirected `edge exg <fu> -- <op> ii=<int> d=<int>` edges
+
+When `alloc` embeds executability collateral into `alloc.uhir`, it keeps only operation vertices that are relevant to the sequenced design.
+It also inserts the synthetic functional unit `CTRL` together with structural operation vertices such as `nop`, `call`, `loop`, `branch`, and `ret` as needed.
+
+A well-formed executability graph must satisfy:
+
+* the functional-unit and operation partitions are disjoint
+* every edge connects exactly one functional-unit vertex and one operation vertex
+* every canonical µIR operation supported by the language *and* used in the µhIR is connected to at least one functional-unit vertex
+* every edge weight defines integer `ii` and integer `d`
+* `ii<=d` for all edge weights in the graph
+
+=== Required elements
+
+A valid `alloc` file must contain:
+
+* `design`
+* `stage alloc`
+* at least one `region`
+* allocated nodes with `class`, `ii`, and `delay`
+
+An `alloc` file may additionally carry one or more embedded `kind=executability` regions.
+These regions preserve the executability collateral inside the alloc artifact itself.
+
+=== Required elements in `exg`
+
+A valid `exg` file must contain:
+
+* `design`
+* `stage exg`
+* at least one `region`
+* only `fu` and `op` graph nodes
+* only undirected `edge exg ... -- ... ii=<int> d=<int>` edges
+
+=== Required node attributes in `alloc`
+
+Each allocated node should include:
+
+* `class=<resource-type>`
+* `ii=<int>`
+* `delay=<int>`
+
+Optional attributes:
+
+* width/type information via `: <type>`
+* implementation-specific annotations
+
+=== Example: flat allocated form
+
+[source,text]
+----
+design fir
+stage alloc
+
+region R0 kind=procedure {
+  node v0 = nop              class=CTRL   ii=0 delay=0 role=source
+  node v1 = load A[i]  : i32 class=MEM_RD ii=1 delay=1
+  node v2 = mul  v1, c : i32 class=DSP    ii=1 delay=2
+  node v3 = ret v2           class=CTRL   ii=0 delay=0
+  node v4 = nop              class=CTRL   ii=0 delay=0 role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  edge data v3 -> v4
+}
+----
+
+== Stage: `sched`
+
+=== Purpose
+
+The `sched` stage records scheduling decisions.
+
+It extends the `alloc` structure with schedule information such as:
+
+* start step
+* end step
+* overall latency
+* optional control guards
+* optional schedule style metadata
+
+The `sched` stage is the canonical output of the scheduling pass and the canonical input to binding.
+
+=== Required elements
+
+A valid `sched` file must contain:
+
+* `design`
+* `stage sched`
+* a schedule declaration
+* at least one `region`
+* scheduled nodes with `step` and `end`
+
+=== Schedule declaration
+
+Syntax:
+
+[source,text]
+----
+schedule kind=<control_steps|hierarchical|pipeline>
+----
+
+Examples:
+
+[source,text]
+----
+schedule kind=control_steps
+schedule kind=hierarchical
+----
+
+=== Required node attributes in `sched`
+
+Each scheduled node should include:
+
+* `class=<resource-class>`
+* `delay=<int>`
+* `step=<int>`
+* `end=<int>`
+
+Optional attributes:
+
+* `guard=<predicate>`
+* `slot=<int>`
+* `stage=<int>` for pipelined forms
+
+=== Region schedule summary
+
+Optional but recommended:
+
+[source,text]
+----
+steps <start>..<end>
+latency <int>
+ii <int>
+----
+
+=== Example: flat scheduled form
+
+[source,text]
+----
+design fir
+stage sched
+schedule kind=control_steps
+
+region R0 kind=procedure {
+  node v1 = load A[i]    : i32 class=memrd delay=1 step=0 end=0
+  node v2 = load B[i]    : i32 class=memrd delay=1 step=0 end=0
+  node v3 = mul  v1, v2  : i32 class=mul   delay=2 step=1 end=2
+  node v4 = add  acc, v3 : i32 class=add   delay=1 step=3 end=3
+  node v5 = store C[i], v4    class=memwr delay=1 step=4 end=4
+
+  edge data v1 -> v3
+  edge data v2 -> v3
+  edge data v3 -> v4
+  edge data v4 -> v5
+
+  steps 0..4
+  latency 5
+}
+----
+
+=== Example: hierarchical scheduled form
+
+[source,text]
+----
+design branch_example
+stage sched
+schedule kind=hierarchical
+
+region R0 kind=procedure {
+  node c0  = cmp_lt x, y : i1 class=cmp  delay=1 step=0 end=0
+  node br0 = branch c0       class=CTRL delay=0 step=0 end=0
+
+  edge control c0  -> br0
+  edge seq br0 -> R1 when=true
+  edge seq br0 -> R2 when=false
+  edge seq R1  -> R3
+  edge seq R2  -> R3
+
+  latency 4
+}
+
+region R1 kind=then parent=R0 {
+  node v1 = add a, b : i32 class=add delay=1 step=1 end=1 guard=true_path
+}
+
+region R2 kind=else parent=R0 {
+  node v2 = sub a, b : i32 class=sub delay=1 step=1 end=1 guard=false_path
+}
+
+region R3 kind=merge parent=R0 {
+  node v3 = merge v1, v2 : i32 class=merge delay=0 step=2 end=2
+  node v4 = mul v3, 2    : i32 class=mul   delay=2 step=2 end=3
+
+  edge data v3 -> v4
+}
+----
+
+== Stage: `bind`
+
+=== Purpose
+
+The `bind` stage records implementation decisions after scheduling.
+
+It extends the `sched` form with:
+
+* functional unit bindings
+* register bindings
+* memory port bindings
+* optional mux declarations
+
+The `bind` stage is the canonical input to later datapath/control extraction and HW-MIR lowering.
+
+=== Required elements
+
+A valid `bind` file must contain:
+
+* `design`
+* `stage bind`
+* a schedule declaration
+* a `resources` block
+* at least one `region`
+* bound nodes with `bind=<resource-id>`
+
+=== Resources block
+
+Syntax:
+
+[source,text]
+----
+resources {
+  ...
+}
+----
+
+Supported declarations:
+
+[source,text]
+----
+fu   <id> : <class>
+reg  <id> : <type>
+port <id> : <class> [<memory-name>]
+----
+
+Examples:
+
+[source,text]
+----
+resources {
+  fu   mul0  : mul
+  fu   add0  : add
+  reg  r_acc : i32
+  reg  r_tmp : i32
+  port mr0   : memrd A
+  port mw0   : memwr C
+}
+----
+
+=== Required node attributes in `bind`
+
+Each bound operation node should include at least:
+
+* `class=<resource-class>`
+* `delay=<int>`
+* `step=<int>`
+* `end=<int>`
+* `bind=<resource-id>`
+
+=== Value-to-register binding lines
+
+Syntax:
+
+[source,text]
+----
+value <producer-or-value-id> -> <reg-id> live=<start>..<end>
+----
+
+Example:
+
+[source,text]
+----
+value v3 -> r_tmp live=2..3
+----
+
+=== Mux declarations
+
+Optional syntax:
+
+[source,text]
+----
+mux <mux-id> : input=[<src1>, <src2>, ...] output=<dst> sel=<selector>
+----
+
+Example:
+
+[source,text]
+----
+mux mx0 : input=[r_init, r_acc_next] output=r_acc sel=state
+----
+
+=== Example: bound design
+
+[source,text]
+----
+design fir
+stage bind
+schedule kind=control_steps
+
+resources {
+  fu   mul0  : mul
+  fu   add0  : add
+  port mr0   : memrd A
+  port mr1   : memrd B
+  port mw0   : memwr C
+
+  reg  r_acc : i32
+  reg  r_p   : i32
+  reg  r_q   : i32
+}
+
+region R0 kind=procedure {
+  node v1 = load A[i]    : i32 class=memrd delay=1 step=0 end=0 bind=mr0
+  node v2 = load B[i]    : i32 class=memrd delay=1 step=0 end=0 bind=mr1
+  node v3 = mul  v1, v2  : i32 class=mul   delay=2 step=1 end=2 bind=mul0
+  node v4 = add  acc, v3 : i32 class=add   delay=1 step=3 end=3 bind=add0
+  node v5 = store C[i], v4    class=memwr delay=1 step=4 end=4 bind=mw0
+
+  edge data v1 -> v3
+  edge data v2 -> v3
+  edge data v3 -> v4
+  edge data v4 -> v5
+
+  value v1 -> r_p   live=0..1
+  value v2 -> r_q   live=0..1
+  value v3 -> r_p   live=2..3
+  value v4 -> r_acc live=3..4
+
+  mux mx0 : input=[r_acc, r_next] output=r_acc sel=state
+}
+----
+
+== Region-local statements
+
+The following statements may appear inside a `region` block depending on stage.
+
+=== Common
+
+* `node ...`
+* `edge ...`
+* `map ...`
+
+=== `sched`
+
+Additionally:
+
+* `steps ...`
+* `latency ...`
+* `ii ...`
+
+=== `bind`
+
+Additionally:
+
+* `value ...`
+* `mux ...`
+
+== Well-formedness rules
+
+=== Common rules
+
+A µhIR file is well-formed only if:
+
+* exactly one `design` declaration exists
+* exactly one `stage` declaration exists
+* all referenced regions exist
+* all referenced nodes exist
+* region identifiers are unique
+* node identifiers are unique within the design
+* edges reference valid source and destination objects
+* stage-specific required attributes are present
+
+=== Stage-specific rules for `seq`
+
+A `seq` file is well-formed only if:
+
+* no `step`, `end`, or `bind` attributes appear unless explicitly allowed by an extension
+* no `resources` block appears
+
+=== Stage-specific rules for `exg`
+
+An `exg` file is well-formed only if:
+
+* no ports, constants, schedule block, or resources block appear
+* every node has `partition=fu` or `partition=op`
+* every `partition=fu` node uses opcode `fu`
+* every `partition=op` node uses opcode `op`
+* every functional-unit vertex name is CAPITALIZED
+* every operation vertex name is lower case
+* exg nodes carry no operands or result types
+* no `map`, `value`, or `mux` statements appear
+* every edge uses kind `exg`
+* every edge is undirected
+* every edge has integer `ii` and integer `d`
+
+=== Stage-specific rules for `alloc`
+
+A `alloc` file is well-formed only if:
+
+* every allocated node has `class`, `ii`, and `delay`
+* no `step`, `end`, or `bind` attributes appear unless explicitly allowed by an extension
+* no `resources` block appears
+* any executability graph collateral used to produce the file is well-formed under the rules above
+* any embedded `kind=executability` regions are themselves well-formed under the relaxed `alloc`-embedded executability rules above
+
+=== Stage-specific rules for `sched`
+
+A `sched` file is well-formed only if:
+
+* a `schedule` declaration exists
+* each scheduled node has `step` and `end`
+* `end >= step`
+* any region summary such as `steps` or `latency` is consistent with contained nodes
+
+=== Stage-specific rules for `bind`
+
+A `bind` file is well-formed only if:
+
+* a `schedule` declaration exists
+* a `resources` block exists
+* every bound node has a valid `bind=<resource-id>`
+* each referenced bound resource exists in `resources`
+* register bindings reference declared registers
+* optional mux declarations reference valid sources and outputs
+
+== Provenance and identity preservation
+
+The following should be preserved across the hardware refinement chain:
+
+* region identifiers
+* node identifiers
+* operation classes
+* result types where applicable
+* source mapping where available
+
+Recommended invariant:
+
+____
+If `v7` denotes a particular multiplication in `seq`, then `v7` should denote the same multiplication in `alloc`, `sched`, and `bind`.
+____
+
+== Recommended pass boundary usage
+
+Recommended use of each stage:
+
+* `seq`:
+  **input** to allocation
+
+* `alloc`:
+  **output** of allocation,
+  **input** to scheduling
+
+* `sched`:
+  **output** of scheduling,
+  **input** to binding
+
+* `bind`:
+  **output** of binding,
+  **input** to control/datapath extraction or HW-MIR lowering
+
+== Suggested implementation strategy
+
+A practical parser strategy is:
+
+* tokenize line by line
+* parse headers first
+* parse top-level declarations
+* parse region and resources blocks
+* perform stage-specific validation after parsing
+
+Because syntax is line-oriented and attribute-based, a handwritten Python parser is realistic and appropriate for µhLS.
+
+== Minimal parser-oriented grammar sketch
+
+This section is intentionally informal and implementation-oriented.
+
+[source,text]
+----
+file        ::= design_decl stage_decl top_decl*
+top_decl    ::= global_decl | schedule_decl | resources_block | region_decl
+
+design_decl ::= "design" IDENT
+stage_decl  ::= "stage" ("seq" | "alloc" | "sched" | "bind")
+
+global_decl ::= ("input" | "output") IDENT ":" TYPE
+              | "const" IDENT "=" LITERAL ":" TYPE
+
+schedule_decl ::= "schedule" "kind=" IDENT
+
+resources_block ::= "resources" "{" resource_decl* "}"
+resource_decl   ::= "fu" IDENT ":" IDENT
+                  | "reg" IDENT ":" TYPE
+                  | "port" IDENT ":" IDENT [IDENT]
+
+region_decl ::= "region" IDENT attr_list? "{" region_stmt* "}"
+
+region_stmt ::= node_decl
+              | edge_decl
+              | map_decl
+              | steps_decl
+              | latency_decl
+              | ii_decl
+              | value_decl
+              | mux_decl
+              | region_ref_decl
+
+node_decl  ::= "node" IDENT "=" OP ARGS [ ":" TYPE ] attr_list
+edge_decl  ::= "edge" IDENT REF ("->" | "--") REF [ "when=" IDENT ]
+map_decl   ::= "map" IDENT "<-" REF
+steps_decl ::= "steps" INT ".." INT
+latency_decl ::= "latency" INT
+ii_decl    ::= "ii" INT
+value_decl ::= "value" REF "->" IDENT "live=" INT ".." INT
+mux_decl   ::= "mux" IDENT ":" "input=" "[" list "]" "output=" IDENT "sel=" IDENT
+region_ref_decl ::= "region_ref" IDENT
+----
+
+== Summary
+
+µhIR provides a unified textual representation family for hardware-side refinement in µhLS.
+
+The common `.uhir` extension is paired with an internal stage declaration:
+
+* `stage seq`
+* `stage alloc`
+* `stage sched`
+* `stage bind`
+
+This design keeps the file family:
+
+* human-readable
+* parser-friendly
+* stable across passes
+* suitable for hierarchical scheduling and downstream binding

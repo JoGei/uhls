@@ -412,7 +412,7 @@ def _allocate_node(node: UHIRNode, selections: dict[str, tuple[str, int, int]]) 
 
     operation = _executability_opcode(node.opcode)
     if operation is None:
-        attributes["class"], attributes["ii"], attributes["delay"] = ("ctrl", 1, 0)
+        attributes["class"], attributes["ii"], attributes["delay"] = (_CONTROL_FU, 0, 0)
         return UHIRNode(node.id, node.opcode, node.operands, node.result_type, attributes)
 
     selected = selections.get(operation)

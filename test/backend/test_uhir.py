@@ -146,8 +146,11 @@ class UHIRParserTests(unittest.TestCase):
 
             region executability_graph kind=executability {
               node EWMS = fu partition=fu
+              node CTRL = fu partition=fu
               node add = op partition=op
+              node ret = op partition=op
               edge exg EWMS -- add ii=1 d=1
+              edge exg CTRL -- ret ii=0 d=0
             }
             """
         )
@@ -158,6 +161,29 @@ class UHIRParserTests(unittest.TestCase):
         assert exg_region is not None
         self.assertEqual(exg_region.kind, "executability")
         self.assertFalse(exg_region.edges[0].directed)
+
+    def test_parse_alloc_uhir_rejects_embedded_executability_missing_used_canonical_op(self) -> None:
+        with self.assertRaises(UHIRParseError) as raised:
+            parse_uhir(
+                """
+                design fir
+                stage alloc
+
+                region R0 kind=procedure {
+                  node v1 = add a, b : i32 class=ALU ii=1 delay=1
+                  node v2 = ret v1 class=CTRL ii=0 delay=0
+                  edge data v1 -> v2
+                }
+
+                region executability_graph kind=executability {
+                  node EWMS = fu partition=fu
+                  node sub = op partition=op
+                  edge exg EWMS -- sub ii=1 d=1
+                }
+                """
+            )
+
+        self.assertIn("does not cover canonical µIR operations used in alloc µhIR", str(raised.exception))
 
     def test_parse_exg_uhir_with_undirected_weighted_edges(self) -> None:
         design = parse_uhir(
@@ -196,6 +222,23 @@ class UHIRParserTests(unittest.TestCase):
             )
 
         self.assertIn("CAPITALIZED", str(raised.exception))
+
+    def test_parse_exg_uhir_rejects_same_partition_edges(self) -> None:
+        with self.assertRaises(UHIRParseError) as raised:
+            parse_uhir(
+                """
+                design bad_exg
+                stage exg
+
+                region G0 kind=executability {
+                  node FU0 = fu partition=fu
+                  node FU1 = fu partition=fu
+                  edge exg FU0 -- FU1 ii=1 d=1
+                }
+                """
+            )
+
+        self.assertIn("must connect one FU and one op", str(raised.exception))
 
     def test_parse_uhir_accepts_undirected_edge_syntax(self) -> None:
         design = parse_uhir(

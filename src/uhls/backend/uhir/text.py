@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from uhls.middleend.uir import COMPACT_OPCODE_LABELS
+
 from .model import (
     AttributeValue,
     UHIRConstant,
@@ -40,6 +42,7 @@ _MUX_RE = re.compile(rf"^mux\s+({_IDENT_RE})\s*:\s*(.+)$")
 _FU_RE = re.compile(rf"^fu\s+({_IDENT_RE})\s*:\s*({_IDENT_RE})$")
 _REG_RE = re.compile(rf"^reg\s+({_IDENT_RE})\s*:\s*([A-Za-z0-9_<>\[\]]+)$")
 _PORT_RESOURCE_RE = re.compile(rf"^port\s+({_IDENT_RE})\s*:\s*({_IDENT_RE})(?:\s+({_IDENT_RE}))?$")
+_UIR_LANGUAGE_OPCODES = frozenset(str(opcode).lower() for opcode in COMPACT_OPCODE_LABELS)
 
 
 class UHIRParseError(ValueError):
@@ -469,6 +472,10 @@ def _validate_design(design: UHIRDesign) -> None:
     resource_ids = {resource.id for resource in design.resources}
     resource_kinds = {resource.id: resource.kind for resource in design.resources}
     known_endpoints = set(region_ids)
+    exg_vertex_partitions: dict[str, tuple[str, str]] = {}
+    exg_functional_units: set[str] = set()
+    exg_operations: set[str] = set()
+    used_canonical_operations: set[str] = set()
 
     for region in design.regions:
         region_stage = _region_stage(design.stage, region)
@@ -487,6 +494,26 @@ def _validate_design(design: UHIRDesign) -> None:
             node_ids.add(node.id)
             known_endpoints.add(node.id)
             _validate_node_for_stage(node, region_stage)
+            if region_stage == "exg":
+                partition = node.attributes["partition"]
+                resolved_name = _exg_vertex_name(node)
+                exg_vertex_partitions[node.id] = (resolved_name, partition)
+                if partition == "fu":
+                    if resolved_name in exg_operations:
+                        raise UHIRParseError(
+                            f"executability graph is not bipartite: shared FU/op vertex '{resolved_name}'"
+                        )
+                    exg_functional_units.add(resolved_name)
+                else:
+                    if resolved_name in exg_functional_units:
+                        raise UHIRParseError(
+                            f"executability graph is not bipartite: shared FU/op vertex '{resolved_name}'"
+                        )
+                    exg_operations.add(resolved_name)
+            elif design.stage == "alloc":
+                operation = _canonical_operation_name(node.opcode)
+                if operation is not None:
+                    used_canonical_operations.add(operation)
             if design.stage == "bind":
                 bind_target = node.attributes.get("bind")
                 if not isinstance(bind_target, str) or bind_target not in resource_ids:
@@ -515,6 +542,7 @@ def _validate_design(design: UHIRDesign) -> None:
             if resource_kinds[mux.output] != "reg":
                 raise UHIRParseError(f"mux '{mux.id}' must target a reg resource output")
 
+    exg_connected_operations: set[str] = set()
     for region in design.regions:
         region_stage = _region_stage(design.stage, region)
         for edge in region.edges:
@@ -529,11 +557,37 @@ def _validate_design(design: UHIRDesign) -> None:
                     raise UHIRParseError(f"exg µhIR edge '{edge.source} -- {edge.target}' must be undirected")
                 if edge.source not in node_ids or edge.target not in node_ids:
                     raise UHIRParseError(f"exg µhIR edge '{edge.source} -- {edge.target}' must connect graph nodes")
-                if not isinstance(edge.attributes.get("ii"), int) or not isinstance(edge.attributes.get("d"), int):
+                ii = edge.attributes.get("ii")
+                delay = edge.attributes.get("d")
+                if not isinstance(ii, int) or not isinstance(delay, int):
                     raise UHIRParseError(f"exg µhIR edge '{edge.source} -- {edge.target}' must define integer ii/d weights")
+                if ii > delay:
+                    raise UHIRParseError(f"exg µhIR edge '{edge.source} -- {edge.target}' violates ii<=d: ii={ii}, d={delay}")
+                source_name, source_partition = exg_vertex_partitions[edge.source]
+                target_name, target_partition = exg_vertex_partitions[edge.target]
+                if source_partition == target_partition:
+                    raise UHIRParseError(
+                        f"executability graph is not bipartite: edge '{edge.source} -- {edge.target}' must connect one FU and one op"
+                    )
+                if source_partition == "op":
+                    exg_connected_operations.add(source_name)
+                else:
+                    exg_connected_operations.add(target_name)
         for mapping in region.mappings:
             if mapping.node_id not in node_ids:
                 raise UHIRParseError(f"map in region '{region.id}' references unknown node '{mapping.node_id}'")
+
+    disconnected_canonical_ops = sorted(
+        operation for operation in exg_operations if operation in _UIR_LANGUAGE_OPCODES and operation not in exg_connected_operations
+    )
+    if disconnected_canonical_ops:
+        names = ", ".join(disconnected_canonical_ops)
+        raise UHIRParseError(f"executability graph leaves canonical µIR operations disconnected: {names}")
+    if design.stage == "alloc" and exg_operations:
+        missing_embedded_ops = sorted(operation for operation in used_canonical_operations if operation not in exg_connected_operations)
+        if missing_embedded_ops:
+            names = ", ".join(missing_embedded_ops)
+            raise UHIRParseError(f"embedded executability graph does not cover canonical µIR operations used in alloc µhIR: {names}")
 
 
 def _region_stage(design_stage: str, region: UHIRRegion) -> str:
@@ -589,3 +643,15 @@ def _validate_node_for_stage(node: UHIRNode, stage: str) -> None:
         forbidden = [name for name in ("step", "end", "bind") if name in node.attributes]
         if forbidden:
             raise UHIRParseError(f"{stage}-stage node '{node.id}' contains forbidden attributes: {', '.join(forbidden)}")
+
+
+def _exg_vertex_name(node: UHIRNode) -> str:
+    vertex_name = node.attributes.get("name")
+    return node.id if vertex_name is None else vertex_name
+
+
+def _canonical_operation_name(opcode: str) -> str | None:
+    normalized = opcode.lower()
+    if normalized in _UIR_LANGUAGE_OPCODES:
+        return normalized
+    return None

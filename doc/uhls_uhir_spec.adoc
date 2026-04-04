@@ -166,7 +166,7 @@ Examples:
 kind=procedure
 class=mul
 delay=2
-step=3
+start=3
 bind=mul0
 ----
 
@@ -740,8 +740,8 @@ The `sched` stage records scheduling decisions.
 
 It extends the `alloc` structure with schedule information such as:
 
-* start step
-* end step
+* start time
+* end time
 * overall latency
 * optional control guards
 * optional schedule style metadata
@@ -756,7 +756,7 @@ A valid `sched` file must contain:
 * `stage sched`
 * a schedule declaration
 * at least one `region`
-* scheduled nodes with `step` and `end`
+* scheduled nodes with `start` and `end`
 
 === Schedule declaration
 
@@ -781,7 +781,7 @@ Each scheduled node should include:
 
 * `class=<resource-class>`
 * `delay=<int>`
-* `step=<int>`
+* `start=<int>`
 * `end=<int>`
 
 Optional attributes:
@@ -810,11 +810,11 @@ stage sched
 schedule kind=control_steps
 
 region R0 kind=procedure {
-  node v1 = load A[i]    : i32 class=memrd delay=1 step=0 end=0
-  node v2 = load B[i]    : i32 class=memrd delay=1 step=0 end=0
-  node v3 = mul  v1, v2  : i32 class=mul   delay=2 step=1 end=2
-  node v4 = add  acc, v3 : i32 class=add   delay=1 step=3 end=3
-  node v5 = store C[i], v4    class=memwr delay=1 step=4 end=4
+  node v1 = load A[i]    : i32 class=memrd delay=1 start=0 end=0
+  node v2 = load B[i]    : i32 class=memrd delay=1 start=0 end=0
+  node v3 = mul  v1, v2  : i32 class=mul   delay=2 start=1 end=2
+  node v4 = add  acc, v3 : i32 class=add   delay=1 start=3 end=3
+  node v5 = store C[i], v4    class=memwr delay=1 start=4 end=4
 
   edge data v1 -> v3
   edge data v2 -> v3
@@ -835,8 +835,8 @@ stage sched
 schedule kind=hierarchical
 
 region R0 kind=procedure {
-  node c0  = cmp_lt x, y : i1 class=cmp  delay=1 step=0 end=0
-  node br0 = branch c0       class=CTRL delay=0 step=0 end=0
+  node c0  = cmp_lt x, y : i1 class=cmp  delay=1 start=0 end=0
+  node br0 = branch c0       class=CTRL delay=0 start=0 end=0
 
   edge control c0  -> br0
   edge seq br0 -> R1 when=true
@@ -848,16 +848,16 @@ region R0 kind=procedure {
 }
 
 region R1 kind=then parent=R0 {
-  node v1 = add a, b : i32 class=add delay=1 step=1 end=1 guard=true_path
+  node v1 = add a, b : i32 class=add delay=1 start=1 end=1 guard=true_path
 }
 
 region R2 kind=else parent=R0 {
-  node v2 = sub a, b : i32 class=sub delay=1 step=1 end=1 guard=false_path
+  node v2 = sub a, b : i32 class=sub delay=1 start=1 end=1 guard=false_path
 }
 
 region R3 kind=merge parent=R0 {
-  node v3 = merge v1, v2 : i32 class=merge delay=0 step=2 end=2
-  node v4 = mul v3, 2    : i32 class=mul   delay=2 step=2 end=3
+  node v3 = merge v1, v2 : i32 class=merge delay=0 start=2 end=2
+  node v4 = mul v3, 2    : i32 class=mul   delay=2 start=2 end=3
 
   edge data v3 -> v4
 }
@@ -929,7 +929,7 @@ Each bound operation node should include at least:
 
 * `class=<resource-class>`
 * `delay=<int>`
-* `step=<int>`
+* `start=<int>`
 * `end=<int>`
 * `bind=<resource-id>`
 
@@ -986,11 +986,11 @@ resources {
 }
 
 region R0 kind=procedure {
-  node v1 = load A[i]    : i32 class=memrd delay=1 step=0 end=0 bind=mr0
-  node v2 = load B[i]    : i32 class=memrd delay=1 step=0 end=0 bind=mr1
-  node v3 = mul  v1, v2  : i32 class=mul   delay=2 step=1 end=2 bind=mul0
-  node v4 = add  acc, v3 : i32 class=add   delay=1 step=3 end=3 bind=add0
-  node v5 = store C[i], v4    class=memwr delay=1 step=4 end=4 bind=mw0
+  node v1 = load A[i]    : i32 class=memrd delay=1 start=0 end=0 bind=mr0
+  node v2 = load B[i]    : i32 class=memrd delay=1 start=0 end=0 bind=mr1
+  node v3 = mul  v1, v2  : i32 class=mul   delay=2 start=1 end=2 bind=mul0
+  node v4 = add  acc, v3 : i32 class=add   delay=1 start=3 end=3 bind=add0
+  node v5 = store C[i], v4    class=memwr delay=1 start=4 end=4 bind=mw0
 
   edge data v1 -> v3
   edge data v2 -> v3
@@ -1050,7 +1050,7 @@ A µhIR file is well-formed only if:
 
 A `seq` file is well-formed only if:
 
-* no `step`, `end`, or `bind` attributes appear unless explicitly allowed by an extension
+* no `start`, `end`, or `bind` attributes appear unless explicitly allowed by an extension
 * no `resources` block appears
 
 === Stage-specific rules for `exg`
@@ -1074,7 +1074,7 @@ An `exg` file is well-formed only if:
 A `alloc` file is well-formed only if:
 
 * every allocated node has `class`, `ii`, and `delay`
-* no `step`, `end`, or `bind` attributes appear unless explicitly allowed by an extension
+* no `start`, `end`, or `bind` attributes appear unless explicitly allowed by an extension
 * no `resources` block appears
 * any executability graph collateral used to produce the file is well-formed under the rules above
 * any embedded `kind=executability` regions are themselves well-formed under the relaxed `alloc`-embedded executability rules above
@@ -1084,8 +1084,8 @@ A `alloc` file is well-formed only if:
 A `sched` file is well-formed only if:
 
 * a `schedule` declaration exists
-* each scheduled node has `step` and `end`
-* `end >= step`
+* each scheduled node has `start` and `end`
+* `end >= start`
 * any region summary such as `steps` or `latency` is consistent with contained nodes
 
 === Stage-specific rules for `bind`

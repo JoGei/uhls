@@ -615,7 +615,7 @@ def _validate_node_for_stage(node: UHIRNode, stage: str) -> None:
             raise UHIRParseError(f"exg-stage FU node '{node.id}' must use a CAPITALIZED vertex name")
         if partition == "op" and resolved_name != resolved_name.lower():
             raise UHIRParseError(f"exg-stage op node '{node.id}' must use a lower-case vertex name")
-        forbidden = [name for name in ("class", "ii", "delay", "step", "end", "bind") if name in node.attributes]
+        forbidden = [name for name in ("class", "ii", "delay", "start", "end", "bind") if name in node.attributes]
         if forbidden:
             raise UHIRParseError(f"exg-stage node '{node.id}' contains forbidden attributes: {', '.join(forbidden)}")
         return
@@ -633,14 +633,14 @@ def _validate_node_for_stage(node: UHIRNode, stage: str) -> None:
         if not isinstance(delay, int):
             raise UHIRParseError(f"node '{node.id}' is missing delay=...")
     if stage in {"sched", "bind"}:
-        step = node.attributes.get("step")
+        start = node.attributes.get("start")
         end = node.attributes.get("end")
-        if not isinstance(step, int) or not isinstance(end, int):
-            raise UHIRParseError(f"{stage}-stage node '{node.id}' is missing step/end attributes")
-        if end < step:
-            raise UHIRParseError(f"{stage}-stage node '{node.id}' has end < step")
+        if not isinstance(start, int) or not isinstance(end, int):
+            raise UHIRParseError(f"{stage}-stage node '{node.id}' is missing start/end attributes")
+        if end < start:
+            raise UHIRParseError(f"{stage}-stage node '{node.id}' has end < start")
     if stage in {"seq", "alloc"}:
-        forbidden = [name for name in ("step", "end", "bind") if name in node.attributes]
+        forbidden = [name for name in ("start", "end", "bind") if name in node.attributes]
         if forbidden:
             raise UHIRParseError(f"{stage}-stage node '{node.id}' contains forbidden attributes: {', '.join(forbidden)}")
 

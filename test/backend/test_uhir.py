@@ -82,11 +82,11 @@ class UHIRParserTests(unittest.TestCase):
             schedule kind=control_steps
 
             region R0 kind=procedure {
-              node v1 = load A[i] : i32 class=memrd delay=1 step=0 end=0
-              node v2 = load B[i] : i32 class=memrd delay=1 step=0 end=0
-              node v3 = mul v1, v2 : i32 class=mul delay=2 step=1 end=2
-              node v4 = add acc, v3 : i32 class=add delay=1 step=3 end=3 guard=true_path
-              node v5 = store C[i], v4 class=memwr delay=1 step=4 end=4
+              node v1 = load A[i] : i32 class=memrd delay=1 start=0 end=0
+              node v2 = load B[i] : i32 class=memrd delay=1 start=0 end=0
+              node v3 = mul v1, v2 : i32 class=mul delay=2 start=1 end=2
+              node v4 = add acc, v3 : i32 class=add delay=1 start=3 end=3 guard=true_path
+              node v5 = store C[i], v4 class=memwr delay=1 start=4 end=4
 
               edge data v1 -> v3
               edge data v2 -> v3
@@ -109,7 +109,7 @@ class UHIRParserTests(unittest.TestCase):
         self.assertEqual(region.steps, (0, 4))
         self.assertEqual(region.latency, 5)
         self.assertEqual(region.initiation_interval, 1)
-        self.assertEqual(region.nodes[2].attributes["step"], 1)
+        self.assertEqual(region.nodes[2].attributes["start"], 1)
         self.assertEqual(region.nodes[2].attributes["end"], 2)
         self.assertEqual(region.nodes[3].attributes["guard"], "true_path")
 
@@ -291,10 +291,10 @@ class UHIRParserTests(unittest.TestCase):
             }
 
             region R0 kind=procedure {
-              node v1 = load A[i] : i32 class=memrd delay=1 step=0 end=0 bind=mr0
-              node v2 = mul v1, 2 : i32 class=mul delay=2 step=1 end=2 bind=mul0
-              node v3 = add acc, v2 : i32 class=add delay=1 step=3 end=3 bind=add0
-              node v4 = store C[i], v3 class=memwr delay=1 step=4 end=4 bind=mw0
+              node v1 = load A[i] : i32 class=memrd delay=1 start=0 end=0 bind=mr0
+              node v2 = mul v1, 2 : i32 class=mul delay=2 start=1 end=2 bind=mul0
+              node v3 = add acc, v2 : i32 class=add delay=1 start=3 end=3 bind=add0
+              node v4 = store C[i], v3 class=memwr delay=1 start=4 end=4 bind=mw0
 
               edge data v1 -> v2
               edge data v2 -> v3
@@ -328,7 +328,7 @@ class UHIRParserTests(unittest.TestCase):
                 stage sched
 
                 region R0 kind=procedure {
-                  node v1 = add a, b : i32 class=add delay=1 step=0 end=0
+                  node v1 = add a, b : i32 class=add delay=1 start=0 end=0
                 }
                 """
             )

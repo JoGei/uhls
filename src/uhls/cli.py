@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import sys
 from dataclasses import dataclass
 from inspect import Parameter as InspectParameter
@@ -13,6 +14,18 @@ from typing import Callable
 
 import click
 
+from uhls.backend.uhir import (
+    ExecutabilityGraph,
+    UHIRParseError,
+    dummy_executability_graph,
+    executability_graph_from_uhir,
+    format_uhir,
+    lower_seq_to_alloc,
+    lower_module_to_seq,
+    parse_uhir_file,
+    to_dot as to_uhir_dot,
+)
+from uhls.backend.hls.alloc import executability_graph_to_dot, format_executability_graph
 from uhls.frontend import lower_source_to_uir
 from uhls.interpreter import InterpreterError, run_uir
 from uhls.middleend.uir import ArrayType, IRParseError, format_module, normalize_type, parse_module, verify_module
@@ -204,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         message = exc.args[0] if exc.args else str(exc)
         click.echo(f"error: {message}", err=True)
         return 1
-    except (CLIError, IRParseError, InterpreterError, NotImplementedError, ValueError) as exc:
+    except (CLIError, IRParseError, UHIRParseError, InterpreterError, NotImplementedError, ValueError) as exc:
         click.echo(f"error: {exc}", err=True)
         return 1
 
@@ -303,6 +316,123 @@ def cdfg_cmd(
     else:
         text = "\n\n".join(_format_cdfg_summary(function) for function in functions)
     _write_or_print_text(text, output)
+
+
+@cli.command("seq")
+@click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--top", "top_name", help="Root function to lower when the input µIR module has multiple functions.")
+@click.option("--dot", "emit_dot", is_flag=True, help="Render Graphviz DOT from one .seq.uhir file.")
+@click.option("--compact", is_flag=True, help="Use compact DOT labels for sequencing-graph nodes.")
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
+def seq_cmd(
+    input_path: Path,
+    top_name: str | None,
+    emit_dot: bool,
+    compact: bool,
+    output: Path | None,
+) -> None:
+    """Build or visualize hierarchical HLS sequencing graphs."""
+    if emit_dot:
+        if input_path.suffix == ".uir":
+            module = _load_ir_file(input_path)
+            if not hasattr(module, "functions"):
+                raise CLIError(f"'seq --dot' expects canonical µIR input, got {type(module).__name__}")
+            design = lower_module_to_seq(module, top=top_name)
+        else:
+            design = parse_uhir_file(input_path)
+            if design.stage != "seq":
+                raise CLIError(f"'seq --dot' expects a seq-stage µhIR file, got stage '{design.stage}'")
+        _write_or_print_text(to_uhir_dot(design, compact=compact), output)
+        return
+
+    module = _load_ir_file(input_path)
+    if not hasattr(module, "functions"):
+        raise CLIError(f"'seq' expects canonical µIR input, got {type(module).__name__}")
+    design = lower_module_to_seq(module, top=top_name)
+    _write_or_print_text(format_uhir(design), output)
+
+
+@cli.command(
+    "alloc",
+    help=(
+        "Lower seq-stage µhIR with -exg, inspect an executability graph when no input is given, "
+        "or emit a starter graph with --gen_dummy_exg."
+    ),
+)
+@click.argument("input_path", metavar="input", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "-exg",
+    "--executability-graph",
+    "executability_graph_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Executability graph in JSON or exg-stage µhIR form, used for alloc lowering or inspected directly when no input file is given.",
+)
+@click.option(
+    "-dummy_exg",
+    "--gen_dummy_exg",
+    "gen_dummy_exg",
+    is_flag=True,
+    help="Emit a starter executability graph and exit; with --dot, render that starter graph as DOT.",
+)
+@click.option(
+    "--dot",
+    "emit_dot",
+    is_flag=True,
+    help="Render Graphviz DOT for the alloc result, or for the executability graph when no input file is given.",
+)
+@click.option(
+    "--algo",
+    "allocation_algorithm",
+    type=click.Choice(["min_delay", "min_ii"], case_sensitive=False),
+    default="min_delay",
+    show_default=True,
+    help="Allocation strategy used when choosing one FU candidate per opcode.",
+)
+@click.option("--compact", is_flag=True, help="Use compact DOT labels for alloc-region rendering.")
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
+def alloc_cmd(
+    input_path: Path | None,
+    executability_graph_path: Path | None,
+    gen_dummy_exg: bool,
+    emit_dot: bool,
+    allocation_algorithm: str,
+    compact: bool,
+    output: Path | None,
+) -> None:
+    """Allocate seq-stage µhIR or inspect executability graphs."""
+    if gen_dummy_exg:
+        graph = dummy_executability_graph()
+        _write_or_print_text(executability_graph_to_dot(graph) if emit_dot else _format_executability_graph_json(graph), output)
+        return
+
+    if executability_graph_path is None:
+        raise CLIError("'alloc' requires -exg/--executability-graph unless -dummy_exg/--gen_dummy_exg is used")
+    if input_path is None:
+        graph = _load_executability_graph(executability_graph_path)
+        _write_or_print_text(executability_graph_to_dot(graph) if emit_dot else format_executability_graph(graph), output)
+        return
+
+    design = parse_uhir_file(input_path)
+    if emit_dot:
+        if design.stage == "seq":
+            design = lower_seq_to_alloc(
+                design,
+                executability_graph=_load_executability_graph(executability_graph_path),
+                algorithm=allocation_algorithm,
+            )
+        elif design.stage != "alloc":
+            raise CLIError(f"'alloc --dot' expects seq/alloc-stage µhIR input, got stage '{design.stage}'")
+        _write_or_print_text(to_uhir_dot(design, compact=compact), output)
+        return
+
+    if design.stage != "seq":
+        raise CLIError(f"'alloc' expects seq-stage µhIR input, got stage '{design.stage}'")
+    allocated = lower_seq_to_alloc(
+        design,
+        executability_graph=_load_executability_graph(executability_graph_path),
+        algorithm=allocation_algorithm,
+    )
+    _write_or_print_text(format_uhir(allocated), output)
 
 
 @cli.command(
@@ -435,6 +565,84 @@ def hls_emit_cmd(binding: str, schedule: str, output: str | None) -> None:
 
 def _load_ir_file(path: Path) -> object:
     return parse_module(path.read_text(encoding="utf-8"))
+
+
+def _load_executability_graph(path: Path) -> ExecutabilityGraph:
+    if path.suffix == ".uhir":
+        try:
+            return executability_graph_from_uhir(parse_uhir_file(path))
+        except (OSError, UHIRParseError, ValueError) as exc:
+            raise CLIError(f"failed to load executability graph '{path}': {exc}") from exc
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CLIError(f"failed to load executability graph '{path}': {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise CLIError(f"executability graph '{path}' must be a JSON object")
+
+    if "edges" in payload:
+        functional_units = payload.get("functional_units", payload.get("fus"))
+        operations = payload.get("operations", payload.get("ops"))
+        edges = payload.get("edges")
+        if not isinstance(functional_units, list) or not isinstance(operations, list) or not isinstance(edges, list):
+            raise CLIError(
+                f"executability graph '{path}' must define list-valued 'functional_units'/'fus', 'operations'/'ops', and 'edges'"
+            )
+
+        normalized_edges: list[tuple[str, str, int, int]] = []
+        for edge in edges:
+            if not isinstance(edge, list | tuple) or len(edge) not in {2, 3, 4}:
+                raise CLIError(
+                    f"executability graph '{path}' has invalid edge {edge!r}; expected [fu, op], [fu, op, weight], or [fu, op, ii, d]"
+                )
+            if len(edge) == 2:
+                ii = 1
+                delay = 1
+            elif len(edge) == 3:
+                weight = edge[2]
+                if isinstance(weight, dict):
+                    ii = weight.get("ii")
+                    delay = weight.get("d")
+                    if not isinstance(ii, int) or not isinstance(delay, int):
+                        raise CLIError(
+                            f"executability graph '{path}' has invalid weight {weight!r}; expected integer ii/d fields"
+                        )
+                else:
+                    ii = 1
+                    delay = weight
+            else:
+                ii = edge[2]
+                delay = edge[3]
+            if not isinstance(ii, int) or not isinstance(delay, int):
+                raise CLIError(f"executability graph '{path}' has non-integer ii/d values {(ii, delay)!r}")
+            normalized_edges.append((str(edge[0]), str(edge[1]), ii, delay))
+
+        return ExecutabilityGraph(
+            functional_units=tuple(str(vertex) for vertex in functional_units),
+            operations=tuple(str(vertex) for vertex in operations),
+            edges=tuple(normalized_edges),
+        )
+
+    if "functional_units" in payload or "fus" in payload:
+        adjacency = payload.get("functional_units", payload.get("fus"))
+        if not isinstance(adjacency, dict):
+            raise CLIError(f"executability graph '{path}' must use an object for 'functional_units'/'fus' adjacency")
+        return ExecutabilityGraph.from_mapping(adjacency)
+
+    raise CLIError(
+        f"executability graph '{path}' must define either explicit vertices+edges or a FU adjacency object"
+    )
+
+
+def _format_executability_graph_json(graph: ExecutabilityGraph) -> str:
+    payload = {
+        "functional_units": list(graph.functional_units),
+        "operations": list(graph.operations),
+        "edges": [[source, target, {"ii": ii, "d": delay}] for source, target, ii, delay in graph.edges],
+    }
+    return json.dumps(payload, indent=2)
 
 
 def _write_or_print_text(text: str, output_path: Path | None) -> None:

@@ -246,6 +246,280 @@ region proc_add1 kind=procedure {
             self.assertIn("ii=1", alloc_text)
             self.assertIn("delay=3", alloc_text)
 
+    def test_sched_command_lowers_alloc_to_sched_with_builtin_asap(self) -> None:
+        alloc = """design add1
+stage alloc
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0
+  node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1
+  node v2 = ret v1 class=CTRL ii=0 delay=0
+  node v3 = nop role=sink class=CTRL ii=0 delay=0
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            alloc_path = root / "add1.alloc.uhir"
+            sched_path = root / "add1.sched.uhir"
+            alloc_path.write_text(alloc, encoding="utf-8")
+
+            self.assertEqual(main(["sched", str(alloc_path), "-o", str(sched_path)]), 0)
+
+            sched_text = sched_path.read_text(encoding="utf-8")
+            self.assertIn("stage sched", sched_text)
+            self.assertIn("schedule kind=hierarchical", sched_text)
+            self.assertIn("node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1 start=0 end=0", sched_text)
+            self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1", sched_text)
+            self.assertIn("steps 0..1", sched_text)
+            self.assertIn("latency 2", sched_text)
+
+    def test_sched_command_accepts_external_flat_sgu_scheduler(self) -> None:
+        alloc = """design add1
+stage alloc
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0
+  node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1
+  node v2 = ret v1 class=CTRL ii=0 delay=0
+  node v3 = nop role=sink class=CTRL ii=0 delay=0
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        plugin = """
+from uhls.backend.hls import SGUScheduleResult
+
+def external_sched(region):
+    starts = {}
+    for node in region.nodes:
+        if node.opcode == "add":
+            starts[node.id] = (4, 4)
+        elif node.opcode == "ret":
+            starts[node.id] = (6, 6)
+        else:
+            starts[node.id] = (0, 0)
+    return SGUScheduleResult(region.id, starts, latency=7)
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            alloc_path = root / "add1.alloc.uhir"
+            plugin_path = root / "external_sched.py"
+            sched_path = root / "add1.sched.uhir"
+            alloc_path.write_text(alloc, encoding="utf-8")
+            plugin_path.write_text(plugin, encoding="utf-8")
+
+            self.assertEqual(main(["sched", str(alloc_path), "--algo", f"{plugin_path}:external_sched", "-o", str(sched_path)]), 0)
+
+            sched_text = sched_path.read_text(encoding="utf-8")
+            self.assertIn("stage sched", sched_text)
+            self.assertIn("node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1 start=4 end=4", sched_text)
+            self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0 start=6 end=6", sched_text)
+            self.assertIn("steps 4..6", sched_text)
+            self.assertIn("latency 7", sched_text)
+
+    def test_sched_command_accepts_external_alap_scheduler_with_asap_slack(self) -> None:
+        alloc = """design add1
+stage alloc
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0
+  node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1
+  node v2 = ret v1 class=CTRL ii=0 delay=0
+  node v3 = nop role=sink class=CTRL ii=0 delay=0
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            alloc_path = root / "add1.alloc.uhir"
+            sched_path = root / "add1.sched.uhir"
+            alloc_path.write_text(alloc, encoding="utf-8")
+
+            alap_module = Path.cwd() / "alap_scheduler.py"
+            self.assertEqual(
+                main(
+                    [
+                        "sched",
+                        str(alloc_path),
+                        "--algo",
+                        f"{alap_module}:ALAPScheduler",
+                        "--sgu_latency_max",
+                        "asap+1",
+                        "-o",
+                        str(sched_path),
+                    ]
+                ),
+                0,
+            )
+
+            sched_text = sched_path.read_text(encoding="utf-8")
+            self.assertIn("stage sched", sched_text)
+            self.assertIn("node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1 start=2 end=2", sched_text)
+            self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0 start=3 end=3", sched_text)
+            self.assertIn("latency 3", sched_text)
+
+    def test_sched_command_accepts_builtin_alap_scheduler_with_asap_slack(self) -> None:
+        alloc = """design add1
+stage alloc
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0
+  node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1
+  node v2 = ret v1 class=CTRL ii=0 delay=0
+  node v3 = nop role=sink class=CTRL ii=0 delay=0
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            alloc_path = root / "add1.alloc.uhir"
+            sched_path = root / "add1.sched.uhir"
+            alloc_path.write_text(alloc, encoding="utf-8")
+
+            self.assertEqual(
+                main(
+                    [
+                        "sched",
+                        str(alloc_path),
+                        "--algo",
+                        "alap",
+                        "--sgu_latency_max",
+                        "asap+1",
+                        "-o",
+                        str(sched_path),
+                    ]
+                ),
+                0,
+            )
+
+            sched_text = sched_path.read_text(encoding="utf-8")
+            self.assertIn("stage sched", sched_text)
+            self.assertIn("node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1 start=2 end=2", sched_text)
+            self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0 start=3 end=3", sched_text)
+            self.assertIn("latency 3", sched_text)
+
+    def test_sched_command_external_alap_requires_sgu_latency_max(self) -> None:
+        alloc = """design add1
+stage alloc
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0
+  node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1
+  node v2 = ret v1 class=CTRL ii=0 delay=0
+  node v3 = nop role=sink class=CTRL ii=0 delay=0
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            alloc_path = root / "add1.alloc.uhir"
+            alloc_path.write_text(alloc, encoding="utf-8")
+
+            alap_module = Path.cwd() / "alap_scheduler.py"
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["sched", str(alloc_path), "--algo", f"{alap_module}:ALAPScheduler"]), 1)
+            self.assertIn("ALAPScheduler requires --sgu_latency_max", stderr.getvalue())
+
+    def test_sched_command_external_alap_rejects_infeasible_latency_max(self) -> None:
+        alloc = """design add1
+stage alloc
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0
+  node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1
+  node v2 = ret v1 class=CTRL ii=0 delay=0
+  node v3 = nop role=sink class=CTRL ii=0 delay=0
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            alloc_path = root / "add1.alloc.uhir"
+            alloc_path.write_text(alloc, encoding="utf-8")
+
+            alap_module = Path.cwd() / "alap_scheduler.py"
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    main(
+                        [
+                            "sched",
+                            str(alloc_path),
+                            "--algo",
+                            f"{alap_module}:ALAPScheduler",
+                            "--sgu_latency_max",
+                            "proc_add1:1",
+                        ]
+                    ),
+                    1,
+                )
+            self.assertIn("minimum feasible latency is 2", stderr.getvalue())
+
+    def test_sched_command_external_alap_handles_longer_dependency_chain_with_asap_latency(self) -> None:
+        alloc = """design chain
+stage alloc
+
+region proc_chain kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0
+  node v1 = load A, i : i32 class=FU_GENERIC ii=1 delay=1
+  node v2 = mul v1, c : i32 class=FU_GENERIC ii=1 delay=1
+  node v3 = add acc, v2 : i32 class=FU_GENERIC ii=1 delay=1
+  node v4 = nop role=sink class=CTRL ii=0 delay=0
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  edge data v3 -> v4
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            alloc_path = root / "chain.alloc.uhir"
+            sched_path = root / "chain.sched.uhir"
+            alloc_path.write_text(alloc, encoding="utf-8")
+
+            alap_module = Path.cwd() / "alap_scheduler.py"
+            self.assertEqual(
+                main(
+                    [
+                        "sched",
+                        str(alloc_path),
+                        "--algo",
+                        f"{alap_module}:ALAPScheduler",
+                        "--sgu_latency_max",
+                        "asap",
+                        "-o",
+                        str(sched_path),
+                    ]
+                ),
+                0,
+            )
+
+            sched_text = sched_path.read_text(encoding="utf-8")
+            self.assertIn("node v1 = load A, i : i32 class=FU_GENERIC ii=1 delay=1 start=0 end=0", sched_text)
+            self.assertIn("node v2 = mul v1, c : i32 class=FU_GENERIC ii=1 delay=1 start=1 end=1", sched_text)
+            self.assertIn("node v3 = add acc, v2 : i32 class=FU_GENERIC ii=1 delay=1 start=2 end=2", sched_text)
+            self.assertIn("latency 3", sched_text)
+
     def test_alloc_command_can_emit_dummy_executability_graph(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -938,5 +1212,5 @@ block entry:
     def test_hls_placeholder_commands_exist(self) -> None:
         stderr = io.StringIO()
         with redirect_stderr(stderr):
-            self.assertEqual(main(["hls-sched", "foo.uir", "--algo", "list", "-o", "foo.sched"]), 1)
-        self.assertIn("not implemented yet", stderr.getvalue())
+            self.assertEqual(main(["hls-bind", "foo.sched.uhir", "-o", "foo.bind.uhir"]), 1)
+        self.assertIn("'hls-bind' is not implemented yet", stderr.getvalue())

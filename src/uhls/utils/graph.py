@@ -106,3 +106,58 @@ def assert_acyclic(
 
     for node in nodes:
         visit(node)
+
+
+def topological_sort(
+    nodes: Iterable[T],
+    neighbors: Callable[[T], Iterable[T]],
+    *,
+    key: Callable[[T], Hashable] | None = None,
+    cycle_error: Callable[[T], Exception] | None = None,
+) -> list[T]:
+    """Return one stable topological order or raise when the graph is cyclic."""
+    ordered_nodes = list(nodes)
+
+    if key is None:
+        node_keys = list(ordered_nodes)
+    else:
+        node_keys = [key(node) for node in ordered_nodes]
+
+    key_to_node: dict[Hashable, T] = {}
+    for node, node_key in zip(ordered_nodes, node_keys, strict=False):
+        key_to_node.setdefault(node_key, node)
+
+    adjacency: dict[Hashable, list[Hashable]] = {node_key: [] for node_key in key_to_node}
+    indegree: dict[Hashable, int] = {node_key: 0 for node_key in key_to_node}
+    seen_edges: set[tuple[Hashable, Hashable]] = set()
+
+    for node, source_key in zip(ordered_nodes, node_keys, strict=False):
+        for child in neighbors(node):
+            target_key = child if key is None else key(child)
+            if target_key not in key_to_node:
+                continue
+            edge_key = (source_key, target_key)
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+            adjacency[source_key].append(target_key)
+            indegree[target_key] += 1
+
+    ready: deque[Hashable] = deque(node_key for node_key in node_keys if indegree[node_key] == 0)
+    topo_keys: list[Hashable] = []
+    while ready:
+        node_key = ready.popleft()
+        topo_keys.append(node_key)
+        for child_key in adjacency[node_key]:
+            indegree[child_key] -= 1
+            if indegree[child_key] == 0:
+                ready.append(child_key)
+
+    if len(topo_keys) != len(key_to_node):
+        cyclic_key = next(node_key for node_key, degree in indegree.items() if degree > 0)
+        cyclic_node = key_to_node[cyclic_key]
+        if cycle_error is not None:
+            raise cycle_error(cyclic_node)
+        raise ValueError(f"graph contains a cycle involving {cyclic_node!r}")
+
+    return [key_to_node[node_key] for node_key in topo_keys]

@@ -627,18 +627,21 @@ def opt_cmd(input_path: Path, passes: str, pass_args: tuple[str, ...], output: P
         f"Registered passes: {_registered_gopt_help()}.\n"
         "External pass syntax: /path/to/pass.py:Symbol\n"
         "\n"
-        "Example: uhls gopt input.seq.uhir -p infer_static -o output.seq.uhir\n"
+        "Example: uhls gopt input.seq.uhir -p infer_loops,translate_loop_dialect -o output.seq.uhir\n"
         "\n"
         "More examples:\n"
         "\n"
         "\b\n"
-        "  uhls gopt input.seq.uhir -p infer_static -o output.seq.uhir\n"
+        "  uhls gopt input.seq.uhir -p infer_loops,translate_loop_dialect -o output.seq.uhir\n"
         "\n"
         "\b\n"
-        "  uhls gopt input.seq.uhir -p infer_static,simplify_static_control -o output.seq.uhir\n"
+        "  uhls gopt input.seq.uhir -p infer_loops,translate_loop_dialect,infer_static -o output.seq.uhir\n"
         "\n"
         "\b\n"
-        "  uhls gopt input.seq.uhir -p infer_static,simplify_static_control --dot -o output.dot\n"
+        "  uhls gopt input.seq.uhir -p infer_loops,translate_loop_dialect,infer_static,simplify_static_control -o output.seq.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls gopt input.seq.uhir -p infer_loops,translate_loop_dialect,infer_static,simplify_static_control --dot -o output.dot\n"
         "\n"
         "\b\n"
         "  uhls gopt input.seq.uhir -p /path/to/pass.py:Symbol -o output.seq.uhir\n"
@@ -651,7 +654,8 @@ def opt_cmd(input_path: Path, passes: str, pass_args: tuple[str, ...], output: P
     required=True,
     help=(
         "Comma-separated µhIR graph-optimization passes. "
-        "Use registered pass names or external /path/to/pass.py:Symbol values."
+        "Use registered pass names or external /path/to/pass.py:Symbol values. "
+        "Use 'uhls gopt -h <pass>' for pass-specific help."
     ),
 )
 @click.option(

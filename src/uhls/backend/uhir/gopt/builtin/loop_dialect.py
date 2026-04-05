@@ -5,23 +5,21 @@ from __future__ import annotations
 from copy import deepcopy
 
 from uhls.backend.uhir.model import UHIRDesign
-from uhls.backend.uhir.gopt.loops import collect_explicit_loops
+from uhls.backend.uhir.gopt.loops import collect_explicit_loops, collect_loop_candidates, explicit_loop_from_candidate
 
 
 class LoopDialectPass:
     """Own explicit loop-dialect shape for seq-stage µhIR."""
 
-    name = "loop_dialect"
+    name = "translate_loop_dialect"
 
     def run(self, ir: UHIRDesign) -> UHIRDesign:
         if ir.stage != "seq":
-            raise ValueError(f"loop_dialect expects seq-stage µhIR, got stage '{ir.stage}'")
+            raise ValueError(f"translate_loop_dialect expects seq-stage µhIR, got stage '{ir.stage}'")
 
         result = deepcopy(ir)
-
-        # Today seq still materializes explicit loop hierarchy directly.
-        # Keep this pass as a stable ownership boundary now, then teach it to
-        # rewrite branch/backedge-only seq-stage µhIR into explicit loop/body/
-        # empty regions once seq becomes a pure structural importer.
-        _ = collect_explicit_loops(result)
+        if collect_explicit_loops(result):
+            return result
+        for candidate in collect_loop_candidates(result):
+            result = explicit_loop_from_candidate(result, candidate)
         return result

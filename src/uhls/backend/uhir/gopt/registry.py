@@ -28,10 +28,11 @@ _GOPT_PASS_SPECS: tuple[GOptPassSpec, ...] = (
         aliases=("loops",),
     ),
     GOptPassSpec(
-        name="loop_dialect",
+        name="translate_loop_dialect",
         factory=LoopDialectPass,
         description="Own explicit loop-dialect shaping on seq-stage µhIR; today it preserves explicit loop hierarchy.",
-        example="uhls gopt input.seq.uhir -p infer_loops,loop_dialect -o output.seq.uhir",
+        example="uhls gopt input.seq.uhir -p infer_loops,translate_loop_dialect -o output.seq.uhir",
+        aliases=("loop_dialect",),
     ),
     GOptPassSpec(
         name="infer_static",

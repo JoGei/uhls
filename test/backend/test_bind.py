@@ -20,7 +20,14 @@ from uhls.frontend import lower_source_to_uir
 class BindingLoweringTests(unittest.TestCase):
     @staticmethod
     def _infer_static(design):
-        return run_gopt_passes(design, [create_builtin_gopt_pass("infer_static")])
+        return run_gopt_passes(
+            design,
+            [
+                create_builtin_gopt_pass("infer_loops"),
+                create_builtin_gopt_pass("loop_dialect"),
+                create_builtin_gopt_pass("infer_static"),
+            ],
+        )
 
     def _full_executability_graph(self) -> ExecutabilityGraph:
         operations = (
@@ -454,10 +461,10 @@ class BindingLoweringTests(unittest.TestCase):
             if "|" in line and line.split("|", 1)[0].strip().isdigit()
         ]
         last_time_line = max(time_lines, key=lambda line: int(line.split("|", 1)[0].strip()))
-        self.assertTrue(ret_line.startswith("  25 |") or ret_line.startswith("25 |"))
+        self.assertTrue(ret_line.startswith("  28 |") or ret_line.startswith("28 |"))
         self.assertIn("@3 add", last_add_line)
         self.assertNotIn(" ret", last_add_line)
-        self.assertTrue(last_time_line.startswith("  25 |") or last_time_line.startswith("25 |"))
+        self.assertTrue(last_time_line.startswith("  28 |") or last_time_line.startswith("28 |"))
 
     def test_flattened_binding_colors_register_values_per_occurrence(self) -> None:
         sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))

@@ -124,10 +124,48 @@ block for_exit_4:
             uir_path.write_text(uir, encoding="utf-8")
 
             self.assertEqual(main(["seq", str(uir_path), "-o", str(seq_path)]), 0)
-            self.assertEqual(main(["gopt", str(seq_path), "-p", "infer_static", "-o", str(opt_path)]), 0)
+            self.assertEqual(main(["gopt", str(seq_path), "-p", "infer_loops,translate_loop_dialect,infer_static", "-o", str(opt_path)]), 0)
 
             optimized_text = opt_path.read_text(encoding="utf-8")
             self.assertIn("static_trip_count=4", optimized_text)
+
+    def test_gopt_command_runs_infer_loops_on_seq_uhir(self) -> None:
+        uir = """func dot4(A:i32[], B:i32[]) -> i32
+
+block entry:
+    br for_header_1
+
+block for_header_1:
+    i_1:i32 = phi(entry: 0:i32, for_body_2: t4_0)
+    sum_1:i32 = phi(entry: 0:i32, for_body_2: inl_mac_0_t1_0)
+    t0_0:i1 = lt i_1, 4:i32
+    cbr t0_0, for_body_2, for_exit_4
+
+block for_body_2:
+    t1_0:i32 = load A[i_1]
+    t2_0:i32 = load B[i_1]
+    inl_mac_0_t0_0:i32 = mul t1_0, t2_0
+    inl_mac_0_t1_0:i32 = add sum_1, inl_mac_0_t0_0
+    t4_0:i32 = add i_1, 1:i32
+    br for_header_1
+
+block for_exit_4:
+    ret sum_1
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uir_path = root / "dot4.uir"
+            seq_path = root / "dot4.seq.uhir"
+            opt_path = root / "dot4.loop.seq.uhir"
+            uir_path.write_text(uir, encoding="utf-8")
+
+            self.assertEqual(main(["seq", str(uir_path), "-o", str(seq_path)]), 0)
+            self.assertEqual(main(["gopt", str(seq_path), "-p", "infer_loops,translate_loop_dialect", "-o", str(opt_path)]), 0)
+
+            optimized_text = opt_path.read_text(encoding="utf-8")
+            self.assertIn("loop_id=L0", optimized_text)
+            self.assertIn("loop_header=true", optimized_text)
+            self.assertIn("loop_backedge=true", optimized_text)
 
     def test_gopt_command_accepts_external_pass(self) -> None:
         seq = """design add1
@@ -216,7 +254,7 @@ region proc_add1 kind=procedure {
             dot_path = root / "add1.gopt.dot"
             seq_path.write_text(seq, encoding="utf-8")
 
-            self.assertEqual(main(["gopt", str(seq_path), "-p", "infer_static", "--dot", "-o", str(dot_path)]), 0)
+            self.assertEqual(main(["gopt", str(seq_path), "-p", "infer_loops,translate_loop_dialect,infer_static", "--dot", "-o", str(dot_path)]), 0)
 
             dot_text = dot_path.read_text(encoding="utf-8")
             self.assertIn('digraph "add1.seq"', dot_text)
@@ -259,7 +297,7 @@ block for_exit_4:
                         "gopt",
                         str(seq_path),
                         "-p",
-                        "infer_static,simplify_static_control",
+                        "infer_loops,translate_loop_dialect,infer_static,simplify_static_control",
                         "-o",
                         str(opt_path),
                     ]

@@ -15,7 +15,6 @@ from uhls.backend.uhir.model import (
     UHIRRegionRef,
     UHIRSourceMap,
 )
-from uhls.middleend.passes.analyze import detect_loops
 from uhls.middleend.uir import (
     ArrayType,
     BinaryOp,
@@ -36,6 +35,7 @@ from uhls.middleend.uir import (
     type_name,
 )
 from uhls.utils.graph import breadth_first_walk
+from .seq_loops import LoopSummary, detect_top_level_loops, loop_defined_names, lower_loop_body_unit, lower_loop_empty_unit
 
 
 @dataclass(slots=True)
@@ -201,16 +201,6 @@ def _reachable_external_callees(module: Module, reachable: list[Function]) -> li
 
 
 @dataclass
-class _LoopSummary:
-    header: str
-    region_id: str
-    helper_id: str
-    body_region_id: str
-    empty_region_id: str
-    body: frozenset[str]
-
-
-@dataclass
 class _BranchSummary:
     header: str
     true_target: str
@@ -262,22 +252,43 @@ class _SeqLowerer:
 
     def _lower_function(self, function: Function) -> list[SGUnit]:
         proc_id = _function_region_id(function.name)
-        loop_infos = detect_loops(function)
-        top_level_loops = self._top_level_loops(function, loop_infos)
+        top_level_loops = detect_top_level_loops(function)
         loop_by_header = {loop.header: loop for loop in top_level_loops}
         branch_layouts = self._branch_layouts(function, loop_by_header)
         branch_child_blocks = {label for layout in branch_layouts.values() for label in layout.child_blocks}
-        block_units = [self._lower_block(function, label, proc_id) for label in sorted(branch_child_blocks)]
+        loop_body_blocks = {label for loop in top_level_loops for label in loop.body if label != loop.header}
+        block_units = [
+            self._lower_block(function, label, proc_id)
+            for label in sorted(branch_child_blocks - set(loop_body_blocks))
+        ]
         block_units.extend(
             self._lower_branch_empty_unit(layout.empty_region_id, proc_id)
             for layout in branch_layouts.values()
             if layout.empty_region_id is not None
         )
-        loop_units: list[SGUnit] = []
+        synthetic_loop_units: list[SGUnit] = []
         for loop in top_level_loops:
-            loop_units.append(self._lower_loop_unit(function, loop, proc_id))
-            loop_units.append(self._lower_loop_body_unit(function, loop))
-            loop_units.append(self._lower_empty_unit(loop))
+            synthetic_loop_units.append(
+                lower_loop_body_unit(
+                    function,
+                    loop,
+                    parent_id=proc_id,
+                    kind="basicblock",
+                    make_unit=SGUnit,
+                    nop_node=self._nop_node,
+                    append_instructions=self._append_instructions,
+                    connect_produced_nodes_to_sink=self._connect_produced_nodes_to_sink,
+                )
+            )
+            synthetic_loop_units.append(
+                lower_loop_empty_unit(
+                    loop,
+                    parent_id=proc_id,
+                    make_unit=SGUnit,
+                    nop_node=self._nop_node,
+                    make_edge=SGEdge,
+                )
+            )
 
         proc_unit = SGUnit(id=proc_id, kind="procedure")
         source = self._nop_node("source")
@@ -290,7 +301,8 @@ class _SeqLowerer:
                 | {layout.empty_region_id for layout in branch_layouts.values() if layout.empty_region_id is not None}
             )
         )
-        proc_unit.region_refs.extend(sorted(loop.region_id for loop in top_level_loops))
+        proc_unit.region_refs.extend(sorted(loop.body_region_id for loop in top_level_loops))
+        proc_unit.region_refs.extend(sorted(loop.empty_region_id for loop in top_level_loops))
         self._lower_top_level_proc(
             function,
             proc_unit,
@@ -301,9 +313,9 @@ class _SeqLowerer:
             branch_layouts,
         )
 
-        return [proc_unit, *loop_units, *block_units]
+        return [proc_unit, *synthetic_loop_units, *block_units]
 
-    def _branch_layouts(self, function: Function, loop_by_header: dict[str, _LoopSummary]) -> dict[str, _BranchSummary]:
+    def _branch_layouts(self, function: Function, loop_by_header: dict[str, LoopSummary]) -> dict[str, _BranchSummary]:
         layouts: dict[str, _BranchSummary] = {}
         for block in function.blocks:
             terminator = block.terminator
@@ -347,7 +359,7 @@ class _SeqLowerer:
         proc_unit: SGUnit,
         source_id: str,
         sink_id: str,
-        loop_by_header: dict[str, _LoopSummary],
+        loop_by_header: dict[str, LoopSummary],
         branch_child_blocks: set[str],
         branch_layouts: dict[str, _BranchSummary],
     ) -> None:
@@ -364,20 +376,30 @@ class _SeqLowerer:
                 return
             if current in loop_by_header:
                 loop = loop_by_header[current]
+                header_block = block_map[current]
+                cursor, _ = self._append_instructions(
+                    proc_unit,
+                    header_block.instructions,
+                    cursor=cursor,
+                    node_defs=node_defs,
+                    last_memory=last_memory,
+                )
                 helper = SGNode(
-                    loop.helper_id,
-                    "loop",
-                    (),
-                    children=(loop.region_id,),
+                    self._new_node_id(),
+                    "branch",
+                    (_format_operand_name(header_block.terminator.cond),),
+                    children=(loop.body_region_id, loop.empty_region_id),
                 )
                 proc_unit.nodes.append(helper)
                 proc_unit.edges.append(SGEdge("data", cursor, helper.id))
-                proc_unit.edges.append(_hier_edge(helper.id, loop.region_id))
-                proc_unit.edges.append(_hier_edge(loop.region_id, helper.id))
-                for defined_name in _loop_defined_names(function, loop):
+                proc_unit.edges.append(_hier_edge(helper.id, loop.body_region_id, {"when": True}))
+                proc_unit.edges.append(_hier_edge(helper.id, loop.empty_region_id, {"when": False}))
+                proc_unit.edges.append(_hier_edge(loop.body_region_id, helper.id, {"when": True}))
+                proc_unit.edges.append(_hier_edge(loop.empty_region_id, helper.id, {"when": False}))
+                for defined_name in loop_defined_names(function, loop, instruction_dest=_instruction_dest):
                     node_defs[defined_name] = helper.id
                 cursor = helper.id
-                current = _loop_exit_target(block_map[current].terminator)
+                current = _loop_exit_target(header_block.terminator)
                 if current is None:
                     proc_unit.edges.append(SGEdge("data", cursor, sink_id))
                     return
@@ -509,23 +531,6 @@ class _SeqLowerer:
         unit.edges.append(SGEdge("data", node.id, unit.nodes[1].id))
         return node.id
 
-    def _top_level_loops(self, function: Function, loop_infos: list[object]) -> list[_LoopSummary]:
-        summaries: list[_LoopSummary] = []
-        for info in loop_infos:
-            if any(info.body < other.body for other in loop_infos):
-                continue
-            summaries.append(
-                _LoopSummary(
-                    header=info.header,
-                    region_id=_loop_region_id(function.name, info.header),
-                    helper_id=self._new_node_id(),
-                    body_region_id=_loop_body_region_id(function.name, info.header),
-                    empty_region_id=_loop_empty_region_id(function.name, info.header),
-                    body=info.body,
-                )
-            )
-        return summaries
-
     def _branch_join_target(
         self,
         function: Function,
@@ -544,86 +549,6 @@ class _SeqLowerer:
             if label in false_reachable and label not in {true_target, false_target}:
                 return label
         return None
-
-    def _lower_loop_unit(self, function: Function, loop: _LoopSummary, parent_id: str) -> SGUnit:
-        unit = SGUnit(id=loop.region_id, kind="loop", parent=parent_id)
-        source = self._nop_node("source")
-        sink = self._nop_node("sink")
-        unit.nodes.extend([source, sink])
-        unit.region_refs.extend([loop.body_region_id, loop.empty_region_id])
-
-        block_map = function.block_map()
-        header_block = block_map[loop.header]
-        node_defs: dict[str, str] = {}
-        last_memory: dict[str, str] = {}
-        compare_node_id: str | None = None
-
-        last_node_id, produced_nodes = self._append_instructions(
-            unit,
-            header_block.instructions,
-            cursor=source.id,
-            node_defs=node_defs,
-            last_memory=last_memory,
-        )
-        for instruction, node in zip(header_block.instructions, unit.nodes[2: 2 + len(header_block.instructions)], strict=False):
-            if isinstance(instruction, CompareOp):
-                compare_node_id = node.id
-
-        branch_id = self._new_node_id()
-        branch_operands = () if compare_node_id is None else (_format_operand_name(header_block.terminator.cond),)
-        unit.nodes.append(
-            SGNode(
-                branch_id,
-                "branch",
-                branch_operands,
-                children=(loop.body_region_id, loop.empty_region_id),
-            )
-        )
-        unit.edges.append(SGEdge("data", compare_node_id or last_node_id, branch_id))
-        unit.edges.append(_hier_edge(branch_id, loop.body_region_id, {"when": True}))
-        unit.edges.append(_hier_edge(branch_id, loop.empty_region_id, {"when": False}))
-        unit.edges.append(_hier_edge(loop.body_region_id, branch_id, {"when": True}))
-        unit.edges.append(_hier_edge(loop.empty_region_id, branch_id, {"when": False}))
-        unit.edges.append(SGEdge("data", branch_id, sink.id))
-
-        self._connect_produced_nodes_to_sink(unit, produced_nodes)
-        return unit
-
-    def _lower_loop_body_unit(self, function: Function, loop: _LoopSummary) -> SGUnit:
-        unit = SGUnit(id=loop.body_region_id, kind="body", parent=loop.region_id)
-        source = self._nop_node("source")
-        sink = self._nop_node("sink")
-        unit.nodes.extend([source, sink])
-        block_map = function.block_map()
-        ordered_blocks = [
-            block_map[block.label]
-            for block in function.blocks
-            if block.label in loop.body and block.label != loop.header
-        ]
-        node_defs: dict[str, str] = {}
-        last_memory: dict[str, str] = {}
-        produced_nodes: list[str] = []
-
-        for block in ordered_blocks:
-            _, block_nodes = self._append_instructions(
-                unit,
-                block.instructions,
-                cursor=source.id,
-                node_defs=node_defs,
-                last_memory=last_memory,
-            )
-            produced_nodes.extend(block_nodes)
-
-        self._connect_produced_nodes_to_sink(unit, produced_nodes)
-        return unit
-
-    def _lower_empty_unit(self, loop: _LoopSummary) -> SGUnit:
-        unit = SGUnit(id=loop.empty_region_id, kind="empty", parent=loop.region_id)
-        source = self._nop_node("source")
-        sink = self._nop_node("sink")
-        unit.nodes.extend([source, sink])
-        unit.edges.append(SGEdge("data", source.id, sink.id))
-        return unit
 
     def _lower_branch_empty_unit(self, region_id: str, parent_id: str) -> SGUnit:
         unit = SGUnit(id=region_id, kind="empty", parent=parent_id)
@@ -891,18 +816,6 @@ def _block_region_id(function_name: str, block_label: str) -> str:
     return f"bb_{_sanitize(function_name)}_{_sanitize(block_label)}"
 
 
-def _loop_region_id(function_name: str, header: str) -> str:
-    return f"loop_{_sanitize(function_name)}_{_sanitize(header)}"
-
-
-def _loop_body_region_id(function_name: str, header: str) -> str:
-    return f"loop_body_{_sanitize(function_name)}_{_sanitize(header)}"
-
-
-def _loop_empty_region_id(function_name: str, header: str) -> str:
-    return f"loop_empty_{_sanitize(function_name)}_{_sanitize(header)}"
-
-
 def _branch_empty_region_id(function_name: str, header: str, arm: str) -> str:
     return f"branch_empty_{_sanitize(function_name)}_{_sanitize(header)}_{_sanitize(arm)}"
 
@@ -991,20 +904,6 @@ def _loop_exit_target(terminator: object) -> str | None:
     if isinstance(terminator, CondBranchOp):
         return terminator.false_target
     return None
-
-
-def _loop_defined_names(function: Function, loop: _LoopSummary) -> set[str]:
-    block_map = function.block_map()
-    names: set[str] = set()
-    for label in loop.body:
-        block = block_map.get(label)
-        if block is None:
-            continue
-        for instruction in getattr(block, "instructions", []):
-            dest = _instruction_dest(instruction)
-            if dest is not None:
-                names.add(dest)
-    return names
 
 
 def _hier_edge(source: str, target: str, attributes: dict[str, AttributeValue] | None = None) -> SGEdge:

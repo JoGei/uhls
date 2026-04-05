@@ -82,7 +82,14 @@ class _FixedScheduler:
 class SchedulingLoweringTests(unittest.TestCase):
     @staticmethod
     def _infer_static(design):
-        return run_gopt_passes(design, [create_builtin_gopt_pass("infer_static")])
+        return run_gopt_passes(
+            design,
+            [
+                create_builtin_gopt_pass("infer_loops"),
+                create_builtin_gopt_pass("loop_dialect"),
+                create_builtin_gopt_pass("infer_static"),
+            ],
+        )
 
     def test_lower_alloc_to_sched_uses_builtin_asap_for_flat_regions(self) -> None:
         alloc_design = lower_seq_to_alloc(
@@ -211,10 +218,10 @@ class SchedulingLoweringTests(unittest.TestCase):
         self.assertIsNotNone(loop_region.latency)
         self.assertIsNotNone(body_region.latency)
         self.assertEqual(loop_branch.attributes["delay"], max(body_region.latency or 0, 0))
-        self.assertEqual(loop_compare.attributes["start"], 1)
-        self.assertEqual(loop_branch.attributes["start"], 2)
-        self.assertEqual(body_mul.attributes["start"], 3)
-        self.assertEqual(body_mul.attributes["end"], 3)
+        self.assertEqual(loop_compare.attributes["start"], 2)
+        self.assertEqual(loop_branch.attributes["start"], 3)
+        self.assertEqual(body_mul.attributes["start"], 4)
+        self.assertEqual(body_mul.attributes["end"], 4)
         iter_latency = loop_node.attributes["iter_latency"]
         iter_initiation_interval = loop_node.attributes["iter_initiation_interval"]
         iter_ramp_down = loop_node.attributes["iter_ramp_down"]

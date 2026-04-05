@@ -136,7 +136,7 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         assert proc is not None
         self.assertIn("branch", [node.opcode for node in proc.nodes])
 
-    def test_lower_frontend_for_loop_creates_loop_helper_and_loop_region(self) -> None:
+    def test_lower_frontend_for_loop_keeps_branch_based_shape_before_gopt_loop_dialect(self) -> None:
         module = lower_source_to_uir(
             """
             int32_t sum4(int32_t A[4]) {
@@ -154,26 +154,26 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         proc = design.get_region("proc_sum4")
         self.assertIsNotNone(proc)
         assert proc is not None
-        self.assertIn("loop", [node.opcode for node in proc.nodes])
-        loop_region = next((region for region in design.regions if region.kind == "loop"), None)
-        self.assertIsNotNone(loop_region)
-        assert loop_region is not None
-        self.assertIn("branch", [node.opcode for node in loop_region.nodes])
+        self.assertNotIn("loop", [node.opcode for node in proc.nodes])
+        self.assertIn("branch", [node.opcode for node in proc.nodes])
+        loop_region = design.get_region("loop_sum4_for_header_1")
+        self.assertIsNone(loop_region)
         self.assertIsNone(design.get_region("bb_sum4_entry"))
         self.assertIsNone(design.get_region("bb_sum4_for_exit_4"))
         self.assertIsNone(design.get_region("bb_sum4_for_header_1"))
         self.assertIsNone(design.get_region("bb_sum4_for_body_2"))
-        self.assertIn("phi", [node.opcode for node in loop_region.nodes])
-        self.assertIn("lt", [node.opcode for node in loop_region.nodes])
+        self.assertIn("phi", [node.opcode for node in proc.nodes])
+        self.assertIn("lt", [node.opcode for node in proc.nodes])
 
-        body_region = next((region for region in design.regions if region.kind == "body"), None)
+        body_region = next((region for region in design.regions if region.id.startswith("loop_body_")), None)
         empty_region = next((region for region in design.regions if region.kind == "empty"), None)
         self.assertIsNotNone(body_region)
         self.assertIsNotNone(empty_region)
         assert body_region is not None
         assert empty_region is not None
-        self.assertEqual(body_region.parent, loop_region.id)
-        self.assertEqual(empty_region.parent, loop_region.id)
+        self.assertEqual(body_region.parent, proc.id)
+        self.assertEqual(empty_region.parent, proc.id)
+        self.assertEqual(body_region.kind, "basicblock")
         self.assertIn("load", [node.opcode for node in body_region.nodes])
         self.assertIn("add", [node.opcode for node in body_region.nodes])
         body_add = next(node for node in body_region.nodes if node.opcode == "add")
@@ -181,23 +181,22 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         body_edges = {(edge.kind, edge.source, edge.target) for edge in body_region.edges}
         self.assertNotIn(("data", body_source.id, body_add.id), body_edges)
 
-        proc_loop = next(node for node in proc.nodes if node.opcode == "loop")
-        self.assertNotIn("static_trip_count", proc_loop.attributes)
+        proc_branch = next(node for node in proc.nodes if node.opcode == "branch")
+        self.assertNotIn("static_trip_count", proc_branch.attributes)
         proc_seq_edges = {(edge.source, edge.target) for edge in proc.edges if edge.kind == "seq"}
         proc_data_edges = {(edge.source, edge.target) for edge in proc.edges if edge.kind == "data"}
-        self.assertIn((proc_loop.id, loop_region.id), proc_seq_edges)
-        self.assertIn((loop_region.id, proc_loop.id), proc_seq_edges)
-        self.assertIn((proc_loop.id, next(node for node in proc.nodes if node.opcode == "ret").id), proc_data_edges)
+        self.assertIn((proc_branch.id, body_region.id), proc_seq_edges)
+        self.assertIn((body_region.id, proc_branch.id), proc_seq_edges)
+        self.assertIn((proc_branch.id, next(node for node in proc.nodes if node.opcode == "ret").id), proc_data_edges)
         self.assertNotIn("bb_sum4_entry", [ref.target for ref in proc.region_refs])
         self.assertNotIn("bb_sum4_for_exit_4", [ref.target for ref in proc.region_refs])
 
-        loop_branch = next(node for node in loop_region.nodes if node.opcode == "branch")
-        self.assertNotIn("static_trip_count", loop_branch.attributes)
-        loop_seq_edges = {(edge.source, edge.target) for edge in loop_region.edges if edge.kind == "seq"}
-        loop_data_edges = {(edge.source, edge.target) for edge in loop_region.edges if edge.kind == "data"}
-        self.assertIn((body_region.id, loop_branch.id), loop_seq_edges)
-        self.assertIn((empty_region.id, loop_branch.id), loop_seq_edges)
-        self.assertIn((next(node for node in loop_region.nodes if node.opcode == "lt").id, loop_branch.id), loop_data_edges)
+        self.assertNotIn("static_trip_count", proc_branch.attributes)
+        self.assertEqual(proc_branch.attributes.get("true_child"), body_region.id)
+        self.assertEqual(proc_branch.attributes.get("false_child"), empty_region.id)
+        self.assertIn((body_region.id, proc_branch.id), proc_seq_edges)
+        self.assertIn((empty_region.id, proc_branch.id), proc_seq_edges)
+        self.assertIn((next(node for node in proc.nodes if node.opcode == "lt").id, proc_branch.id), proc_data_edges)
 
     def test_lower_frontend_runtime_bound_loop_has_no_static_trip_count(self) -> None:
         module = lower_source_to_uir(
@@ -217,14 +216,8 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         proc = design.get_region("proc_sumN")
         self.assertIsNotNone(proc)
         assert proc is not None
-        proc_loop = next(node for node in proc.nodes if node.opcode == "loop")
-        loop_region = next((region for region in design.regions if region.kind == "loop"), None)
-        self.assertIsNotNone(loop_region)
-        assert loop_region is not None
-        loop_branch = next(node for node in loop_region.nodes if node.opcode == "branch")
-
-        self.assertNotIn("static_trip_count", proc_loop.attributes)
-        self.assertNotIn("static_trip_count", loop_branch.attributes)
+        proc_branch = next(node for node in proc.nodes if node.opcode == "branch")
+        self.assertNotIn("static_trip_count", proc_branch.attributes)
 
     def test_lower_parsed_uir_loop_has_no_static_trip_count(self) -> None:
         module = parse_module(
@@ -260,14 +253,8 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         proc = design.get_region("proc_dot4")
         self.assertIsNotNone(proc)
         assert proc is not None
-        proc_loop = next(node for node in proc.nodes if node.opcode == "loop")
-        loop_region = next((region for region in design.regions if region.kind == "loop"), None)
-        self.assertIsNotNone(loop_region)
-        assert loop_region is not None
-        loop_branch = next(node for node in loop_region.nodes if node.opcode == "branch")
-
-        self.assertNotIn("static_trip_count", proc_loop.attributes)
-        self.assertNotIn("static_trip_count", loop_branch.attributes)
+        proc_branch = next(node for node in proc.nodes if node.opcode == "branch")
+        self.assertNotIn("static_trip_count", proc_branch.attributes)
 
     def test_lower_parsed_uir_post_loop_compare_depends_on_loop_helper(self) -> None:
         module = parse_module(
@@ -314,17 +301,17 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         self.assertIsNotNone(proc)
         assert proc is not None
 
-        loop_node = next(node for node in proc.nodes if node.opcode == "loop")
         compare_node = next(node for node in proc.nodes if node.opcode == "lt" and node.operands == ("sum_1", "0:i32"))
-        branch_node = next(node for node in proc.nodes if node.opcode == "branch")
-        phi_node = next(node for node in proc.nodes if node.opcode == "phi")
+        loop_branch_node = next(node for node in proc.nodes if node.opcode == "branch" and node.operands == ("t0_0",))
+        branch_node = next(node for node in proc.nodes if node.opcode == "branch" and node.operands == ("t5_0",))
+        phi_node = next(node for node in proc.nodes if node.opcode == "phi" and node.operands == ("sum_1", "0:i32"))
         ret_node = next(node for node in proc.nodes if node.opcode == "ret")
         proc_data_edges = {(edge.source, edge.target) for edge in proc.edges if edge.kind == "data"}
 
-        self.assertIn((loop_node.id, compare_node.id), proc_data_edges)
+        self.assertIn((loop_branch_node.id, compare_node.id), proc_data_edges)
         self.assertIn((branch_node.id, phi_node.id), proc_data_edges)
         self.assertIn((phi_node.id, ret_node.id), proc_data_edges)
-        self.assertNotIn((loop_node.id, phi_node.id), proc_data_edges)
+        self.assertNotIn((branch_node.id, compare_node.id), proc_data_edges)
         self.assertIsNone(design.get_region("bb_dot4_if_end_7"))
 
         then_region = design.get_region("bb_dot4_if_then_5")

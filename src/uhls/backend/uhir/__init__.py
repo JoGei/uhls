@@ -52,6 +52,13 @@ def lower_alloc_to_sched(*args: object, **kwargs: object) -> object:
     return _impl(*args, **kwargs)
 
 
+def lower_sched_to_bind(*args: object, **kwargs: object) -> object:
+    """Lower sched-stage µhIR to bind-stage µhIR."""
+    from uhls.backend.hls.bind import lower_sched_to_bind as _impl
+
+    return _impl(*args, **kwargs)
+
+
 def dummy_executability_graph(*args: object, **kwargs: object) -> object:
     """Build one starter executability graph covering canonical µIR ops."""
     from uhls.backend.hls.alloc import dummy_executability_graph as _impl
@@ -94,6 +101,7 @@ __all__ = [
     "format_uhir",
     "lower_alloc_to_sched",
     "lower_module_to_seq",
+    "lower_sched_to_bind",
     "lower_seq_to_alloc",
     "to_dot",
     "parse_uhir",

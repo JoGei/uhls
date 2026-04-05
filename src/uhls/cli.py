@@ -14,7 +14,18 @@ from typing import Callable
 
 import click
 
-from uhls.backend.hls import CallableSGUScheduler, builtin_scheduler_names, create_builtin_scheduler
+from uhls.backend.hls import (
+    BIND_DUMP_KINDS,
+    CallableSGUScheduler,
+    bind_dump_to_dot,
+    binding_to_dot,
+    builtin_binder_names,
+    builtin_scheduler_names,
+    create_builtin_binder,
+    create_builtin_scheduler,
+    format_bind_dump,
+    parse_bind_dump_spec,
+)
 from uhls.backend.uhir import (
     ExecutabilityGraph,
     UHIRParseError,
@@ -23,6 +34,7 @@ from uhls.backend.uhir import (
     format_uhir,
     lower_alloc_to_sched,
     lower_seq_to_alloc,
+    lower_sched_to_bind,
     lower_module_to_seq,
     parse_uhir_file,
     to_dot as to_uhir_dot,
@@ -594,13 +606,93 @@ def sched_cmd(input_path: Path, algo: str | None, sgu_latency_max: str | None, o
     _write_or_print_text(format_uhir(scheduled), output)
 
 
-@cli.command("hls-bind")
-@click.argument("input_path", metavar="input")
-@click.option("-o", "--output")
-def hls_bind_cmd(input_path: str, output: str | None) -> None:
-    """Placeholder for binding flows."""
-    del input_path, output
-    raise NotImplementedError("'hls-bind' is not implemented yet")
+@cli.command(
+    "bind",
+    help=(
+        "Bind sched-stage µhIR operations to concrete resource instances.\n"
+        "\n"
+        "Examples:\n"
+        "\n"
+        "\b\n"
+        "  uhls bind input.sched.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls bind input.sched.uhir --algo left_edge -o output.bind.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls bind input.sched.uhir --algo left_edge --flatten -o output.bind.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls bind input.bind.uhir --dump conflict\n"
+        "\n"
+        "\b\n"
+        "  uhls bind input.sched.uhir --algo left_edge --dump conflict --dot\n"
+        "\n"
+        "\b\n"
+        "  uhls bind input.bind.uhir --dump trp,trp_unroll --dot --compact\n"
+        "\n"
+        "\b\n"
+        "  uhls bind input.bind.uhir --dump dfgsb,dfgsb_unroll --dot\n"
+    ),
+)
+@click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--algo", help="Operation binder name. Currently implemented: left_edge.")
+@click.option(
+    "--flatten",
+    is_flag=True,
+    help="Flatten fully static hierarchical schedules into one global occurrence space before binding. Errors on non-static loop timing.",
+)
+@click.option(
+    "--dump",
+    "dump_spec",
+    help=(
+        "Bind analysis dump(s): "
+        + ", ".join(BIND_DUMP_KINDS)
+        + ". Pass one kind or a comma-separated list."
+    ),
+)
+@click.option("--dot", is_flag=True, help="Render bind dump(s) as DOT. Without --dump, acts like --dump=conflict.")
+@click.option("--compact", is_flag=True, help="Use compact labels for bind dump rendering.")
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
+def bind_cmd(
+    input_path: Path,
+    algo: str | None,
+    flatten: bool,
+    dump_spec: str | None,
+    dot: bool,
+    compact: bool,
+    output: Path | None,
+) -> None:
+    """Bind sched-stage µhIR operations to concrete resources."""
+    design = parse_uhir_file(input_path)
+
+    dump_kinds: tuple[str, ...] = ()
+    if dump_spec is not None:
+        try:
+            dump_kinds = parse_bind_dump_spec(dump_spec)
+        except ValueError as exc:
+            raise CLIError(str(exc)) from exc
+    elif dot:
+        dump_kinds = ("conflict",)
+
+    if dump_kinds:
+        if design.stage == "bind":
+            bound = design
+        elif design.stage == "sched":
+            if algo is None:
+                raise CLIError("'bind' requires --algo when dumping from sched-stage µhIR input")
+            bound = lower_sched_to_bind(design, binder=_lookup_operation_binder(algo, binder_kwargs={"flatten": flatten}))
+        else:
+            raise CLIError(f"'bind --dump' expects sched/bind-stage µhIR input, got stage '{design.stage}'")
+        rendered = bind_dump_to_dot(bound, dump_kinds, compact=compact) if dot else format_bind_dump(bound, dump_kinds, compact=compact)
+        _write_or_print_text(rendered, output)
+        return
+
+    if design.stage != "sched":
+        raise CLIError(f"'bind' expects sched-stage µhIR input unless --dump is used, got stage '{design.stage}'")
+    bound = lower_sched_to_bind(design, binder=_lookup_operation_binder(algo, binder_kwargs={"flatten": flatten}))
+    rendered = format_uhir(bound)
+    _write_or_print_text(rendered, output)
 
 
 @cli.command("hls-emit")
@@ -941,6 +1033,16 @@ def _lookup_flat_sgu_scheduler(name: str | None, scheduler_kwargs: dict[str, obj
     except ValueError as exc:
         supported = ", ".join(builtin_scheduler_names())
         raise CLIError(f"unknown flat SGU scheduler '{spec_text}'; expected one of: {supported} or /path/to/scheduler.py:Symbol") from exc
+
+
+def _lookup_operation_binder(name: str | None, binder_kwargs: dict[str, object] | None = None) -> object:
+    spec_text = "left_edge" if name is None else name.strip()
+    effective_binder_kwargs = {} if binder_kwargs is None else dict(binder_kwargs)
+    try:
+        return create_builtin_binder(spec_text, **effective_binder_kwargs)
+    except ValueError as exc:
+        supported = ", ".join(builtin_binder_names())
+        raise CLIError(f"unknown operation binder '{spec_text}'; expected one of: {supported}") from exc
 
 def _lookup_opt_pass(name: str, pass_args: tuple[str, ...] = ()) -> object:
     if _looks_like_external_python_symbol_spec(name):

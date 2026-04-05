@@ -34,7 +34,7 @@ _REGION_REF_RE = re.compile(rf"^region_ref\s+({_IDENT_RE})$")
 _NODE_RE = re.compile(rf"^node\s+({_IDENT_RE})\s*=\s*(.+)$")
 _EDGE_RE = re.compile(rf"^edge\s+({_IDENT_RE})\s+(\S+)\s*(->|--)\s*(\S+)(?:\s+(.*))?$")
 _MAP_RE = re.compile(rf"^map\s+({_IDENT_RE})\s*<-\s*(\S+)$")
-_STEPS_RE = re.compile(r"^steps\s+(-?\d+)\.\.(-?\d+)$")
+_STEPS_RE = re.compile(r"^steps\s+(.+)$")
 _LATENCY_RE = re.compile(r"^latency\s+(-?\d+)$")
 _II_RE = re.compile(r"^ii\s+(-?\d+)$")
 _VALUE_RE = re.compile(r"^value\s+(\S+)\s*->\s*(\S+)\s+(.+)$")
@@ -231,7 +231,7 @@ def _parse_region(lines: list[str], index: int) -> tuple[UHIRRegion, int]:
         elif match := _MAP_RE.fullmatch(line):
             region.mappings.append(UHIRSourceMap(match.group(1), match.group(2)))
         elif match := _STEPS_RE.fullmatch(line):
-            region.steps = (int(match.group(1)), int(match.group(2)))
+            region.steps = _parse_steps_interval(match.group(1), line_number)
         elif match := _LATENCY_RE.fullmatch(line):
             region.latency = int(match.group(1))
         elif match := _II_RE.fullmatch(line):
@@ -263,10 +263,54 @@ def _parse_value_binding(producer: str, register: str, attrs_text: str, line_num
     if attrs:
         unknown = ", ".join(sorted(attrs))
         raise UHIRParseError(f"unsupported value binding attributes at line {line_number}: {unknown}")
+    if isinstance(live, tuple):
+        normalized_live = ",".join(f"[{str(item).strip()}]" for item in live)
+        return UHIRValueBinding(producer, register, _parse_live_intervals(normalized_live, line_number))
     if not isinstance(live, str):
         raise UHIRParseError(f"value binding is missing live=... at line {line_number}")
-    start_text, end_text = _split_range(live, line_number)
-    return UHIRValueBinding(producer, register, int(start_text), int(end_text))
+    return UHIRValueBinding(producer, register, _parse_live_intervals(live, line_number))
+
+
+def _parse_steps_interval(text: str, line_number: int) -> tuple[int, int]:
+    normalized = text.strip()
+    if not (normalized.startswith("[") and normalized.endswith("]")):
+        raise UHIRParseError(f"steps interval must use [start:end] syntax at line {line_number}: {normalized!r}")
+    body = normalized[1:-1].strip()
+    if ":" not in body:
+        raise UHIRParseError(f"steps interval must use [start:end] syntax at line {line_number}: {normalized!r}")
+    start_text, end_text = (piece.strip() for piece in body.split(":", 1))
+    try:
+        start = int(start_text)
+        end = int(end_text)
+    except ValueError as exc:
+        raise UHIRParseError(f"steps interval must use integer bounds at line {line_number}: {normalized!r}") from exc
+    if start > end:
+        raise UHIRParseError(f"steps interval must satisfy start<=end at line {line_number}: {normalized!r}")
+    return start, end
+
+
+def _parse_live_intervals(text: str, line_number: int) -> tuple[tuple[int, int], ...]:
+    normalized = text.strip()
+    intervals: list[tuple[int, int]] = []
+    for item in _split_top_level(normalized):
+        part = item.strip()
+        if not part.startswith("[") or not part.endswith("]"):
+            raise UHIRParseError(f"value binding live interval must use [start:end] syntax at line {line_number}: {part!r}")
+        body = part[1:-1].strip()
+        if ":" not in body:
+            raise UHIRParseError(f"value binding live interval is missing ':' at line {line_number}: {part!r}")
+        start_text, end_text = (piece.strip() for piece in body.split(":", 1))
+        try:
+            start = int(start_text)
+            end = int(end_text)
+        except ValueError as exc:
+            raise UHIRParseError(f"value binding live interval must use integer bounds at line {line_number}: {part!r}") from exc
+        if start > end:
+            raise UHIRParseError(f"value binding interval must satisfy start<=end at line {line_number}: {part!r}")
+        intervals.append((start, end))
+    if not intervals:
+        raise UHIRParseError(f"value binding is missing one or more live intervals at line {line_number}")
+    return tuple(intervals)
 
 
 def _parse_mux(mux_id: str, attrs_text: str, line_number: int) -> UHIRMux:
@@ -285,14 +329,17 @@ def _parse_mux(mux_id: str, attrs_text: str, line_number: int) -> UHIRMux:
 
 def _split_node_type(text: str) -> tuple[str, str | None]:
     depth = 0
+    split_index: int | None = None
     for index, char in enumerate(text):
         if char in "([<":
             depth += 1
         elif char in ")]>":
             depth -= 1
         elif char == ":" and depth == 0:
-            return text[:index].strip(), text[index + 1 :].strip() or None
-    return text.strip(), None
+            split_index = index
+    if split_index is None:
+        return text.strip(), None
+    return text[:split_index].strip(), text[split_index + 1 :].strip() or None
 
 
 def _split_attr_suffix(text: str) -> tuple[str, dict[str, AttributeValue]]:
@@ -516,7 +563,11 @@ def _validate_design(design: UHIRDesign) -> None:
                     used_canonical_operations.add(operation)
             if design.stage == "bind":
                 bind_target = node.attributes.get("bind")
-                if not isinstance(bind_target, str) or bind_target not in resource_ids:
+                class_name = node.attributes.get("class")
+                if class_name != "CTRL":
+                    if not isinstance(bind_target, str) or bind_target not in resource_ids:
+                        raise UHIRParseError(f"bind-stage node '{node.id}' must reference a declared resource")
+                elif bind_target is not None and (not isinstance(bind_target, str) or bind_target not in resource_ids):
                     raise UHIRParseError(f"bind-stage node '{node.id}' must reference a declared resource")
         if region_stage in {"seq", "alloc", "exg"}:
             if region.steps is not None or region.latency is not None or region.initiation_interval is not None:
@@ -527,6 +578,8 @@ def _validate_design(design: UHIRDesign) -> None:
             raise UHIRParseError(f"exg µhIR region '{region.id}' must not contain source mappings")
         if design.stage == "sched" and (region.value_bindings or region.muxes):
             raise UHIRParseError(f"sched µhIR region '{region.id}' must not contain bind-only statements")
+        local_value_ids = {mapping.source_id for mapping in region.mappings}
+        local_value_ids.update(node.id for node in region.nodes)
         for value_binding in region.value_bindings:
             if value_binding.register not in resource_ids:
                 raise UHIRParseError(
@@ -535,6 +588,10 @@ def _validate_design(design: UHIRDesign) -> None:
             if resource_kinds[value_binding.register] != "reg":
                 raise UHIRParseError(
                     f"value binding '{value_binding.producer} -> {value_binding.register}' must target a reg resource"
+                )
+            if value_binding.producer not in local_value_ids:
+                raise UHIRParseError(
+                    f"value binding '{value_binding.producer} -> {value_binding.register}' must reference one mapped value id or local node id"
                 )
         for mux in region.muxes:
             if mux.output not in resource_ids:

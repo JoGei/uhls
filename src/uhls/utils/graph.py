@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Hashable, Iterable, Iterator
+from heapq import heappop, heappush
 from typing import TypeVar
 
 T = TypeVar("T")
@@ -161,3 +162,138 @@ def topological_sort(
         raise ValueError(f"graph contains a cycle involving {cyclic_node!r}")
 
     return [key_to_node[node_key] for node_key in topo_keys]
+
+
+def intervals_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    """Return whether two inclusive intervals overlap."""
+    return not (left[1] < right[0] or right[1] < left[0])
+
+
+def interval_conflicts(
+    items: Iterable[T],
+    interval: Callable[[T], tuple[int, int]],
+    *,
+    key: Callable[[T], Hashable] | None = None,
+) -> dict[Hashable, set[Hashable]]:
+    """Build one undirected interval-overlap conflict map."""
+    ordered_items = list(items)
+    item_keys: dict[Hashable, T] = {}
+    conflicts: dict[Hashable, set[Hashable]] = {}
+
+    for item in ordered_items:
+        item_key = item if key is None else key(item)
+        item_keys[item_key] = item
+        conflicts.setdefault(item_key, set())
+
+    for index, left_item in enumerate(ordered_items):
+        left_key = left_item if key is None else key(left_item)
+        left_interval = interval(left_item)
+        for right_item in ordered_items[index + 1 :]:
+            right_key = right_item if key is None else key(right_item)
+            right_interval = interval(right_item)
+            if not intervals_overlap(left_interval, right_interval):
+                continue
+            conflicts[left_key].add(right_key)
+            conflicts[right_key].add(left_key)
+
+    return conflicts
+
+
+def left_edge_color_intervals(
+    items: Iterable[T],
+    interval: Callable[[T], tuple[int, int]],
+    *,
+    key: Callable[[T], Hashable] | None = None,
+) -> dict[Hashable, int]:
+    """Assign one optimal interval-partition color using a left-edge sweep."""
+    ordered_items = list(items)
+    if key is None:
+        ordered_items.sort(key=interval)
+    else:
+        ordered_items.sort(key=lambda item: (*interval(item), key(item)))
+
+    colors: dict[Hashable, int] = {}
+    active_colors: list[tuple[int, int]] = []
+    reusable_colors: list[int] = []
+    next_color = 0
+
+    for item in ordered_items:
+        start, end = interval(item)
+        if end < start:
+            raise ValueError(f"invalid interval {start}..{end}")
+
+        while active_colors and active_colors[0][0] < start:
+            _, reusable_color = heappop(active_colors)
+            heappush(reusable_colors, reusable_color)
+
+        if reusable_colors:
+            chosen_color = heappop(reusable_colors)
+        else:
+            chosen_color = next_color
+            next_color += 1
+
+        item_key = item if key is None else key(item)
+        colors[item_key] = chosen_color
+        heappush(active_colors, (end, chosen_color))
+
+    return colors
+
+
+def greedy_color_graph(
+    nodes: Iterable[T],
+    conflicts: Callable[[T], Iterable[T]] | dict[Hashable, set[Hashable]],
+    *,
+    key: Callable[[T], object] | None = None,
+    node_key: Callable[[T], Hashable] | None = None,
+) -> dict[Hashable, int]:
+    """Assign one stable greedy graph coloring."""
+    ordered_nodes = list(nodes)
+    if key is not None:
+        ordered_nodes.sort(key=key)
+
+    if node_key is None:
+        keys = list(ordered_nodes)
+    else:
+        keys = [node_key(node) for node in ordered_nodes]
+
+    if callable(conflicts):
+        adjacency: dict[Hashable, set[Hashable]] = {}
+        for node, current_key in zip(ordered_nodes, keys, strict=False):
+            adjacency[current_key] = {
+                neighbor if node_key is None else node_key(neighbor)
+                for neighbor in conflicts(node)
+            }
+    else:
+        adjacency = {current_key: set(conflicts.get(current_key, set())) for current_key in keys}
+
+    colors: dict[Hashable, int] = {}
+    for current_key in keys:
+        used = {colors[neighbor] for neighbor in adjacency.get(current_key, set()) if neighbor in colors}
+        color = 0
+        while color in used:
+            color += 1
+        colors[current_key] = color
+    return colors
+
+
+def greedy_color(
+    items: Iterable[T],
+    conflicts: Callable[[T], Iterable[T]],
+    *,
+    key: Callable[[T], Hashable] | None = None,
+) -> dict[Hashable, int]:
+    """Color one conflict graph greedily in the provided item order."""
+    ordered_items = list(items)
+    if key is None:
+        item_keys = {item: item for item in ordered_items}
+    else:
+        item_keys = {item: key(item) for item in ordered_items}
+
+    colors: dict[Hashable, int] = {}
+    for item in ordered_items:
+        used = {colors[item_keys[neighbor]] for neighbor in conflicts(item) if item_keys.get(neighbor) in colors}
+        color = 0
+        while color in used:
+            color += 1
+        colors[item_keys[item]] = color
+    return colors

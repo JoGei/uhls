@@ -71,12 +71,21 @@ class UHIRRegionRef:
 
 @dataclass(slots=True, frozen=True)
 class UHIRValueBinding:
-    """One bind-stage value-to-register binding."""
+    """One bind-stage source-value-to-register binding."""
 
     producer: str
     register: str
-    live_start: int
-    live_end: int
+    live_intervals: tuple[tuple[int, int], ...]
+
+    @property
+    def live_start(self) -> int:
+        """Compatibility accessor for one binding's first live step."""
+        return self.live_intervals[0][0]
+
+    @property
+    def live_end(self) -> int:
+        """Compatibility accessor for one binding's last live step."""
+        return self.live_intervals[-1][1]
 
 
 @dataclass(slots=True)

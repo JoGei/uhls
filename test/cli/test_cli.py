@@ -274,7 +274,7 @@ region proc_add1 kind=procedure {
             self.assertIn("schedule kind=hierarchical", sched_text)
             self.assertIn("node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1 start=0 end=0", sched_text)
             self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1", sched_text)
-            self.assertIn("steps 0..1", sched_text)
+            self.assertIn("steps [0:1]", sched_text)
             self.assertIn("latency 2", sched_text)
 
     def test_sched_command_accepts_external_flat_sgu_scheduler(self) -> None:
@@ -320,7 +320,7 @@ def external_sched(region):
             self.assertIn("stage sched", sched_text)
             self.assertIn("node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1 start=4 end=4", sched_text)
             self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0 start=6 end=6", sched_text)
-            self.assertIn("steps 4..6", sched_text)
+            self.assertIn("steps [4:6]", sched_text)
             self.assertIn("latency 7", sched_text)
 
     def test_sched_command_accepts_external_alap_scheduler_with_asap_slack(self) -> None:
@@ -1209,8 +1209,340 @@ block entry:
             self.assertIn("has no attribute 'blocks'", rendered)
             self.assertNotIn("Traceback", rendered)
 
-    def test_hls_placeholder_commands_exist(self) -> None:
-        stderr = io.StringIO()
-        with redirect_stderr(stderr):
-            self.assertEqual(main(["hls-bind", "foo.sched.uhir", "-o", "foo.bind.uhir"]), 1)
-        self.assertIn("'hls-bind' is not implemented yet", stderr.getvalue())
+    def test_bind_command_lowers_sched_to_bind(self) -> None:
+        sched = """design add_pair
+stage sched
+schedule kind=control_steps
+
+region proc_add_pair kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add a, b : i32 class=FU_ADD ii=1 delay=1 start=0 end=0
+  node v2 = add c, d : i32 class=FU_ADD ii=1 delay=1 start=0 end=0
+  node v3 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v4 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v0 -> v2
+  edge data v1 -> v3
+  edge data v2 -> v3
+  edge data v3 -> v4
+
+  steps [0:1]
+  latency 2
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "add_pair.sched.uhir"
+            bind_path = root / "add_pair.bind.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            self.assertEqual(main(["bind", str(sched_path), "--algo", "left_edge", "-o", str(bind_path)]), 0)
+
+            bind_text = bind_path.read_text(encoding="utf-8")
+            self.assertIn("stage bind", bind_text)
+            self.assertIn("fu fu_add0 : FU_ADD", bind_text)
+            self.assertIn("fu fu_add1 : FU_ADD", bind_text)
+            self.assertIn("reg r_i32_0 : i32", bind_text)
+            self.assertIn("reg r_i32_1 : i32", bind_text)
+            self.assertIn("value v1 -> r_i32_0 live=[1:1]", bind_text)
+            self.assertIn("node v1 = add a, b : i32 class=FU_ADD ii=1 delay=1 start=0 end=0 bind=fu_add0", bind_text)
+
+    def test_bind_command_prefers_mapped_value_ids_in_emitted_bindings(self) -> None:
+        sched = """design mapped_values
+stage sched
+schedule kind=control_steps
+
+region proc_mapped_values kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add a, b : i32 class=FU_ADD ii=1 delay=1 start=0 end=0
+  node v2 = add v1, c : i32 class=FU_ADD ii=1 delay=1 start=1 end=1
+  node v3 = ret v2 class=CTRL ii=0 delay=0 start=2 end=2
+  node v4 = nop role=sink class=CTRL ii=0 delay=0 start=3 end=3
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  edge data v3 -> v4
+
+  map v1 <- t1_0
+  map v2 <- t2_0
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "mapped_values.sched.uhir"
+            bind_path = root / "mapped_values.bind.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            self.assertEqual(main(["bind", str(sched_path), "--algo", "left_edge", "-o", str(bind_path)]), 0)
+
+            bind_text = bind_path.read_text(encoding="utf-8")
+            self.assertIn("value t1_0 -> r_i32_0 live=[1:1]", bind_text)
+            self.assertIn("value t2_0 -> r_i32_0 live=[2:2]", bind_text)
+
+    def test_bind_command_can_render_conflict_dot(self) -> None:
+        sched = """design add_pair
+stage sched
+schedule kind=control_steps
+
+region proc_add_pair kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
+  node v2 = add c, d : i32 class=EWMS ii=1 delay=1 start=0 end=0
+  node v3 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v4 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v0 -> v2
+  edge data v1 -> v3
+  edge data v2 -> v3
+  edge data v3 -> v4
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "add_pair.sched.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["bind", str(sched_path), "--algo", "left_edge", "--dump", "conflict", "--dot"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn('digraph "add_pair.bind.dump"', rendered)
+            self.assertIn('subgraph "cluster_conflict_operation_ewms"', rendered)
+            self.assertIn('label="EWMS operation conflict graph"', rendered)
+            self.assertIn('subgraph "cluster_conflict_register_i32"', rendered)
+            self.assertIn('"v1" -> "v2" [label="proc_add_pair"', rendered)
+            self.assertIn('"v1" [label="v1 add ewms0"', rendered)
+            self.assertIn('"reg_v1" [label="reg_v1 reg r_i32_0"', rendered)
+
+    def test_bind_command_supports_compact_dot_labels(self) -> None:
+        sched = """design add1
+stage sched
+schedule kind=control_steps
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "add1.sched.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["bind", str(sched_path), "--algo", "left_edge", "--dump", "conflict", "--dot", "--compact"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn('"v1" [label="v1 + ewms0"', rendered)
+
+    def test_bind_command_requires_algo_for_sched_dump(self) -> None:
+        sched = """design add1
+stage sched
+schedule kind=control_steps
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "add1.sched.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["bind", str(sched_path), "--dump", "trp"]), 1)
+            self.assertIn("requires --algo", stderr.getvalue())
+
+    def test_bind_command_can_dump_from_bind_input_without_algo(self) -> None:
+        bind = """design add1
+stage bind
+schedule kind=control_steps
+
+resources {
+  fu ewms0 : EWMS
+  reg r_i32_0 : i32
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+
+  value v1 -> r_i32_0 live=[1:1]
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bind_path = root / "add1.bind.uhir"
+            bind_path.write_text(bind, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["bind", str(bind_path), "--dump", "trp"]), 0)
+            rendered = stdout.getvalue()
+            self.assertIn("bind_dump trp", rendered)
+            self.assertIn("region proc_add1 (time-resource plane)", rendered)
+            self.assertIn("r_i32_0", rendered)
+
+    def test_bind_command_can_dump_dfgsb_unroll(self) -> None:
+        bind = """design add1
+stage bind
+schedule kind=control_steps
+
+resources {
+  fu ewms0 : EWMS
+  reg r_i32_0 : i32
+}
+
+region proc_add1 kind=procedure {
+  map v1 <- t1_0
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+
+  value t1_0 -> r_i32_0 live=[1:1]
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bind_path = root / "add1.bind.uhir"
+            bind_path.write_text(bind, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["bind", str(bind_path), "--dump", "dfgsb_unroll"]), 0)
+            rendered = stdout.getvalue()
+            self.assertIn("bind_dump dfgsb_unroll", rendered)
+            self.assertIn("global (dataflow graph with schedule and binding, unrolled)", rendered)
+            self.assertIn("reg 1", rendered)
+
+    def test_bind_command_reuses_resources_across_mutually_exclusive_branch_sgus(self) -> None:
+        sched = """design branch_share
+stage sched
+schedule kind=hierarchical
+
+region proc_branch_share kind=procedure {
+  region_ref bb_true
+  region_ref bb_false
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = lt a, b : i1 class=EWMS ii=1 delay=1 start=0 end=0
+  node v2 = branch v1 true_child=bb_true false_child=bb_false class=CTRL ii=0 delay=1 start=1 end=1
+  node v3 = ret x class=CTRL ii=0 delay=0 start=3 end=3
+  node v4 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  edge data v3 -> v4
+}
+
+region bb_true kind=basic parent=proc_branch_share {
+  node t0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+  node t1 = add a, b : i32 class=EWMS ii=1 delay=1 start=2 end=2
+  node t2 = nop role=sink class=CTRL ii=0 delay=0 start=3 end=3
+
+  edge data t0 -> t1
+  edge data t1 -> t2
+}
+
+region bb_false kind=basic parent=proc_branch_share {
+  node f0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+  node f1 = add c, d : i32 class=EWMS ii=1 delay=1 start=2 end=2
+  node f2 = nop role=sink class=CTRL ii=0 delay=0 start=3 end=3
+
+  edge data f0 -> f1
+  edge data f1 -> f2
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "branch_share.sched.uhir"
+            bind_path = root / "branch_share.bind.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            self.assertEqual(main(["bind", str(sched_path), "--algo", "left_edge", "-o", str(bind_path)]), 0)
+
+            bind_text = bind_path.read_text(encoding="utf-8")
+            self.assertIn("fu ewms0 : EWMS", bind_text)
+            self.assertNotIn("fu ewms1 : EWMS", bind_text)
+            self.assertIn("node t1 = add a, b : i32 class=EWMS ii=1 delay=1 start=2 end=2 bind=ewms0", bind_text)
+            self.assertIn("node f1 = add c, d : i32 class=EWMS ii=1 delay=1 start=2 end=2 bind=ewms0", bind_text)
+
+    def test_bind_command_flatten_rejects_non_static_loop_design(self) -> None:
+        sched = """design dynamic_loop
+stage sched
+schedule kind=hierarchical
+
+region proc_dynamic_loop kind=procedure {
+  region_ref loop_header_1
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = loop child=loop_header_1 class=CTRL ii=0 delay=4 start=0 end=4
+  node v2 = nop role=sink class=CTRL ii=0 delay=0 start=5 end=5
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+}
+
+region loop_header_1 kind=loop parent=proc_dynamic_loop {
+  node h0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node h1 = branch c true_child=loop_body_1 false_child=loop_exit_1 class=CTRL ii=0 delay=1 start=1 end=1
+  node h2 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data h0 -> h1
+  edge data h1 -> h2
+}
+
+region loop_body_1 kind=basic parent=loop_header_1 {
+  node b0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+  node b1 = add a, b : i32 class=EWMS ii=1 delay=1 start=2 end=2
+  node b2 = nop role=sink class=CTRL ii=0 delay=0 start=3 end=3
+
+  edge data b0 -> b1
+  edge data b1 -> b2
+}
+
+region loop_exit_1 kind=basic parent=loop_header_1 {
+  node e0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+  node e1 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+
+  edge data e0 -> e1
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "dynamic_loop.sched.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["bind", str(sched_path), "--algo", "left_edge", "--flatten"]), 1)
+            self.assertIn("fully static design", stderr.getvalue())

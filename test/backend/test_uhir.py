@@ -93,7 +93,7 @@ class UHIRParserTests(unittest.TestCase):
               edge data v3 -> v4
               edge data v4 -> v5
 
-              steps 0..4
+              steps [0:4]
               latency 5
               ii 1
             }
@@ -300,8 +300,11 @@ class UHIRParserTests(unittest.TestCase):
               edge data v2 -> v3
               edge data v3 -> v4
 
-              value v1 -> r_p live=0..1
-              value v3 -> r_acc live=3..4
+              map v1 <- %p
+              map v3 <- %acc_next
+
+              value %p -> r_p live=[0:1]
+              value %acc_next -> r_acc live=[3:4]
 
               mux mx0 : input=[r_acc, r_next] output=r_acc sel=state
             }
@@ -312,13 +315,103 @@ class UHIRParserTests(unittest.TestCase):
         self.assertEqual([resource.id for resource in design.resources], ["mul0", "add0", "r_acc", "r_p", "mr0", "mw0"])
         region = design.regions[0]
         self.assertEqual(region.nodes[1].attributes["bind"], "mul0")
-        self.assertEqual(region.value_bindings[0].producer, "v1")
+        self.assertEqual(region.value_bindings[0].producer, "%p")
         self.assertEqual(region.value_bindings[0].register, "r_p")
-        self.assertEqual(region.value_bindings[0].live_start, 0)
-        self.assertEqual(region.value_bindings[0].live_end, 1)
+        self.assertEqual(region.value_bindings[0].live_intervals, ((0, 1),))
         self.assertEqual(region.muxes[0].inputs, ("r_acc", "r_next"))
         self.assertEqual(region.muxes[0].output, "r_acc")
         self.assertEqual(region.muxes[0].select, "state")
+
+    def test_parse_bind_uhir_accepts_multiple_live_intervals(self) -> None:
+        design = parse_uhir(
+            """
+            design split_live
+            stage bind
+            schedule kind=control_steps
+
+            resources {
+              fu ewms0 : EWMS
+              reg r_p : i32
+            }
+
+            region R0 kind=procedure {
+              node v1 = add a, b : i32 class=EWMS delay=1 start=0 end=0 bind=ewms0
+              map v1 <- %p
+              value %p -> r_p live=[1:1],[3:4]
+            }
+            """
+        )
+
+        region = design.regions[0]
+        self.assertEqual(region.value_bindings[0].live_intervals, ((1, 1), (3, 4)))
+
+    def test_parse_bind_uhir_rejects_legacy_live_interval_syntax(self) -> None:
+        with self.assertRaisesRegex(UHIRParseError, r"\[start:end\] syntax"):
+            parse_uhir(
+                """
+                design split_live
+                stage bind
+                schedule kind=control_steps
+
+                resources {
+                  fu ewms0 : EWMS
+                  reg r_p : i32
+                }
+
+                region R0 kind=procedure {
+                  node v1 = add a, b : i32 class=EWMS delay=1 start=0 end=0 bind=ewms0
+                  map v1 <- %p
+                  value %p -> r_p live=1..1
+                }
+                """
+            )
+
+    def test_parse_sched_uhir_rejects_legacy_steps_interval_syntax(self) -> None:
+        with self.assertRaisesRegex(UHIRParseError, r"\[start:end\] syntax"):
+            parse_uhir(
+                """
+                design fir
+                stage sched
+                schedule kind=control_steps
+
+                region R0 kind=procedure {
+                  node v1 = load A[i] : i32 class=memrd delay=1 start=0 end=0
+                  node v2 = ret v1 class=CTRL delay=0 start=1 end=1
+                  edge data v1 -> v2
+                  steps 0..1
+                  latency 2
+                }
+                """
+            )
+
+    def test_parse_bind_uhir_allows_unbound_ctrl_nodes(self) -> None:
+        design = parse_uhir(
+            """
+            design fir
+            stage bind
+            schedule kind=control_steps
+
+            resources {
+              fu add0 : add
+            }
+
+            region R0 kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add a, b : i32 class=add delay=1 start=0 end=0 bind=add0
+              node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+            }
+            """
+        )
+
+        self.assertEqual(design.stage, "bind")
+        region = design.regions[0]
+        self.assertNotIn("bind", region.nodes[0].attributes)
+        self.assertEqual(region.nodes[1].attributes["bind"], "add0")
 
     def test_sched_stage_requires_schedule_declaration(self) -> None:
         with self.assertRaises(UHIRParseError) as raised:

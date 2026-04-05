@@ -37,6 +37,11 @@ class LivenessInfo:
 
 def liveness(function: Function) -> LivenessInfo:
     """Compute phi-aware scalar liveness for one function."""
+    # TODO: If more IR levels need classic forward/backward dataflow analyses,
+    # extract the fixed-point engine into one shared utility library and keep
+    # canonical-UIR liveness as one domain-specific adapter on top of it.
+    # TODO: If CFG construction starts getting duplicated across IR levels,
+    # introduce one shared control-flow substrate as well, with per-IR adapters.
     cfg = control_flow(function)
     symbol_names = _scalar_symbol_names(function)
     uses = {block.label: set() for block in function.blocks}

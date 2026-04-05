@@ -58,7 +58,7 @@ def format_region(region: UHIRRegion) -> list[str]:
     for mapping in region.mappings:
         lines.append(f"  map {mapping.node_id} <- {mapping.source_id}")
     if region.steps is not None:
-        lines.append(f"  steps {region.steps[0]}..{region.steps[1]}")
+        lines.append(f"  steps [{region.steps[0]}:{region.steps[1]}]")
     if region.latency is not None:
         lines.append(f"  latency {region.latency}")
     if region.initiation_interval is not None:
@@ -94,9 +94,10 @@ def format_edge(edge: UHIREdge) -> str:
 
 def format_value_binding(value_binding: UHIRValueBinding) -> str:
     """Render one bind-stage value binding."""
+    intervals = ",".join(f"[{start}:{end}]" for start, end in value_binding.live_intervals)
     return (
         f"value {value_binding.producer} -> {value_binding.register} "
-        f"live={value_binding.live_start}..{value_binding.live_end}"
+        f"live={intervals}"
     )
 
 

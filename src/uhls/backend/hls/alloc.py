@@ -393,7 +393,7 @@ def _allocate_region(region: UHIRRegion, selections: dict[str, tuple[str, int, i
     allocated.edges = [UHIREdge(edge.kind, edge.source, edge.target, dict(edge.attributes)) for edge in region.edges]
     allocated.mappings = [UHIRSourceMap(mapping.node_id, mapping.source_id) for mapping in region.mappings]
     allocated.value_bindings = [
-        UHIRValueBinding(binding.producer, binding.register, binding.live_start, binding.live_end)
+        UHIRValueBinding(binding.producer, binding.register, binding.live_intervals)
         for binding in region.value_bindings
     ]
     allocated.muxes = [UHIRMux(mux.id, mux.inputs, mux.output, mux.select, dict(mux.attributes)) for mux in region.muxes]

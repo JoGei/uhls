@@ -321,7 +321,7 @@ class BindingLoweringTests(unittest.TestCase):
             )
         )
 
-        rendered = format_bind_dump(bind_design, ("trp", "trp_unroll", "dfgsb"))
+        rendered = format_bind_dump(bind_design, ("trp", "trp_unroll", "dfgsb", "dfgsb_unroll"))
         self.assertIn("bind_dump trp", rendered)
         self.assertIn("region proc_add1 (time-resource plane)", rendered)
         self.assertIn("ctrl", rendered)
@@ -331,6 +331,8 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertIn("bind_dump dfgsb", rendered)
         self.assertIn("----- proc_add1 kind=procedure -----", rendered)
         self.assertIn("reg 1", rendered)
+        self.assertIn("bind_dump dfgsb_unroll", rendered)
+        self.assertIn("global (dataflow graph with schedule and binding, unrolled)", rendered)
 
     def test_bind_dump_to_dot_supports_compatibility_graph(self) -> None:
         bind_design = lower_sched_to_bind(
@@ -446,69 +448,16 @@ class BindingLoweringTests(unittest.TestCase):
         lines = rendered.splitlines()
         ret_line = next(line for line in lines if " ret" in line)
         last_add_line = max(line for line in lines if "@3 add" in line)
+        time_lines = [
+            line
+            for line in lines
+            if "|" in line and line.split("|", 1)[0].strip().isdigit()
+        ]
+        last_time_line = max(time_lines, key=lambda line: int(line.split("|", 1)[0].strip()))
         self.assertTrue(ret_line.startswith("  25 |") or ret_line.startswith("25 |"))
         self.assertIn("@3 add", last_add_line)
         self.assertNotIn(" ret", last_add_line)
-
-    def test_bind_dump_to_dot_supports_dfgsb_unroll(self) -> None:
-        bind_design = lower_sched_to_bind(
-            parse_uhir(
-                """
-                design add1
-                stage sched
-                schedule kind=control_steps
-
-                region proc_add1 kind=procedure {
-                  map v1 <- t1_0
-                  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
-                  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
-                  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
-                  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
-
-                  edge data v0 -> v1
-                  edge data v1 -> v2
-                  edge data v2 -> v3
-                }
-                """
-            )
-        )
-
-        dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
-        self.assertIn('subgraph "cluster_dfgsb_unroll"', dot)
-        self.assertIn('label="global dataflow graph with schedule and binding (unrolled)"', dot)
-        self.assertIn("cc 0", dot)
-        self.assertIn("reg 1", dot)
-        self.assertIn("->", dot)
-        self.assertIn('label="v1\\nadd\\newms0"', dot)
-
-    def test_dfgsb_unroll_dot_connects_registers_to_each_iteration_consumers(self) -> None:
-        source = """
-        int32_t dot4(int32_t A[4], int32_t B[4]) {
-            int32_t i;
-            int32_t sum = 0;
-            for (i = 0; i < 4; i = i + 1) {
-                sum = sum + A[i] * B[i];
-            }
-            return sum;
-        }
-        """
-        bind_design = lower_sched_to_bind(
-            lower_alloc_to_sched(
-                lower_seq_to_alloc(
-                    self._infer_static(lower_module_to_seq(lower_source_to_uir(source), top="dot4")),
-                    executability_graph=self._full_executability_graph(),
-                )
-            ),
-            binder=LeftEdgeBinder(flatten=True),
-        )
-
-        dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
-        self.assertIn('"dfgsb_unroll_reg_1_5" -> "dfgsb_unroll_op_1_1"', dot)
-        self.assertIn('"dfgsb_unroll_reg_7_6" -> "dfgsb_unroll_op_7_1"', dot)
-        self.assertIn('"dfgsb_unroll_op_7_1" -> "dfgsb_unroll_op_8_1"', dot)
-        self.assertIn('"dfgsb_unroll_op_19_2" -> "dfgsb_unroll_op_25_0"', dot)
-        self.assertIn('"dfgsb_unroll_op_25_2" -> "dfgsb_unroll_op_25_0"', dot)
-        self.assertNotIn('label="t0_0\\n', dot)
+        self.assertTrue(last_time_line.startswith("  25 |") or last_time_line.startswith("25 |"))
 
     def test_flattened_binding_colors_register_values_per_occurrence(self) -> None:
         sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
@@ -520,8 +469,40 @@ class BindingLoweringTests(unittest.TestCase):
         assert loop_region is not None
 
         sum_bindings = [binding for binding in loop_region.value_bindings if binding.producer == "sum_1"]
-        self.assertGreater(len(sum_bindings), 1)
-        self.assertTrue(all(binding.live_intervals for binding in sum_bindings))
+        self.assertEqual(len(sum_bindings), 1)
+        self.assertGreater(len(sum_bindings[0].live_intervals), 1)
+
+    def test_non_flattened_trp_unroll_keeps_iteration_specific_register_values(self) -> None:
+        sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
+
+        bind_design = lower_sched_to_bind(sched_design)
+
+        rendered = format_bind_dump(bind_design, ("trp_unroll",))
+        self.assertIn("t1_0@1", rendered)
+        self.assertIn("sum_1@1_b1", rendered)
+        self.assertIn("sum_1@3_b1", rendered)
+        self.assertNotIn("sum_1[t=1]_b1", rendered)
+
+    def test_non_flattened_dfgsb_unroll_renders_later_iterations_and_hidden_branch_flow(self) -> None:
+        sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
+
+        bind_design = lower_sched_to_bind(sched_design)
+
+        dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
+        self.assertIn('"dfgsb_unroll_op_5_1" -> "dfgsb_unroll_reg_6_4"', dot)
+        self.assertIn('"dfgsb_unroll_reg_6_4" -> "dfgsb_unroll_op_6_1"', dot)
+        self.assertIn('"dfgsb_unroll_op_16_1" -> "dfgsb_unroll_op_17_1"', dot)
+        self.assertIn('"dfgsb_unroll_op_15_1" -> "dfgsb_unroll_reg_16_5"', dot)
+
+    def test_flattened_dfgsb_unroll_renders_final_loop_value_into_post_loop_consumer(self) -> None:
+        sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
+
+        bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
+
+        dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
+        self.assertIn('"dfgsb_unroll_op_15_1" -> "dfgsb_unroll_reg_16_4"', dot)
+        self.assertIn('"dfgsb_unroll_reg_16_4" -> "dfgsb_unroll_op_16_1"', dot)
+        self.assertIn('"dfgsb_unroll_op_16_1" -> "dfgsb_unroll_op_17_1"', dot)
 
     def test_dfgsb_dot_routes_cross_sgu_value_through_register_without_direct_duplicate_edge(self) -> None:
         bind_design = lower_sched_to_bind(
@@ -565,9 +546,41 @@ class BindingLoweringTests(unittest.TestCase):
         )
 
         dot = bind_dump_to_dot(bind_design, ("dfgsb",))
-        self.assertIn('label="v1\\nr_i32_0"', dot)
-        self.assertIn('"dfgsb_proc_child_use_reg_2_2" -> "dfgsb_bb_child_op_1_0"', dot)
+        self.assertIn('label="r_i32_0"', dot)
+        self.assertIn('"dfgsb_proc_child_use_op_0_1" -> "dfgsb_proc_child_use_reg_1_2" [color="#1f78b4", penwidth=1.3, label="v1"', dot)
+        self.assertIn('"dfgsb_proc_child_use_reg_1_2" -> "dfgsb_bb_child_op_1_0" [color="#1f78b4", penwidth=1.1, style=dashed, label="v1"', dot)
+        self.assertNotIn('"dfgsb_proc_child_use_reg_2_2"', dot)
         self.assertNotIn('"dfgsb_proc_child_use_op_0_0" -> "dfgsb_bb_child_op_1_0"', dot)
+
+    def test_bind_dump_to_dot_supports_dfgsb_unroll(self) -> None:
+        bind_design = lower_sched_to_bind(
+            parse_uhir(
+                """
+                design add1
+                stage sched
+                schedule kind=control_steps
+
+                region proc_add1 kind=procedure {
+                  map v1 <- t1_0
+                  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+                  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
+                  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+                  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+                  edge data v0 -> v1
+                  edge data v1 -> v2
+                  edge data v2 -> v3
+                }
+                """
+            )
+        )
+
+        dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
+        self.assertIn('subgraph "cluster_dfgsb_unroll"', dot)
+        self.assertIn('label="global dataflow graph with schedule and binding (unrolled)"', dot)
+        self.assertIn("cc 0", dot)
+        self.assertIn("reg 1", dot)
+        self.assertIn("->", dot)
 
     def test_lower_sched_to_bind_reuses_resources_across_mutually_exclusive_branch_sgus(self) -> None:
         sched_design = parse_uhir(

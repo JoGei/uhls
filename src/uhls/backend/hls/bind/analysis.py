@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import combinations
 
-from uhls.backend.uhir.model import UHIRDesign, UHIRNode, UHIRRegion
+from uhls.backend.uhir.model import UHIRDesign, UHIRNode, UHIRRegion, UHIRValueBinding
 from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 from uhls.utils.graph import interval_conflicts
 
@@ -142,7 +142,7 @@ def _format_conflict_like(design: UHIRDesign, *, compatibility: bool) -> list[st
 
 def _format_trp(design: UHIRDesign, *, compact: bool) -> list[str]:
     lines = ["bind_dump trp"]
-    for scope_id, entries in sorted(_group_by_scope(_collect_local_bound_entries(design)).items()):
+    for scope_id, entries in sorted(_group_by_scope(_collect_local_trp_entries(design)).items()):
         lines.append(f"region {scope_id} (time-resource plane)")
         lines.extend(f"  {line}" for line in _render_trp_text(entries, compact=compact))
     return lines
@@ -157,7 +157,7 @@ def _format_trp_unroll(design: UHIRDesign, *, compact: bool) -> list[str]:
 
 def _format_dfgsb(design: UHIRDesign, *, compact: bool) -> list[str]:
     region_by_id = {region.id: region for region in design.regions}
-    grouped = _group_by_scope(_filter_dfgsb_entries(design, _collect_local_bound_entries(design)))
+    grouped = _group_by_scope(_filter_dfgsb_entries(design, _collect_local_dfgsb_entries(design)))
     lines = ["bind_dump dfgsb"]
     first = True
     for region_id in _hierarchy_region_order(design):
@@ -211,7 +211,7 @@ def _dot_conflict_like(design: UHIRDesign, *, compatibility: bool, compact: bool
 
 def _dot_trp(design: UHIRDesign, *, compact: bool) -> list[str]:
     lines: list[str] = []
-    for scope_id, entries in sorted(_group_by_scope(_collect_local_bound_entries(design)).items()):
+    for scope_id, entries in sorted(_group_by_scope(_collect_local_trp_entries(design)).items()):
         cluster_id = f"trp_{scope_id}"
         lines.append(f'  subgraph "cluster_{cluster_id}" {{')
         lines.append(f'    label="{_escape_dot(scope_id)} time-resource plane";')
@@ -237,7 +237,7 @@ def _dot_dfgsb(design: UHIRDesign, *, compact: bool) -> list[str]:
     region_by_id = {region.id: region for region in design.regions}
     lines: list[str] = []
     layouts: dict[str, _DFGSBDotLayout] = {}
-    grouped = _group_by_scope(_filter_dfgsb_entries(design, _collect_local_bound_entries(design)))
+    grouped = _group_by_scope(_filter_dfgsb_entries(design, _collect_local_dfgsb_entries(design)))
     for region_id in _hierarchy_region_order(design):
         region = region_by_id[region_id]
         cluster_id = f"dfgsb_{region_id}"
@@ -249,7 +249,7 @@ def _dot_dfgsb(design: UHIRDesign, *, compact: bool) -> list[str]:
         )
         layouts[region_id] = layout
         lines.extend(layout_lines)
-    lines.extend(_dot_dfgsb_region_edges(design, layouts))
+    lines.extend(_dot_dfgsb_region_edges(design, layouts, grouped))
     return lines
 
 
@@ -261,7 +261,7 @@ def _dot_dfgsb_unroll(design: UHIRDesign, *, compact: bool) -> list[str]:
         entries=entries,
         compact=compact,
     )
-    lines.extend(_dot_dfgsb_unrolled_edges(design, layout, entries))
+    lines.extend(_dot_dfgsb_unroll_edges(design, layout, entries))
     return lines
 
 
@@ -317,88 +317,22 @@ def _collect_local_bound_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
     return entries
 
 
-def _collect_scroll_bound_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
+def _collect_local_trp_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
     helper = OperationBinderBase()
-    region_by_id = {region.id: region for region in design.regions}
+    resources_by_id = {resource.id: resource for resource in design.resources}
     entries: list[_BoundOccurrence] = []
-
-    def visit_region(region_id: str, offset: int, *, suffix: str = "") -> None:
-        region = region_by_id[region_id]
-        local_value_ids = {mapping.source_id for mapping in region.mappings}
-        local_value_ids.update(node.id for node in region.nodes)
-        for node in region.nodes:
-            class_name = node.attributes.get("class")
-            if not isinstance(class_name, str):
-                continue
-            bind = _analysis_bind(node, class_name)
-            start, end = helper.get_node_interval(region, node)
-            display_id = node.id if not suffix else f"{node.id}{suffix}"
-            entries.append(
-                    _BoundOccurrence(
-                        category="operation",
-                        scope_id="global",
-                        region_id=region.id,
-                        node_id=node.id,
-                    display_id=display_id,
-                    opcode=node.opcode,
-                    bind=bind,
-                    class_name=class_name,
-                    start=start + offset,
-                        end=end + offset,
-                    )
-                )
-        for binding in region.value_bindings:
-            register_id = binding.register
-            register_resource = next((resource for resource in design.resources if resource.id == register_id), None)
-            if register_resource is None or register_resource.kind != "reg":
-                continue
-            if binding.producer not in local_value_ids:
-                continue
-            for index, (start, end) in enumerate(binding.live_intervals):
-                display_id = binding.producer if not suffix else f"{binding.producer}{suffix}"
-                if len(binding.live_intervals) > 1:
-                    display_id = f"{display_id}_{index}"
-                entries.append(
-                    _BoundOccurrence(
-                        category="register",
-                        scope_id="global",
-                        region_id=region.id,
-                        node_id=binding.producer,
-                        display_id=f"reg_{display_id}",
-                        opcode="reg",
-                        bind=register_id,
-                        class_name=register_resource.value,
-                        start=start + offset,
-                        end=end + offset,
-                    )
-                )
-
-        for node in region.nodes:
-            node_start = node.attributes.get("start")
-            if not isinstance(node_start, int):
-                continue
-            if node.opcode == "loop":
-                child_id = node.attributes.get("child")
-                trip_count = node.attributes.get("static_trip_count")
-                iter_ii = node.attributes.get("iter_initiation_interval")
-                if not isinstance(child_id, str) or not isinstance(trip_count, int) or not isinstance(iter_ii, int):
-                    raise ValueError(
-                        f"loop node '{node.id}' requires child/static_trip_count/iter_initiation_interval for unrolled bind dumps"
-                    )
-                for iteration in range(trip_count):
-                    visit_loop_header(child_id, offset + node_start + iteration * iter_ii, iteration, expand_body=True)
-                visit_loop_header(child_id, offset + node_start + trip_count * iter_ii, trip_count, expand_body=False)
-                continue
-
-            for child_id in _node_children(node):
-                # Child regions in sched/bind µhIR are already shifted into their
-                # parent-local time base, so the scroll expansion only reapplies
-                # the enclosing scope offset once.
-                visit_region(child_id, offset, suffix=suffix)
-
-    def visit_loop_header(region_id: str, offset: int, iteration: int, *, expand_body: bool) -> None:
-        region = region_by_id[region_id]
-        suffix = f"@{iteration}"
+    for region in design.regions:
+        node_intervals = [
+            helper.get_node_interval(region, node)
+            for node in region.nodes
+            if isinstance(node.attributes.get("start"), int) and isinstance(node.attributes.get("end"), int)
+        ]
+        if node_intervals:
+            region_start = min(start for start, _ in node_intervals)
+            region_end = max(end for _, end in node_intervals)
+        else:
+            region_start = 0
+            region_end = 0
         local_value_ids = {mapping.source_id for mapping in region.mappings}
         local_value_ids.update(node.id for node in region.nodes)
         for node in region.nodes:
@@ -410,6 +344,244 @@ def _collect_scroll_bound_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
             entries.append(
                 _BoundOccurrence(
                     category="operation",
+                    scope_id=region.id,
+                    region_id=region.id,
+                    node_id=node.id,
+                    display_id=node.id,
+                    opcode=node.opcode,
+                    bind=bind,
+                    class_name=class_name,
+                    start=start,
+                    end=end,
+                )
+            )
+        for binding in region.value_bindings:
+            register_resource = resources_by_id.get(binding.register)
+            if register_resource is None or register_resource.kind != "reg":
+                continue
+            if binding.producer not in local_value_ids:
+                continue
+            for index, (start, end) in enumerate(binding.live_intervals):
+                seg_start = max(start, region_start)
+                seg_end = min(end, region_end)
+                if seg_end < seg_start:
+                    continue
+                display_id = f"reg_{binding.producer}" if len(binding.live_intervals) == 1 else f"reg_{binding.producer}_{index}"
+                entries.append(
+                    _BoundOccurrence(
+                        category="register",
+                        scope_id=region.id,
+                        region_id=region.id,
+                        node_id=binding.producer,
+                        display_id=display_id,
+                        opcode="reg",
+                        bind=binding.register,
+                        class_name=register_resource.value,
+                        start=seg_start,
+                        end=seg_end,
+                    )
+                )
+    return entries
+
+
+def _collect_local_dfgsb_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
+    helper = OperationBinderBase()
+    entries: list[_BoundOccurrence] = []
+    resources_by_id = {resource.id: resource for resource in design.resources}
+    for region in design.regions:
+        bindings_by_name: dict[str, list[UHIRValueBinding]] = {}
+        for binding in region.value_bindings:
+            bindings_by_name.setdefault(binding.producer, []).append(binding)
+        region_exit = max(
+            (helper.get_node_interval(region, node)[1] for node in region.nodes),
+            default=0,
+        )
+        for node in region.nodes:
+            class_name = node.attributes.get("class")
+            if not isinstance(class_name, str):
+                continue
+            bind = _analysis_bind(node, class_name)
+            start, end = helper.get_node_interval(region, node)
+            entries.append(
+                _BoundOccurrence(
+                    category="operation",
+                    scope_id=region.id,
+                    region_id=region.id,
+                    node_id=node.id,
+                    display_id=node.id,
+                    opcode=node.opcode,
+                    bind=bind,
+                    class_name=class_name,
+                    start=start,
+                    end=end,
+                )
+            )
+
+        for node in region.nodes:
+            if node.result_type is None:
+                continue
+            class_name = node.attributes.get("class")
+            if not isinstance(class_name, str) or class_name == "CTRL":
+                continue
+            all_consumers = helper.get_value_consumers(design, region, node)
+            if not all_consumers:
+                continue
+            local_consumers = helper.get_local_value_consumers(region, node)
+            producer_end = helper.get_node_interval(region, node)[1]
+            live_start = producer_end + 1
+            if local_consumers:
+                _, live_end = helper.get_value_interval(region, node, local_consumers)
+            else:
+                live_end = region_exit
+            if live_end < live_start:
+                continue
+            binding_index = 0
+            for binding in _matching_value_bindings(region, bindings_by_name, helper.get_value_names(region, node)):
+                register_resource = resources_by_id.get(binding.register)
+                if register_resource is None or register_resource.kind != "reg":
+                    continue
+                for interval_index, (start, end) in enumerate(binding.live_intervals):
+                    seg_start = max(start, live_start)
+                    seg_end = min(end, live_end)
+                    if seg_end < seg_start:
+                        continue
+                    display_id = f"reg_{binding.producer}" if len(binding.live_intervals) == 1 else f"reg_{binding.producer}_{interval_index}"
+                    if binding_index:
+                        display_id = f"{display_id}_{binding_index}"
+                    entries.append(
+                        _BoundOccurrence(
+                            category="register",
+                            scope_id=region.id,
+                            region_id=region.id,
+                            node_id=binding.producer,
+                            display_id=display_id,
+                            opcode="reg",
+                            bind=binding.register,
+                            class_name=register_resource.value,
+                            start=seg_start,
+                            end=seg_end,
+                        )
+                    )
+                binding_index += 1
+    return entries
+
+
+def _collect_scroll_bound_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
+    helper = OperationBinderBase()
+    region_by_id = {region.id: region for region in design.regions}
+    entries: list[_BoundOccurrence] = []
+    flattened_bind = _bind_design_looks_flattened(design, helper)
+
+    if flattened_bind:
+        entries.extend(_collect_flattened_register_entries(design))
+
+    def append_entry(entry: _BoundOccurrence, *, max_end: int | None) -> None:
+        if max_end is not None and entry.start > max_end:
+            return
+        if max_end is not None and entry.end > max_end:
+            entry = _BoundOccurrence(
+                category=entry.category,
+                scope_id=entry.scope_id,
+                region_id=entry.region_id,
+                node_id=entry.node_id,
+                display_id=entry.display_id,
+                opcode=entry.opcode,
+                bind=entry.bind,
+                class_name=entry.class_name,
+                start=entry.start,
+                end=max_end,
+            )
+        if entry.end < entry.start:
+            return
+        entries.append(entry)
+
+    def visit_region(region_id: str, offset: int, *, suffix: str = "", max_end: int | None = None) -> None:
+        region = region_by_id[region_id]
+        local_value_ids = {mapping.source_id for mapping in region.mappings}
+        local_value_ids.update(node.id for node in region.nodes)
+        for node in region.nodes:
+            class_name = node.attributes.get("class")
+            if not isinstance(class_name, str):
+                continue
+            bind = _analysis_bind(node, class_name)
+            start, end = helper.get_node_interval(region, node)
+            display_id = node.id if not suffix else f"{node.id}{suffix}"
+            append_entry(
+                _BoundOccurrence(
+                    category="operation",
+                    scope_id="global",
+                    region_id=region.id,
+                    node_id=node.id,
+                    display_id=display_id,
+                    opcode=node.opcode,
+                    bind=bind,
+                    class_name=class_name,
+                    start=start + offset,
+                    end=end + offset,
+                )
+                ,
+                max_end=max_end,
+            )
+        for node in region.nodes:
+            node_start = node.attributes.get("start")
+            if not isinstance(node_start, int):
+                continue
+            if node.opcode == "loop":
+                child_id = node.attributes.get("child")
+                trip_count = node.attributes.get("static_trip_count")
+                iter_ii = node.attributes.get("iter_initiation_interval")
+                node_end = node.attributes.get("end")
+                if not isinstance(child_id, str) or not isinstance(trip_count, int) or not isinstance(iter_ii, int):
+                    raise ValueError(
+                        f"loop node '{node.id}' requires child/static_trip_count/iter_initiation_interval for unrolled bind dumps"
+                    )
+                if not isinstance(node_end, int):
+                    raise ValueError(f"loop node '{node.id}' requires end for unrolled bind dumps")
+                child_max_end = offset + node_end
+                for iteration in range(trip_count):
+                    visit_loop_header(
+                        child_id,
+                        offset + node_start + iteration * iter_ii,
+                        iteration,
+                        expand_body=True,
+                        max_end=child_max_end,
+                    )
+                visit_loop_header(
+                    child_id,
+                    offset + node_start + trip_count * iter_ii,
+                    trip_count,
+                    expand_body=False,
+                    max_end=child_max_end,
+                )
+                continue
+
+            for child_id in _node_children(node):
+                # Child regions in sched/bind µhIR are already shifted into their
+                # parent-local time base, so the scroll expansion only reapplies
+                # the enclosing scope offset once.
+                visit_region(child_id, offset, suffix=suffix, max_end=max_end)
+
+    def visit_loop_header(
+        region_id: str,
+        offset: int,
+        iteration: int,
+        *,
+        expand_body: bool,
+        max_end: int | None,
+    ) -> None:
+        region = region_by_id[region_id]
+        suffix = f"@{iteration}"
+        local_value_ids = {mapping.source_id for mapping in region.mappings}
+        local_value_ids.update(node.id for node in region.nodes)
+        for node in region.nodes:
+            class_name = node.attributes.get("class")
+            if not isinstance(class_name, str):
+                continue
+            bind = _analysis_bind(node, class_name)
+            start, end = helper.get_node_interval(region, node)
+            append_entry(
+                _BoundOccurrence(
+                    category="operation",
                     scope_id="global",
                     region_id=region.id,
                     node_id=node.id,
@@ -419,31 +591,9 @@ def _collect_scroll_bound_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
                     class_name=class_name,
                     start=start + offset,
                     end=end + offset,
-                )
+                ),
+                max_end=max_end,
             )
-        for binding in region.value_bindings:
-            register_id = binding.register
-            register_resource = next((resource for resource in design.resources if resource.id == register_id), None)
-            if register_resource is None or register_resource.kind != "reg":
-                continue
-            if binding.producer not in local_value_ids:
-                continue
-            for index, (start, end) in enumerate(binding.live_intervals):
-                display_id = f"{binding.producer}{suffix}" if len(binding.live_intervals) == 1 else f"{binding.producer}{suffix}_{index}"
-                entries.append(
-                    _BoundOccurrence(
-                        category="register",
-                        scope_id="global",
-                        region_id=region.id,
-                        node_id=binding.producer,
-                        display_id=f"reg_{display_id}",
-                        opcode="reg",
-                        bind=register_id,
-                        class_name=register_resource.value,
-                        start=start + offset,
-                        end=end + offset,
-                    )
-                )
         for node in region.nodes:
             node_start = node.attributes.get("start")
             if not isinstance(node_start, int):
@@ -451,14 +601,16 @@ def _collect_scroll_bound_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
             if node.opcode == "branch":
                 true_child = node.attributes.get("true_child")
                 if expand_body and isinstance(true_child, str):
-                    visit_region(true_child, offset, suffix=suffix)
+                    visit_region(true_child, offset, suffix=suffix, max_end=max_end)
                 # TODO: Add explicit expansion for loop exit regions once they may contain bindable work.
                 continue
             for child_id in _node_children(node):
-                visit_region(child_id, offset, suffix=suffix)
+                visit_region(child_id, offset, suffix=suffix, max_end=max_end)
 
     for region_id in sorted(region.id for region in design.regions if region.parent is None):
         visit_region(region_id, 0)
+    if not flattened_bind:
+        entries.extend(_collect_hierarchical_unrolled_register_entries(design, entries))
     return entries
 
 
@@ -706,9 +858,12 @@ def _render_dfgsb_dot_scope(
     resource_colors = _resource_color_map(lanes)
     lane_headers = []
     for index, lane in enumerate(lanes):
+        del lane
         header_id = f"{cluster_id}_lane_{index}"
         lane_headers.append(header_id)
-        lines.append(f'    "{header_id}" [label="{_escape_dot(lane)}", shape=plaintext, style=""];')
+        lines.append(
+            f'    "{header_id}" [label="", shape=point, width=0.01, height=0.01, style=invis];'
+        )
     lines.append("    { rank=same; " + " ".join(f'"{node_id}";' for node_id in lane_headers) + " }")
     for left_id, right_id in zip(lane_headers, lane_headers[1:]):
         lines.append(f'    "{left_id}" -> "{right_id}" [style=invis, weight=50];')
@@ -769,10 +924,10 @@ def _render_dfgsb_dot_occurrence(
         if entry.category == "operation":
             opcode = _compact_opcode(entry.opcode) if compact else entry.opcode
             label = f"{entry.display_id}\\n{opcode}\\n{entry.bind}"
-            shape = "box"
+            shape = "ellipse"
             layout.op_nodes[(entry.region_id, entry.display_id)] = node_id
         else:
-            label = f"{entry.node_id}\\n{entry.bind}"
+            label = entry.bind
             shape = "box"
             layout.reg_nodes[(entry.region_id, entry.display_id, time_step)] = node_id
         return node_id, [f'    "{node_id}" [label="{_escape_dot_label(label)}", shape={shape}, fillcolor="{fillcolor}"];']
@@ -781,7 +936,11 @@ def _render_dfgsb_dot_occurrence(
     return node_id, [f'    "{node_id}" [label="{_escape_dot_label(joined)}", shape=box, fillcolor="{fillcolor}"];']
 
 
-def _dot_dfgsb_region_edges(design: UHIRDesign, layouts: dict[str, _DFGSBDotLayout]) -> list[str]:
+def _dot_dfgsb_region_edges(
+    design: UHIRDesign,
+    layouts: dict[str, _DFGSBDotLayout],
+    grouped_entries: dict[str, list[_BoundOccurrence]],
+) -> list[str]:
     helper = OperationBinderBase()
     lines: list[str] = []
     for region in design.regions:
@@ -789,21 +948,33 @@ def _dot_dfgsb_region_edges(design: UHIRDesign, layouts: dict[str, _DFGSBDotLayo
         if layout is None:
             continue
         lines.extend(_dot_dfgsb_region_data_edges(region, layout, helper))
-        lines.extend(_dot_dfgsb_region_register_edges(design, region, layout, layouts, helper))
+        lines.extend(
+            _dot_dfgsb_region_register_edges(
+                design,
+                region,
+                layout,
+                layouts,
+                grouped_entries.get(region.id, []),
+                helper,
+            )
+        )
     return lines
 
 
 def _dot_dfgsb_region_data_edges(region: UHIRRegion, layout: _DFGSBDotLayout, helper: OperationBinderBase) -> list[str]:
     lines: list[str] = []
     bound_producers = _bound_producer_node_ids(region)
-    for edge in helper.iter_region_data_edges(region):
-        if edge.source in bound_producers:
+    for node in region.nodes:
+        if not _dfgsb_visible_opcode(node.opcode) or node.id in bound_producers:
             continue
-        source_id = layout.op_nodes.get((region.id, edge.source))
-        target_id = layout.op_nodes.get((region.id, edge.target))
-        if source_id is None or target_id is None:
+        source_id = layout.op_nodes.get((region.id, node.id))
+        if source_id is None:
             continue
-        lines.append(f'  "{source_id}" -> "{target_id}" [color="#444444", penwidth=1.3];')
+        for target in _dfgsb_visible_targets(region, node.id, helper):
+            target_id = layout.op_nodes.get((region.id, target.id))
+            if target_id is None:
+                continue
+            lines.append(f'  "{source_id}" -> "{target_id}" [color="#444444", penwidth=1.3];')
     return lines
 
 
@@ -812,30 +983,76 @@ def _dot_dfgsb_region_register_edges(
     region: UHIRRegion,
     layout: _DFGSBDotLayout,
     layouts: dict[str, _DFGSBDotLayout],
+    local_entries: list[_BoundOccurrence],
     helper: OperationBinderBase,
 ) -> list[str]:
     lines: list[str] = []
+    seen_edges: set[tuple[str, str, str]] = set()
     producer_by_name = _producer_node_by_name(region)
+    local_reg_entries = [
+        entry
+        for entry in local_entries
+        if entry.category == "register"
+    ]
     for binding in region.value_bindings:
         producer = producer_by_name.get(binding.producer)
         if producer is None or not _dfgsb_visible_opcode(producer.opcode):
             continue
+        value_label = binding.producer
         producer_id = layout.op_nodes.get((region.id, producer.id))
         if producer_id is None:
             continue
-        consumers = [consumer for consumer in _dfgsb_value_consumers(design, region, producer, helper) if _dfgsb_visible_opcode(consumer.node.opcode)]
-        for index, (start, end) in enumerate(binding.live_intervals):
-            reg_display = _local_register_display_id(binding.producer, index, len(binding.live_intervals))
-            first_reg_id = layout.reg_nodes.get((region.id, reg_display, start))
+        local_consumers = [
+            consumer
+            for consumer in helper.get_local_value_consumers(region, producer)
+            if _dfgsb_visible_opcode(consumer.node.opcode)
+        ]
+        external_consumers = [
+            consumer
+            for consumer in _dfgsb_value_consumers(design, region, producer, helper)
+            if consumer.region.id != region.id and _dfgsb_visible_opcode(consumer.node.opcode)
+        ]
+        matching_entries = [
+            entry
+            for entry in local_reg_entries
+            if entry.node_id in helper.get_value_names(region, producer)
+        ]
+        if not matching_entries:
+            producer_id = layout.op_nodes.get((region.id, producer.id))
+            if producer_id is not None:
+                for target in _dfgsb_visible_targets(region, producer.id, helper):
+                    target_id = layout.op_nodes.get((region.id, target.id))
+                    if target_id is None:
+                        continue
+                    edge_key = (producer_id, target_id, "hidden")
+                    if edge_key in seen_edges:
+                        continue
+                    seen_edges.add(edge_key)
+                    lines.append(
+                        f'  "{producer_id}" -> "{target_id}" [color="#1f78b4", penwidth=1.3{_edge_label_attr(value_label)}];'
+                    )
+        for reg_entry in matching_entries:
+            first_reg_id = layout.reg_nodes.get((region.id, reg_entry.display_id, reg_entry.start))
             if first_reg_id is not None:
-                lines.append(f'  "{producer_id}" -> "{first_reg_id}" [color="#1f78b4", penwidth=1.3];')
-            for step in range(start, end):
-                left_id = layout.reg_nodes.get((region.id, reg_display, step))
-                right_id = layout.reg_nodes.get((region.id, reg_display, step + 1))
+                edge_key = (producer_id, first_reg_id, "local")
+                if edge_key not in seen_edges:
+                    seen_edges.add(edge_key)
+                    lines.append(
+                        f'  "{producer_id}" -> "{first_reg_id}" [color="#1f78b4", penwidth=1.3{_edge_label_attr(value_label)}];'
+                    )
+            for step in range(reg_entry.start, reg_entry.end):
+                left_id = layout.reg_nodes.get((region.id, reg_entry.display_id, step))
+                right_id = layout.reg_nodes.get((region.id, reg_entry.display_id, step + 1))
                 if left_id is None or right_id is None:
                     continue
-                lines.append(f'  "{left_id}" -> "{right_id}" [color="#1f78b4", penwidth=1.1];')
-            for consumer in consumers:
+                edge_key = (left_id, right_id, "hold")
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                lines.append(
+                    f'  "{left_id}" -> "{right_id}" [color="#1f78b4", penwidth=1.1{_edge_label_attr(value_label)}];'
+                )
+            for consumer in local_consumers:
                 target_layout = layouts.get(consumer.region.id)
                 if target_layout is None:
                     continue
@@ -843,101 +1060,233 @@ def _dot_dfgsb_region_register_edges(
                 consumer_id = target_layout.op_nodes.get((consumer.region.id, consumer.node.id))
                 if consumer_id is None:
                     continue
-                if target_row < start:
-                    lines.append(f'  "{producer_id}" -> "{consumer_id}" [color="#1f78b4", penwidth=1.3];')
+                if target_row < reg_entry.start:
+                    edge_key = (producer_id, consumer_id, "bypass")
+                    if edge_key not in seen_edges:
+                        seen_edges.add(edge_key)
+                        lines.append(
+                            f'  "{producer_id}" -> "{consumer_id}" [color="#1f78b4", penwidth=1.3{_edge_label_attr(value_label)}];'
+                        )
                     continue
-                reg_id = layout.reg_nodes.get((region.id, reg_display, target_row))
+                reg_id = layout.reg_nodes.get((region.id, reg_entry.display_id, target_row))
                 if reg_id is None:
                     continue
-                lines.append(f'  "{reg_id}" -> "{consumer_id}" [color="#1f78b4", penwidth=1.3];')
+                edge_key = (reg_id, consumer_id, "consume")
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                lines.append(
+                    f'  "{reg_id}" -> "{consumer_id}" [color="#1f78b4", penwidth=1.3{_edge_label_attr(value_label)}];'
+                )
+            exit_reg_id = layout.reg_nodes.get((region.id, reg_entry.display_id, reg_entry.end)) or first_reg_id or producer_id
+            for consumer in external_consumers:
+                target_layout = layouts.get(consumer.region.id)
+                if target_layout is None:
+                    continue
+                consumer_id = target_layout.op_nodes.get((consumer.region.id, consumer.node.id))
+                if consumer_id is None:
+                    continue
+                edge_key = (exit_reg_id, consumer_id, "cross")
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                lines.append(
+                    f'  "{exit_reg_id}" -> "{consumer_id}" [color="#1f78b4", penwidth=1.1, style=dashed{_edge_label_attr(value_label)}];'
+                )
     return lines
 
 
-def _dot_dfgsb_unrolled_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries: list[_BoundOccurrence]) -> list[str]:
+def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries: list[_BoundOccurrence]) -> list[str]:
     helper = OperationBinderBase()
     lines: list[str] = []
+    seen_edges: set[tuple[str, str, str]] = set()
     op_index: dict[tuple[str, str, str], str] = {}
+    op_entries_by_node: dict[tuple[str, str], list[_BoundOccurrence]] = {}
+    reg_entries_by_node: dict[tuple[str, str], list[_BoundOccurrence]] = {}
+    producer_ref_by_name: dict[str, tuple[UHIRRegion, UHIRNode]] = {}
+
+    for region in design.regions:
+        for node in region.nodes:
+            for value_name in helper.get_value_names(region, node):
+                producer_ref_by_name.setdefault(value_name, (region, node))
+
     for entry in entries:
-        if entry.category != "operation":
-            continue
-        op_node_id = layout.op_nodes.get((entry.region_id, entry.display_id))
-        if op_node_id is None:
-            continue
-        op_index[(entry.region_id, entry.node_id, _display_suffix(entry.node_id, entry.display_id))] = op_node_id
+        if entry.category == "operation":
+            op_node_id = layout.op_nodes.get((entry.region_id, entry.display_id))
+            if op_node_id is None:
+                continue
+            suffix = _display_suffix(entry.node_id, entry.display_id)
+            op_index[(entry.region_id, entry.node_id, suffix)] = op_node_id
+            op_entries_by_node.setdefault((entry.region_id, entry.node_id), []).append(entry)
+        elif entry.category == "register":
+            reg_entries_by_node.setdefault((entry.region_id, entry.node_id), []).append(entry)
+
+    for node_entries in op_entries_by_node.values():
+        node_entries.sort(key=lambda entry: (entry.start, entry.end, entry.display_id))
+    for node_entries in reg_entries_by_node.values():
+        node_entries.sort(key=lambda entry: (entry.start, entry.end, entry.display_id))
 
     for region in design.regions:
         bound_producers = _bound_producer_node_ids(region)
-        for edge in helper.iter_region_data_edges(region):
-            if edge.source in bound_producers:
+        for node in region.nodes:
+            if not _dfgsb_visible_opcode(node.opcode) or node.id in bound_producers:
                 continue
-            if not (_dfgsb_visible_node_id(entries, region.id, edge.source) and _dfgsb_visible_node_id(entries, region.id, edge.target)):
-                continue
-            for suffix in _suffixes_for_region_node(entries, region.id, edge.source):
-                source_id = op_index.get((region.id, edge.source, suffix))
-                target_id = op_index.get((region.id, edge.target, suffix))
-                if source_id is None or target_id is None:
+            for suffix in _suffixes_for_region_node(entries, region.id, node.id):
+                source_id = op_index.get((region.id, node.id, suffix))
+                if source_id is None:
                     continue
-                lines.append(f'  "{source_id}" -> "{target_id}" [color="#444444", penwidth=1.3];')
+                for target in _dfgsb_visible_targets(region, node.id, helper):
+                    target_id = op_index.get((region.id, target.id, suffix))
+                    if target_id is None:
+                        continue
+                    edge_key = (source_id, target_id, "data")
+                    if edge_key in seen_edges:
+                        continue
+                    seen_edges.add(edge_key)
+                    lines.append(f'  "{source_id}" -> "{target_id}" [color="#444444", penwidth=1.3];')
 
         producer_by_name = _producer_node_by_name(region)
         for binding in region.value_bindings:
             producer = producer_by_name.get(binding.producer)
             if producer is None or not _dfgsb_visible_opcode(producer.opcode):
                 continue
-            consumers = [consumer for consumer in _dfgsb_value_consumers(design, region, producer, helper) if _dfgsb_visible_opcode(consumer.node.opcode)]
-            producer_base_start = helper.get_node_interval(region, producer)[0]
-            for suffix in _suffixes_for_region_node(entries, region.id, producer.id):
+            value_label = binding.producer
+            producer_names = helper.get_value_names(region, producer)
+            producer_occurrences = op_entries_by_node.get((region.id, producer.id), [])
+            register_entries = [
+                entry
+                for name in producer_names
+                for entry in reg_entries_by_node.get((region.id, name), [])
+            ]
+            if not producer_occurrences:
+                continue
+            consumers = [
+                consumer
+                for consumer in _dfgsb_value_consumers(design, region, producer, helper)
+                if _dfgsb_visible_opcode(consumer.node.opcode)
+            ]
+            if not register_entries:
+                for suffix in _suffixes_for_region_node(entries, region.id, producer.id):
+                    source_id = op_index.get((region.id, producer.id, suffix))
+                    if source_id is None:
+                        continue
+                    for target in _dfgsb_visible_targets(region, producer.id, helper):
+                        target_id = op_index.get((region.id, target.id, suffix))
+                        if target_id is None:
+                            continue
+                        edge_key = (source_id, target_id, "hidden")
+                        if edge_key in seen_edges:
+                            continue
+                        seen_edges.add(edge_key)
+                        lines.append(
+                            f'  "{source_id}" -> "{target_id}" [color="#1f78b4", penwidth=1.3{_edge_label_attr(value_label)}];'
+                        )
+                continue
+            for reg_entry in register_entries:
+                matched_consumer_keys: set[tuple[str, str]] = set()
                 producer_entry = next(
-                    (
-                        entry
-                        for entry in entries
-                        if entry.category == "operation"
-                        and entry.region_id == region.id
-                        and entry.node_id == producer.id
-                        and _display_suffix(producer.id, entry.display_id) == suffix
-                    ),
+                    (entry for entry in reversed(producer_occurrences) if entry.end < reg_entry.start),
                     None,
                 )
                 if producer_entry is None:
+                    producer_entry = next(
+                        (entry for entry in reversed(producer_occurrences) if entry.end <= reg_entry.start),
+                        None,
+                    )
+                if producer_entry is None:
                     continue
                 producer_id = layout.op_nodes.get((producer_entry.region_id, producer_entry.display_id))
-                if producer_id is None:
+                first_reg_id = layout.reg_nodes.get((reg_entry.region_id, reg_entry.display_id, reg_entry.start))
+                if producer_id is None or first_reg_id is None:
                     continue
-                occurrence_offset = producer_entry.start - producer_base_start
-                for index, (start, end) in enumerate(binding.live_intervals):
-                    reg_display = _suffixed_register_display_id(binding.producer, suffix, index, len(binding.live_intervals))
-                    shifted_start = start + occurrence_offset
-                    shifted_end = end + occurrence_offset
-                    first_reg_id = _find_unrolled_register_node(layout, region.id, reg_display, shifted_start)
-                    if first_reg_id is not None:
-                        lines.append(f'  "{producer_id}" -> "{first_reg_id}" [color="#1f78b4", penwidth=1.3];')
-                    for step in range(shifted_start, shifted_end):
-                        left_id = _find_unrolled_register_node(layout, region.id, reg_display, step)
-                        right_id = _find_unrolled_register_node(layout, region.id, reg_display, step + 1)
-                        if left_id is None or right_id is None:
+                edge_key = (producer_id, first_reg_id, "write")
+                if edge_key not in seen_edges:
+                    seen_edges.add(edge_key)
+                    lines.append(
+                        f'  "{producer_id}" -> "{first_reg_id}" [color="#1f78b4", penwidth=1.3{_edge_label_attr(value_label)}];'
+                    )
+                if producer.opcode == "phi":
+                    alias_suffix = _display_suffix(reg_entry.node_id, reg_entry.display_id)
+                    for operand_name in producer.operands:
+                        alias_ref = producer_ref_by_name.get(operand_name)
+                        if alias_ref is None:
                             continue
-                        lines.append(f'  "{left_id}" -> "{right_id}" [color="#1f78b4", penwidth=1.1];')
-                    for consumer in consumers:
-                        target_time = _dfgsb_unrolled_consumer_time(
-                            design,
-                            region,
-                            consumer,
-                            helper,
-                            occurrence_offset,
+                        alias_region, alias_node = alias_ref
+                        if not _dfgsb_visible_opcode(alias_node.opcode):
+                            continue
+                        alias_entries = op_entries_by_node.get((alias_region.id, alias_node.id), [])
+                        alias_entry = next(
+                            (
+                                candidate
+                                for candidate in alias_entries
+                                if _display_suffix(alias_node.id, candidate.display_id) == alias_suffix
+                                and reg_entry.start <= candidate.end + 1 <= reg_entry.end
+                            ),
+                            None,
                         )
-                        target_entry = _find_unrolled_consumer_entry(entries, consumer.region.id, consumer.node.id, target_time)
-                        if target_entry is None:
+                        if alias_entry is None:
                             continue
-                        consumer_id = layout.op_nodes.get((target_entry.region_id, target_entry.display_id))
-                        if consumer_id is None:
+                        alias_op_id = layout.op_nodes.get((alias_entry.region_id, alias_entry.display_id))
+                        alias_reg_id = layout.reg_nodes.get((reg_entry.region_id, reg_entry.display_id, alias_entry.end + 1))
+                        if alias_op_id is None or alias_reg_id is None:
                             continue
-                        if target_time < shifted_start:
-                            lines.append(f'  "{producer_id}" -> "{consumer_id}" [color="#1f78b4", penwidth=1.3];')
+                        edge_key = (alias_op_id, alias_reg_id, "alias_write")
+                        if edge_key in seen_edges:
                             continue
-                        reg_id = _find_unrolled_register_node(layout, region.id, reg_display, target_time)
-                        if reg_id is None:
+                        seen_edges.add(edge_key)
+                        lines.append(
+                            f'  "{alias_op_id}" -> "{alias_reg_id}" [color="#1f78b4", penwidth=1.3{_edge_label_attr(value_label)}];'
+                        )
+                for step in range(reg_entry.start, reg_entry.end):
+                    left_id = layout.reg_nodes.get((reg_entry.region_id, reg_entry.display_id, step))
+                    right_id = layout.reg_nodes.get((reg_entry.region_id, reg_entry.display_id, step + 1))
+                    if left_id is None or right_id is None:
+                        continue
+                    edge_key = (left_id, right_id, "hold")
+                    if edge_key in seen_edges:
+                        continue
+                    seen_edges.add(edge_key)
+                    lines.append(
+                        f'  "{left_id}" -> "{right_id}" [color="#1f78b4", penwidth=1.1{_edge_label_attr(value_label)}];'
+                    )
+                for consumer in consumers:
+                    for consumer_entry in op_entries_by_node.get((consumer.region.id, consumer.node.id), []):
+                        if not (reg_entry.start <= consumer_entry.start <= reg_entry.end):
                             continue
-                        lines.append(f'  "{reg_id}" -> "{consumer_id}" [color="#1f78b4", penwidth=1.3];')
+                        reg_id = layout.reg_nodes.get((reg_entry.region_id, reg_entry.display_id, consumer_entry.start))
+                        consumer_id = layout.op_nodes.get((consumer_entry.region_id, consumer_entry.display_id))
+                        if reg_id is None or consumer_id is None:
+                            continue
+                        edge_key = (reg_id, consumer_id, "consume")
+                        if edge_key in seen_edges:
+                            continue
+                        matched_consumer_keys.add((consumer.region.id, consumer.node.id))
+                        seen_edges.add(edge_key)
+                        lines.append(
+                            f'  "{reg_id}" -> "{consumer_id}" [color="#1f78b4", penwidth=1.3{_edge_label_attr(value_label)}];'
+                        )
+                exit_reg_id = layout.reg_nodes.get((reg_entry.region_id, reg_entry.display_id, reg_entry.end)) or first_reg_id
+                for consumer in consumers:
+                    if consumer.node.opcode != "phi":
+                        continue
+                    if (consumer.region.id, consumer.node.id) in matched_consumer_keys:
+                        continue
+                    for alias_consumer in _dfgsb_value_consumers(design, consumer.region, consumer.node, helper):
+                        if not _dfgsb_visible_opcode(alias_consumer.node.opcode):
+                            continue
+                        for consumer_entry in op_entries_by_node.get((alias_consumer.region.id, alias_consumer.node.id), []):
+                            if consumer_entry.start < reg_entry.start:
+                                continue
+                            consumer_id = layout.op_nodes.get((consumer_entry.region_id, consumer_entry.display_id))
+                            if exit_reg_id is None or consumer_id is None:
+                                continue
+                            edge_key = (exit_reg_id, consumer_id, "alias_consume")
+                            if edge_key in seen_edges:
+                                continue
+                            seen_edges.add(edge_key)
+                            lines.append(
+                                f'  "{exit_reg_id}" -> "{consumer_id}" [color="#1f78b4", penwidth=1.3{_edge_label_attr(value_label)}];'
+                            )
     return lines
 
 
@@ -997,6 +1346,8 @@ def _entry_label(entry: _BoundOccurrence, *, compact: bool) -> str:
 
 def _entry_body(entry: _BoundOccurrence, *, compact: bool) -> str:
     if entry.category == "register":
+        if entry.scope_id == "global":
+            return entry.display_id.removeprefix("reg_")
         return entry.node_id
     opcode = _compact_opcode(entry.opcode) if compact else entry.opcode
     return f"{entry.display_id} {opcode}"
@@ -1017,6 +1368,30 @@ def _node_children(node: UHIRNode) -> list[str]:
 
 def _dfgsb_visible_opcode(opcode: str) -> bool:
     return opcode not in {"nop", "branch", "loop"}
+
+
+def _display_suffix(node_id: str, display_id: str) -> str:
+    if display_id.startswith("reg_"):
+        display_id = display_id.removeprefix("reg_")
+    if display_id == node_id:
+        return ""
+    if display_id.startswith(node_id):
+        suffix = display_id[len(node_id) :]
+        if suffix.startswith("@"):
+            cut = suffix.find("_")
+            if cut != -1:
+                return suffix[:cut]
+        return suffix
+    return ""
+
+
+def _suffixes_for_region_node(entries: list[_BoundOccurrence], region_id: str, node_id: str) -> list[str]:
+    suffixes = {
+        _display_suffix(node_id, entry.display_id)
+        for entry in entries
+        if entry.category == "operation" and entry.region_id == region_id and entry.node_id == node_id
+    }
+    return sorted(suffixes)
 
 
 def _dfgsb_lane_order(entries: list[_BoundOccurrence]) -> list[str]:
@@ -1069,6 +1444,140 @@ def _producer_node_by_name(region: UHIRRegion) -> dict[str, UHIRNode]:
     return producer_by_name
 
 
+def _matching_value_bindings(
+    region: UHIRRegion,
+    bindings_by_name: dict[str, list[UHIRValueBinding]],
+    producer_names: set[str],
+) -> list[UHIRValueBinding]:
+    matched: list[UHIRValueBinding] = []
+    seen: set[tuple[str, str, tuple[tuple[int, int], ...]]] = set()
+    for name in sorted(producer_names):
+        for binding in bindings_by_name.get(name, []):
+            key = (binding.producer, binding.register, binding.live_intervals)
+            if key in seen:
+                continue
+            seen.add(key)
+            matched.append(binding)
+    if matched:
+        return matched
+    for binding in region.value_bindings:
+        if binding.producer in producer_names:
+            matched.append(binding)
+    return matched
+
+
+def _bind_design_looks_flattened(design: UHIRDesign, helper: OperationBinderBase) -> bool:
+    del helper
+    for region in design.regions:
+        for binding in region.value_bindings:
+            if len(binding.live_intervals) > 1:
+                return True
+    return False
+
+
+def _collect_hierarchical_unrolled_register_entries(
+    design: UHIRDesign,
+    entries: list[_BoundOccurrence],
+) -> list[_BoundOccurrence]:
+    helper = OperationBinderBase()
+    resources_by_id = {resource.id: resource for resource in design.resources}
+    op_entries_by_node: dict[tuple[str, str], list[_BoundOccurrence]] = {}
+    for entry in entries:
+        if entry.category != "operation":
+            continue
+        op_entries_by_node.setdefault((entry.region_id, entry.node_id), []).append(entry)
+    for producer_entries in op_entries_by_node.values():
+        producer_entries.sort(key=lambda entry: (entry.start, entry.end, entry.display_id))
+
+    register_entries: list[_BoundOccurrence] = []
+    for region in design.regions:
+        producer_by_name = _producer_node_by_name(region)
+        for binding_index, binding in enumerate(region.value_bindings):
+            register_resource = resources_by_id.get(binding.register)
+            if register_resource is None or register_resource.kind != "reg":
+                continue
+            producer = producer_by_name.get(binding.producer)
+            if producer is None:
+                continue
+            producer_occurrences = op_entries_by_node.get((region.id, producer.id), [])
+            if not producer_occurrences:
+                continue
+            consumer_refs = helper.get_value_consumers(design, region, producer)
+            for occurrence_index, producer_entry in enumerate(producer_occurrences):
+                live_start = producer_entry.end + 1
+                next_start = (
+                    producer_occurrences[occurrence_index + 1].start
+                    if occurrence_index + 1 < len(producer_occurrences)
+                    else None
+                )
+                live_end_candidates: list[int] = []
+                for consumer in consumer_refs:
+                    consumer_occurrences = op_entries_by_node.get((consumer.region.id, consumer.node.id), [])
+                    consumer_ii = max(helper.get_node_ii(consumer.region, consumer.node), 1)
+                    for consumer_entry in consumer_occurrences:
+                        if consumer_entry.start < live_start:
+                            continue
+                        if next_start is not None and consumer_entry.start >= next_start:
+                            continue
+                        live_end_candidates.append(consumer_entry.start + consumer_ii - 1)
+                if not live_end_candidates:
+                    continue
+                suffix = _display_suffix(producer.id, producer_entry.display_id)
+                display_id = f"reg_{binding.producer}{suffix}"
+                if binding_index:
+                    display_id = f"{display_id}_b{binding_index}"
+                register_entries.append(
+                    _BoundOccurrence(
+                        category="register",
+                        scope_id="global",
+                        region_id=region.id,
+                        node_id=binding.producer,
+                        display_id=display_id,
+                        opcode="reg",
+                        bind=binding.register,
+                        class_name=register_resource.value,
+                        start=live_start,
+                        end=max(live_end_candidates),
+                    )
+                )
+    return register_entries
+
+
+def _collect_flattened_register_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
+    resources_by_id = {resource.id: resource for resource in design.resources}
+    entries: list[_BoundOccurrence] = []
+    for region in design.regions:
+        for binding_index, binding in enumerate(region.value_bindings):
+            register_resource = resources_by_id.get(binding.register)
+            if register_resource is None or register_resource.kind != "reg":
+                continue
+            for interval_index, (start, end) in enumerate(binding.live_intervals):
+                display_id = f"reg_{binding.producer}[t={start}]"
+                if len(binding.live_intervals) > 1:
+                    display_id = f"{display_id}_{interval_index}"
+                if binding_index:
+                    display_id = f"{display_id}_b{binding_index}"
+                entries.append(
+                    _BoundOccurrence(
+                        category="register",
+                        scope_id="global",
+                        region_id=region.id,
+                        node_id=binding.producer,
+                        display_id=display_id,
+                        opcode="reg",
+                        bind=binding.register,
+                        class_name=register_resource.value,
+                        start=start,
+                        end=end,
+                    )
+                )
+    return entries
+
+
+def _edge_label_attr(text: str) -> str:
+    return f', label="{_escape_dot_label(text)}", fontcolor="#1f78b4"'
+
+
 def _dfgsb_value_consumers(
     design: UHIRDesign,
     region: UHIRRegion,
@@ -1096,32 +1605,28 @@ def _dfgsb_value_consumers(
     return consumers
 
 
-def _dfgsb_unrolled_consumer_time(
-    design: UHIRDesign,
-    producer_region: UHIRRegion,
-    consumer: ValueConsumerRef,
-    helper: OperationBinderBase,
-    occurrence_offset: int,
-) -> int:
-    base_time = helper.get_node_interval(consumer.region, consumer.node)[0] + consumer.start_shift
-    if (
-        consumer.region.id != producer_region.id
-        and _is_ancestor_region(design, consumer.region.id, producer_region.id)
-        and consumer.node.opcode != "phi"
-    ):
-        return base_time
-    return base_time + occurrence_offset
-
-
-def _is_ancestor_region(design: UHIRDesign, ancestor_id: str, region_id: str) -> bool:
-    current_id = region_id
-    while True:
-        region = design.get_region(current_id)
-        if region is None or region.parent is None:
-            return False
-        if region.parent == ancestor_id:
-            return True
-        current_id = region.parent
+def _dfgsb_visible_targets(region: UHIRRegion, source_id: str, helper: OperationBinderBase) -> list[UHIRNode]:
+    node_by_id = {node.id: node for node in region.nodes}
+    outgoing: dict[str, list[str]] = {}
+    for edge in helper.iter_region_data_edges(region):
+        outgoing.setdefault(edge.source, []).append(edge.target)
+    visible: list[UHIRNode] = []
+    seen_hidden: set[str] = set()
+    worklist = list(outgoing.get(source_id, ()))
+    while worklist:
+        target_id = worklist.pop(0)
+        target = node_by_id.get(target_id)
+        if target is None:
+            continue
+        if _dfgsb_visible_opcode(target.opcode):
+            if all(existing.id != target.id for existing in visible):
+                visible.append(target)
+            continue
+        if target_id in seen_hidden:
+            continue
+        seen_hidden.add(target_id)
+        worklist.extend(outgoing.get(target_id, ()))
+    return visible
 
 
 def _bound_producer_node_ids(region: UHIRRegion) -> set[str]:
@@ -1134,63 +1639,8 @@ def _bound_producer_node_ids(region: UHIRRegion) -> set[str]:
     return producer_ids
 
 
-def _dfgsb_visible_node_id(entries: list[_BoundOccurrence], region_id: str, node_id: str) -> bool:
-    return any(
-        entry.category == "operation" and entry.region_id == region_id and entry.node_id == node_id
-        for entry in entries
-    )
-
-
-def _display_suffix(node_id: str, display_id: str) -> str:
-    if display_id == node_id:
-        return ""
-    if display_id.startswith(node_id):
-        return display_id[len(node_id) :]
-    return ""
-
-
-def _suffixes_for_region_node(entries: list[_BoundOccurrence], region_id: str, node_id: str) -> list[str]:
-    suffixes = {
-        _display_suffix(node_id, entry.display_id)
-        for entry in entries
-        if entry.category == "operation" and entry.region_id == region_id and entry.node_id == node_id
-    }
-    return sorted(suffixes)
-
-
 def _local_register_display_id(producer: str, index: int, count: int) -> str:
     return f"reg_{producer}" if count == 1 else f"reg_{producer}_{index}"
-
-
-def _suffixed_register_display_id(producer: str, suffix: str, index: int, count: int) -> str:
-    base = f"reg_{producer}{suffix}"
-    return base if count == 1 else f"{base}_{index}"
-
-
-def _find_unrolled_consumer_entry(
-    entries: list[_BoundOccurrence],
-    region_id: str,
-    node_id: str,
-    target_time: int,
-) -> _BoundOccurrence | None:
-    candidates = [
-        entry
-        for entry in entries
-        if entry.category == "operation" and entry.region_id == region_id and entry.node_id == node_id and entry.start == target_time
-    ]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda entry: entry.display_id)
-    return candidates[0]
-
-
-def _find_unrolled_register_node(
-    layout: _DFGSBDotLayout,
-    region_id: str,
-    reg_display: str,
-    time_step: int,
-) -> str | None:
-    return layout.reg_nodes.get((region_id, reg_display, time_step))
 
 
 def _port_name(text: str) -> str:

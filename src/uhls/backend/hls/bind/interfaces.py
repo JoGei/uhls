@@ -137,7 +137,11 @@ class OperationBinderBase(ABC):
                 class_name = node.attributes.get("class")
                 if not isinstance(class_name, str) or class_name == "CTRL":
                     continue
-                consumers = self.get_value_consumers(design, region, node)
+                consumers = (
+                    self.get_flattened_value_consumers(design, region, node)
+                    if flatten
+                    else self.get_value_consumers(design, region, node)
+                )
                 if not consumers:
                     continue
                 live_start, live_end = self.get_value_interval(region, node, consumers)
@@ -155,6 +159,23 @@ class OperationBinderBase(ABC):
 
         self._walk_design_occurrences(design, flatten=flatten, visit_region=visit_region)
         return {value_type: dict(entity_occurrences) for value_type, entity_occurrences in grouped.items()}
+
+    def get_flattened_value_consumers(self, design: UHIRDesign, region: UHIRRegion, node: UHIRNode) -> list[ValueConsumerRef]:
+        """Return one flattened/static value-consumer set for one producer occurrence.
+
+        Flattened binding should reason about concrete scheduled occurrences, not
+        abstract hierarchical merge points. In particular, loop-header values
+        should not inherit parent merge-phi consumers for every entered
+        iteration, because that would stretch each occurrence all the way to the
+        post-loop merge.
+        """
+        consumers = self.get_local_value_consumers(region, node)
+        consumer_names = self.get_value_names(region, node)
+        if node.opcode not in {"loop", "branch", "call"}:
+            consumers.extend(self._hierarchical_child_consumers(design, region, consumer_names))
+        if region.kind != "loop":
+            consumers.extend(self._hierarchical_value_consumers(design, region, consumer_names))
+        return consumers
 
     def build_entity_conflicts(
         self,
@@ -323,6 +344,17 @@ class OperationBinderBase(ABC):
 
     def get_value_consumers(self, design: UHIRDesign, region: UHIRRegion, node: UHIRNode) -> list[ValueConsumerRef]:
         """Return consumer nodes for one produced value, including hierarchical phi uses."""
+        consumers = self.get_local_value_consumers(region, node)
+        consumer_names = self.get_value_names(region, node)
+        if node.opcode not in {"loop", "branch", "call"}:
+            child_consumers = self._hierarchical_child_consumers(design, region, consumer_names)
+            consumers.extend(child_consumers)
+        parent_consumer = self._hierarchical_value_consumers(design, region, consumer_names)
+        consumers.extend(parent_consumer)
+        return consumers
+
+    def get_local_value_consumers(self, region: UHIRRegion, node: UHIRNode) -> list[ValueConsumerRef]:
+        """Return one produced value's consumers that live inside the same SGU."""
         node_by_id = {candidate.id: candidate for candidate in region.nodes}
         consumers: list[ValueConsumerRef] = []
         for edge in self.iter_region_data_edges(region):
@@ -332,12 +364,6 @@ class OperationBinderBase(ABC):
             if consumer.opcode == "nop" and consumer.attributes.get("role") == "sink":
                 continue
             consumers.append(ValueConsumerRef(region, consumer))
-        consumer_names = self.get_value_names(region, node)
-        if node.opcode not in {"loop", "branch", "call"}:
-            child_consumers = self._hierarchical_child_consumers(design, region, consumer_names)
-            consumers.extend(child_consumers)
-        parent_consumer = self._hierarchical_value_consumers(design, region, consumer_names)
-        consumers.extend(parent_consumer)
         return consumers
 
     def iter_bindable_values(self, design: UHIRDesign):

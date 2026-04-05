@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from .builtin import InferStaticPass, PredicatePass, SimplifyStaticControlPass
+from .builtin import InferLoopsPass, InferStaticPass, LoopDialectPass, PredicatePass, SimplifyStaticControlPass
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,19 @@ class GOptPassSpec:
 
 
 _GOPT_PASS_SPECS: tuple[GOptPassSpec, ...] = (
+    GOptPassSpec(
+        name="infer_loops",
+        factory=InferLoopsPass,
+        description="Annotate explicit loop hierarchy with loop ids, header markers, and backedge facts.",
+        example="uhls gopt input.seq.uhir -p infer_loops -o output.seq.uhir",
+        aliases=("loops",),
+    ),
+    GOptPassSpec(
+        name="loop_dialect",
+        factory=LoopDialectPass,
+        description="Own explicit loop-dialect shaping on seq-stage µhIR; today it preserves explicit loop hierarchy.",
+        example="uhls gopt input.seq.uhir -p infer_loops,loop_dialect -o output.seq.uhir",
+    ),
     GOptPassSpec(
         name="infer_static",
         factory=InferStaticPass,
@@ -61,4 +74,3 @@ def create_builtin_gopt_pass(name: str) -> object:
             return spec.factory()
     supported = ", ".join(spec.name for spec in _GOPT_PASS_SPECS)
     raise ValueError(f"unknown µhIR graph optimization pass '{name}'; expected one of: {supported}")
-

@@ -1,11 +1,15 @@
 """Built-in µhIR graph optimizer passes."""
 
 from .infer_static import InferStaticPass
+from .infer_loops import InferLoopsPass
+from .loop_dialect import LoopDialectPass
 from .predicate import PredicatePass
 from .simplify_static_control import SimplifyStaticControlPass
 
 __all__ = [
     "InferStaticPass",
+    "InferLoopsPass",
+    "LoopDialectPass",
     "PredicatePass",
     "SimplifyStaticControlPass",
 ]

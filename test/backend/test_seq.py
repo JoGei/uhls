@@ -182,7 +182,7 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         self.assertNotIn(("data", body_source.id, body_add.id), body_edges)
 
         proc_loop = next(node for node in proc.nodes if node.opcode == "loop")
-        self.assertEqual(proc_loop.attributes.get("static_trip_count"), 4)
+        self.assertNotIn("static_trip_count", proc_loop.attributes)
         proc_seq_edges = {(edge.source, edge.target) for edge in proc.edges if edge.kind == "seq"}
         proc_data_edges = {(edge.source, edge.target) for edge in proc.edges if edge.kind == "data"}
         self.assertIn((proc_loop.id, loop_region.id), proc_seq_edges)
@@ -199,7 +199,7 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         self.assertIn((empty_region.id, loop_branch.id), loop_seq_edges)
         self.assertIn((next(node for node in loop_region.nodes if node.opcode == "lt").id, loop_branch.id), loop_data_edges)
 
-    def test_lower_frontend_runtime_bound_loop_does_not_annotate_static_trip_count(self) -> None:
+    def test_lower_frontend_runtime_bound_loop_has_no_static_trip_count(self) -> None:
         module = lower_source_to_uir(
             """
             int32_t sumN(int32_t A[4], int32_t N) {
@@ -226,7 +226,7 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         self.assertNotIn("static_trip_count", proc_loop.attributes)
         self.assertNotIn("static_trip_count", loop_branch.attributes)
 
-    def test_lower_parsed_uir_loop_annotates_static_trip_count(self) -> None:
+    def test_lower_parsed_uir_loop_has_no_static_trip_count(self) -> None:
         module = parse_module(
             """
             func dot4(A:i32[], B:i32[]) -> i32
@@ -266,7 +266,7 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         assert loop_region is not None
         loop_branch = next(node for node in loop_region.nodes if node.opcode == "branch")
 
-        self.assertEqual(proc_loop.attributes.get("static_trip_count"), 4)
+        self.assertNotIn("static_trip_count", proc_loop.attributes)
         self.assertNotIn("static_trip_count", loop_branch.attributes)
 
     def test_lower_parsed_uir_post_loop_compare_depends_on_loop_helper(self) -> None:

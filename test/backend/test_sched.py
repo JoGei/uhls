@@ -3,7 +3,14 @@ from __future__ import annotations
 import unittest
 
 from uhls.backend.hls import SGUScheduleResult, lower_alloc_to_sched
-from uhls.backend.uhir import ExecutabilityGraph, lower_module_to_seq, lower_seq_to_alloc, parse_uhir
+from uhls.backend.uhir import (
+    ExecutabilityGraph,
+    create_builtin_gopt_pass,
+    lower_module_to_seq,
+    lower_seq_to_alloc,
+    parse_uhir,
+    run_gopt_passes,
+)
 from uhls.frontend import lower_source_to_uir
 from uhls.middleend.uir import BinaryOp, Block, CallOp, CompareOp, CondBranchOp, Function, Module, Parameter, ReturnOp
 
@@ -73,6 +80,10 @@ class _FixedScheduler:
 
 
 class SchedulingLoweringTests(unittest.TestCase):
+    @staticmethod
+    def _infer_static(design):
+        return run_gopt_passes(design, [create_builtin_gopt_pass("infer_static")])
+
     def test_lower_alloc_to_sched_uses_builtin_asap_for_flat_regions(self) -> None:
         alloc_design = lower_seq_to_alloc(
             lower_module_to_seq(
@@ -157,7 +168,8 @@ class SchedulingLoweringTests(unittest.TestCase):
 
     def test_lower_alloc_to_sched_accepts_statically_bounded_loops(self) -> None:
         alloc_design = lower_seq_to_alloc(
-            lower_module_to_seq(
+            self._infer_static(
+                lower_module_to_seq(
                 lower_source_to_uir(
                     """
                     int32_t dot4(int32_t A[4], int32_t B[4]) {
@@ -171,6 +183,7 @@ class SchedulingLoweringTests(unittest.TestCase):
                     """
                 ),
                 top="dot4",
+            ),
             ),
             executability_graph=_full_executability_graph(),
         )

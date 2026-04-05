@@ -28,7 +28,11 @@ from uhls.backend.hls import (
 )
 from uhls.backend.uhir import (
     ExecutabilityGraph,
+    GOptPassSpec,
     UHIRParseError,
+    builtin_gopt_pass_names,
+    builtin_gopt_specs,
+    create_builtin_gopt_pass,
     dummy_executability_graph,
     executability_graph_from_uhir,
     format_uhir,
@@ -37,6 +41,7 @@ from uhls.backend.uhir import (
     lower_sched_to_bind,
     lower_module_to_seq,
     parse_uhir_file,
+    run_gopt_passes,
     to_dot as to_uhir_dot,
 )
 from uhls.backend.hls.alloc import executability_graph_to_dot, format_executability_graph
@@ -66,6 +71,17 @@ from uhls.middleend.passes.util.dot import (
 
 class CLIError(RuntimeError):
     """Raised for user-facing command-line failures."""
+
+
+@dataclass(frozen=True)
+class _NamedPassAdapter:
+    """Adapter for external pass objects that provide ``run`` but no ``name``."""
+
+    name: str
+    delegate: object
+
+    def run(self, ir: object, context: PassContext) -> object:
+        return _invoke_external_pass_run(self.delegate, ir, context)
 
 
 @dataclass(frozen=True)
@@ -195,6 +211,50 @@ def _opt_pass_canonical_name(name: str) -> str | None:
     return None if spec is None else spec.name
 
 
+def _implemented_gopt_help() -> str:
+    implemented = _implemented_gopt_pass_names()
+    return ", ".join(implemented) if implemented else "none"
+
+
+def _registered_gopt_help() -> str:
+    specs = builtin_gopt_specs()
+    return ", ".join(spec.name for spec in specs) if specs else "none"
+
+
+def _implemented_gopt_pass_names() -> list[str]:
+    return [spec.name for spec in builtin_gopt_specs() if _is_implemented_gopt_pass(spec)]
+
+
+def _is_implemented_gopt_pass(spec: GOptPassSpec) -> bool:
+    try:
+        pass_like = spec.factory()
+    except NotImplementedError:
+        return False
+
+    run = getattr(pass_like, "run", None)
+    if run is None:
+        return True
+    return not _callable_is_placeholder(run)
+
+
+def _gopt_specs_by_name() -> dict[str, GOptPassSpec]:
+    return {spec.name: spec for spec in builtin_gopt_specs()}
+
+
+def _gopt_specs_by_cli_name() -> dict[str, GOptPassSpec]:
+    by_name: dict[str, GOptPassSpec] = {}
+    for spec in builtin_gopt_specs():
+        by_name[spec.name] = spec
+        for alias in spec.aliases:
+            by_name[alias] = spec
+    return by_name
+
+
+def _gopt_pass_canonical_name(name: str) -> str | None:
+    spec = _gopt_specs_by_cli_name().get(name)
+    return None if spec is None else spec.name
+
+
 def _maybe_handle_opt_pass_help(argv: list[str]) -> int | None:
     if len(argv) != 3 or argv[0] != "opt" or argv[1] not in {"-h", "--help"}:
         return None
@@ -215,12 +275,34 @@ def _maybe_handle_opt_pass_help(argv: list[str]) -> int | None:
     return 0
 
 
+def _maybe_handle_gopt_pass_help(argv: list[str]) -> int | None:
+    if len(argv) != 3 or argv[0] != "gopt" or argv[1] not in {"-h", "--help"}:
+        return None
+
+    canonical = _gopt_pass_canonical_name(argv[2].strip().lower().replace("-", "_"))
+    if canonical is None:
+        click.echo(f"error: unknown graph optimization pass '{argv[2]}'", err=True)
+        return 1
+
+    spec = _gopt_specs_by_name()[canonical]
+    implemented = _is_implemented_gopt_pass(spec)
+    click.echo(f"{canonical}: {spec.description}")
+    click.echo(f"status: {'implemented' if implemented else 'registered but not implemented yet'}")
+    click.echo(f"example: {spec.example}")
+    if spec.aliases:
+        click.echo(f"aliases: {', '.join(sorted(spec.aliases))}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the µhLS CLI and return a process exit code."""
     active_argv = list(sys.argv[1:] if argv is None else argv)
     opt_help_exit = _maybe_handle_opt_pass_help(active_argv)
     if opt_help_exit is not None:
         return opt_help_exit
+    gopt_help_exit = _maybe_handle_gopt_pass_help(active_argv)
+    if gopt_help_exit is not None:
+        return gopt_help_exit
 
     try:
         cli.main(args=active_argv, prog_name="uhls", standalone_mode=False)
@@ -537,6 +619,81 @@ def opt_cmd(input_path: Path, passes: str, pass_args: tuple[str, ...], output: P
 
 
 @cli.command(
+    "gopt",
+    help=(
+        "Run µhIR graph-optimization pass pipelines.\n"
+        "\n"
+        f"Implemented passes: {_implemented_gopt_help()}.\n"
+        f"Registered passes: {_registered_gopt_help()}.\n"
+        "External pass syntax: /path/to/pass.py:Symbol\n"
+        "\n"
+        "Example: uhls gopt input.seq.uhir -p infer_static -o output.seq.uhir\n"
+        "\n"
+        "More examples:\n"
+        "\n"
+        "\b\n"
+        "  uhls gopt input.seq.uhir -p infer_static -o output.seq.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls gopt input.seq.uhir -p infer_static,simplify_static_control -o output.seq.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls gopt input.seq.uhir -p infer_static,simplify_static_control --dot -o output.dot\n"
+        "\n"
+        "\b\n"
+        "  uhls gopt input.seq.uhir -p /path/to/pass.py:Symbol -o output.seq.uhir\n"
+    ),
+)
+@click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "-p",
+    "--passes",
+    required=True,
+    help=(
+        "Comma-separated µhIR graph-optimization passes. "
+        "Use registered pass names or external /path/to/pass.py:Symbol values."
+    ),
+)
+@click.option(
+    "--pass-arg",
+    "pass_args",
+    multiple=True,
+    help="Shared pass argument forwarded to every pass in the pipeline. Repeat to pass multiple values.",
+)
+@click.option("--dot", "emit_dot", is_flag=True, help="Render Graphviz DOT for the optimized µhIR.")
+@click.option("--compact", is_flag=True, help="Use compact DOT labels for µhIR rendering.")
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
+def gopt_cmd(
+    input_path: Path,
+    passes: str,
+    pass_args: tuple[str, ...],
+    emit_dot: bool,
+    compact: bool,
+    output: Path | None,
+) -> None:
+    """Run µhIR graph-optimization pass pipelines."""
+    if input_path.suffix == ".dot":
+        raise CLIError(
+            f"'gopt' expects one µhIR input file, not Graphviz DOT: '{input_path}'. "
+            "Pass the underlying .uhir artifact instead."
+        )
+    try:
+        design = parse_uhir_file(input_path)
+    except UHIRParseError as exc:
+        raise CLIError(f"'gopt' expects one µhIR input file; failed to parse '{input_path}': {exc}") from exc
+    pipeline = [_lookup_gopt_pass(name, pass_args) for name in passes.split(",") if name.strip()]
+    if not pipeline:
+        raise CLIError("no graph optimization passes were selected")
+    try:
+        optimized = run_gopt_passes(design, pipeline, pass_args=pass_args)
+    except (CLIError, NotImplementedError, ValueError):
+        raise
+    except Exception as exc:
+        raise CLIError(f"graph optimization pipeline failed: {exc}") from exc
+    _write_or_print_text(to_uhir_dot(optimized, compact=compact) if emit_dot else format_uhir(optimized), output)
+
+
+@cli.command(
     "run",
     help=(
         "Execute IR with the interpreter.\n"
@@ -590,7 +747,11 @@ def run_cmd(
 
 @cli.command("sched")
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--algo", help="Flat SGU scheduler name or external /path/to/scheduler.py:Symbol.")
+@click.option(
+    "--algo",
+    required=True,
+    help="Flat SGU scheduler name or external /path/to/scheduler.py:Symbol.",
+)
 @click.option(
     "--sgu_latency_max",
     help="External scheduler latency target map: region:value,... or asap[+slack].",
@@ -1044,6 +1205,18 @@ def _lookup_operation_binder(name: str | None, binder_kwargs: dict[str, object] 
         supported = ", ".join(builtin_binder_names())
         raise CLIError(f"unknown operation binder '{spec_text}'; expected one of: {supported}") from exc
 
+
+def _lookup_gopt_pass(name: str, pass_args: tuple[str, ...] = ()) -> object:
+    if _looks_like_external_python_symbol_spec(name):
+        return _load_external_gopt_pass(name, pass_args)
+    normalized = name.strip().lower().replace("-", "_")
+    try:
+        return _gopt_specs_by_cli_name()[normalized].factory()
+    except KeyError as exc:
+        supported = ", ".join(builtin_gopt_pass_names())
+        raise CLIError(f"unknown graph optimization pass '{name}'; expected one of: {supported}") from exc
+
+
 def _lookup_opt_pass(name: str, pass_args: tuple[str, ...] = ()) -> object:
     if _looks_like_external_python_symbol_spec(name):
         return _load_external_opt_pass(name, pass_args)
@@ -1107,6 +1280,33 @@ def _load_external_opt_pass(spec_text: str, pass_args: tuple[str, ...] = ()) -> 
             f"external optimization pass '{spec_text}' is missing symbol '{symbol_name}'"
         ) from exc
     return _materialize_external_opt_pass(target, spec_text, pass_args)
+
+
+def _load_external_gopt_pass(spec_text: str, pass_args: tuple[str, ...] = ()) -> object:
+    path_text, symbol_name = _split_external_symbol_spec(
+        spec_text,
+        kind="external graph optimization pass",
+        syntax="/path/to/pass.py:Symbol",
+    )
+    module_path = Path(path_text).expanduser()
+    if not module_path.is_absolute():
+        module_path = Path.cwd() / module_path
+    module_path = module_path.resolve()
+    if not module_path.is_file():
+        raise CLIError(f"external graph optimization pass file does not exist: '{module_path}'")
+
+    module = _load_external_python_module(
+        module_path,
+        _external_python_module_name("gopt", module_path),
+        "graph optimization pass",
+    )
+    try:
+        target = getattr(module, symbol_name)
+    except AttributeError as exc:
+        raise CLIError(
+            f"external graph optimization pass '{spec_text}' is missing symbol '{symbol_name}'"
+        ) from exc
+    return _materialize_external_gopt_pass(target, spec_text, pass_args)
 
 
 def _split_external_symbol_spec(spec_text: str, *, kind: str, syntax: str) -> tuple[str, str]:
@@ -1261,12 +1461,24 @@ def _materialize_external_opt_pass(target: object, spec_text: str, pass_args: tu
     if isinstance(target, type):
         return _instantiate_external_pass_class(target, spec_text, pass_args)
     if hasattr(target, "run"):
-        return target
+        return target if hasattr(target, "name") else _NamedPassAdapter(spec_text, target)
     if callable(target):
         materialized = _maybe_call_external_pass_factory(target, spec_text, pass_args)
         return materialized
     raise CLIError(
         f"external optimization pass '{spec_text}' must resolve to a pass object, callable, or no-arg pass class"
+    )
+
+
+def _materialize_external_gopt_pass(target: object, spec_text: str, pass_args: tuple[str, ...]) -> object:
+    if isinstance(target, type):
+        return _instantiate_external_gopt_pass_class(target, spec_text, pass_args)
+    if hasattr(target, "run"):
+        return target if hasattr(target, "name") else _NamedPassAdapter(spec_text, target)
+    if callable(target):
+        return _maybe_call_external_gopt_pass_factory(target, spec_text, pass_args)
+    raise CLIError(
+        f"external graph optimization pass '{spec_text}' must resolve to a pass object, callable, or no-arg pass class"
     )
 
 
@@ -1284,15 +1496,45 @@ def _instantiate_external_pass_class(target: type, spec_text: str, pass_args: tu
     required = [param for param in positional if param.default is InspectParameter.empty]
     try:
         if not required and not positional:
-            return target()
+            instance = target()
+            return instance if hasattr(instance, "name") else _NamedPassAdapter(spec_text, instance)
         if len(required) <= 1 and len(positional) <= 1:
-            return target(tuple(pass_args))
+            instance = target(tuple(pass_args))
+            return instance if hasattr(instance, "name") else _NamedPassAdapter(spec_text, instance)
     except TypeError as exc:
         raise CLIError(
             f"external optimization pass '{spec_text}' must be instantiable with no arguments or one pass_args tuple"
         ) from exc
     raise CLIError(
         f"external optimization pass '{spec_text}' must be instantiable with no arguments or one pass_args tuple"
+    )
+
+
+def _instantiate_external_gopt_pass_class(target: type, spec_text: str, pass_args: tuple[str, ...]) -> object:
+    try:
+        params = list(signature(target).parameters.values())
+    except (TypeError, ValueError):
+        params = []
+
+    positional = [
+        param
+        for param in params
+        if param.kind in {InspectParameter.POSITIONAL_ONLY, InspectParameter.POSITIONAL_OR_KEYWORD}
+    ]
+    required = [param for param in positional if param.default is InspectParameter.empty]
+    try:
+        if not required and not positional:
+            instance = target()
+            return instance if hasattr(instance, "name") else _NamedPassAdapter(spec_text, instance)
+        if len(required) <= 1 and len(positional) <= 1:
+            instance = target(tuple(pass_args))
+            return instance if hasattr(instance, "name") else _NamedPassAdapter(spec_text, instance)
+    except TypeError as exc:
+        raise CLIError(
+            f"external graph optimization pass '{spec_text}' must be instantiable with no arguments or one pass_args tuple"
+        ) from exc
+    raise CLIError(
+        f"external graph optimization pass '{spec_text}' must be instantiable with no arguments or one pass_args tuple"
     )
 
 
@@ -1323,4 +1565,56 @@ def _maybe_call_external_pass_factory(
         return produced
     raise CLIError(
         f"external optimization pass factory '{spec_text}' must return a pass object or callable"
+    )
+
+
+def _maybe_call_external_gopt_pass_factory(
+    target: Callable[..., object], spec_text: str, pass_args: tuple[str, ...]
+) -> object:
+    try:
+        params = list(signature(target).parameters.values())
+    except (TypeError, ValueError):
+        return target
+
+    positional = [
+        param
+        for param in params
+        if param.kind in {InspectParameter.POSITIONAL_ONLY, InspectParameter.POSITIONAL_OR_KEYWORD}
+    ]
+    required = [param for param in positional if param.default is InspectParameter.empty]
+    if required or positional:
+        return target
+
+    try:
+        produced = target()
+    except TypeError as exc:
+        raise CLIError(
+            f"external graph optimization pass factory '{spec_text}' could not be called with no arguments"
+        ) from exc
+    if callable(produced) or hasattr(produced, "run"):
+        return produced
+    raise CLIError(
+        f"external graph optimization pass factory '{spec_text}' must return a pass object or callable"
+    )
+
+
+def _invoke_external_pass_run(delegate: object, ir: object, context: PassContext) -> object:
+    run = getattr(delegate, "run", None)
+    if not callable(run):
+        raise TypeError(f"unsupported external pass object {delegate!r}")
+    params = list(signature(run).parameters.values())
+    positional = [
+        param
+        for param in params
+        if param.kind in {InspectParameter.POSITIONAL_ONLY, InspectParameter.POSITIONAL_OR_KEYWORD}
+    ]
+    required = [param for param in positional if param.default is InspectParameter.empty]
+    if len(required) <= 1 and len(positional) <= 1:
+        return run(ir)
+    if len(required) <= 2 and len(positional) <= 2:
+        return run(ir, context)
+    if len(required) <= 3 and len(positional) <= 3:
+        return run(ir, context, context.pass_args)
+    raise TypeError(
+        f"external pass object '{type(delegate).__name__}' must expose run(ir), run(ir, context), or run(ir, context, pass_args)"
     )

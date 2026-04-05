@@ -93,6 +93,227 @@ block entry:
             self.assertIn('digraph "add1.seq"', dot_text)
             self.assertIn('cluster_proc_add1', dot_text)
 
+    def test_gopt_command_runs_builtin_infer_static_on_seq_uhir(self) -> None:
+        uir = """func dot4(A:i32[], B:i32[]) -> i32
+
+block entry:
+    br for_header_1
+
+block for_header_1:
+    i_1:i32 = phi(entry: 0:i32, for_body_2: t4_0)
+    sum_1:i32 = phi(entry: 0:i32, for_body_2: inl_mac_0_t1_0)
+    t0_0:i1 = lt i_1, 4:i32
+    cbr t0_0, for_body_2, for_exit_4
+
+block for_body_2:
+    t1_0:i32 = load A[i_1]
+    t2_0:i32 = load B[i_1]
+    inl_mac_0_t0_0:i32 = mul t1_0, t2_0
+    inl_mac_0_t1_0:i32 = add sum_1, inl_mac_0_t0_0
+    t4_0:i32 = add i_1, 1:i32
+    br for_header_1
+
+block for_exit_4:
+    ret sum_1
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uir_path = root / "dot4.uir"
+            seq_path = root / "dot4.seq.uhir"
+            opt_path = root / "dot4.gopt.seq.uhir"
+            uir_path.write_text(uir, encoding="utf-8")
+
+            self.assertEqual(main(["seq", str(uir_path), "-o", str(seq_path)]), 0)
+            self.assertEqual(main(["gopt", str(seq_path), "-p", "infer_static", "-o", str(opt_path)]), 0)
+
+            optimized_text = opt_path.read_text(encoding="utf-8")
+            self.assertIn("static_trip_count=4", optimized_text)
+
+    def test_gopt_command_accepts_external_pass(self) -> None:
+        seq = """design add1
+stage seq
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        plugin = """
+from copy import deepcopy
+
+class ExternalGOptPass:
+    def __init__(self, pass_args=()):
+        self.pass_args = tuple(pass_args)
+
+    def run(self, ir):
+        out = deepcopy(ir)
+        out.regions[0].nodes[1].attributes["tag"] = self.pass_args[0] if self.pass_args else "external"
+        return out
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seq_path = root / "add1.seq.uhir"
+            plugin_path = root / "external_gopt.py"
+            out_path = root / "add1.gopt.uhir"
+            seq_path.write_text(seq, encoding="utf-8")
+            plugin_path.write_text(plugin, encoding="utf-8")
+
+            self.assertEqual(
+                main(
+                    [
+                        "gopt",
+                        str(seq_path),
+                        "-p",
+                        f"{plugin_path}:ExternalGOptPass",
+                        "--pass-arg",
+                        "hello",
+                        "-o",
+                        str(out_path),
+                    ]
+                ),
+                0,
+            )
+
+            optimized_text = out_path.read_text(encoding="utf-8")
+            self.assertIn("tag=hello", optimized_text)
+
+    def test_gopt_command_rejects_dot_input_with_clear_error(self) -> None:
+        dot = 'digraph "dot4.seq" {\n}\n'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dot_path = root / "dot4.seq.uhir.dot"
+            dot_path.write_text(dot, encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["gopt", str(dot_path), "-p", "infer_static"]), 1)
+            self.assertIn("expects one µhIR input file, not Graphviz DOT", stderr.getvalue())
+
+    def test_gopt_command_supports_dot_output(self) -> None:
+        seq = """design add1
+stage seq
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seq_path = root / "add1.seq.uhir"
+            dot_path = root / "add1.gopt.dot"
+            seq_path.write_text(seq, encoding="utf-8")
+
+            self.assertEqual(main(["gopt", str(seq_path), "-p", "infer_static", "--dot", "-o", str(dot_path)]), 0)
+
+            dot_text = dot_path.read_text(encoding="utf-8")
+            self.assertIn('digraph "add1.seq"', dot_text)
+            self.assertIn('cluster_proc_add1', dot_text)
+
+    def test_gopt_command_simplifies_static_loop_control(self) -> None:
+        uir = """func dot4(A:i32[], B:i32[]) -> i32
+
+block entry:
+    br for_header_1
+
+block for_header_1:
+    i_1:i32 = phi(entry: 0:i32, for_body_2: t4_0)
+    sum_1:i32 = phi(entry: 0:i32, for_body_2: inl_mac_0_t1_0)
+    t0_0:i1 = lt i_1, 4:i32
+    cbr t0_0, for_body_2, for_exit_4
+
+block for_body_2:
+    t1_0:i32 = load A[i_1]
+    t2_0:i32 = load B[i_1]
+    t3_0:i32 = mul t1_0, t2_0
+    inl_mac_0_t1_0:i32 = add sum_1, t3_0
+    t4_0:i32 = add i_1, 1:i32
+    br for_header_1
+
+block for_exit_4:
+    ret sum_1
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uir_path = root / "dot4.uir"
+            seq_path = root / "dot4.seq.uhir"
+            opt_path = root / "dot4.opt.seq.uhir"
+            uir_path.write_text(uir, encoding="utf-8")
+
+            self.assertEqual(main(["seq", str(uir_path), "-o", str(seq_path)]), 0)
+            self.assertEqual(
+                main(
+                    [
+                        "gopt",
+                        str(seq_path),
+                        "-p",
+                        "infer_static,simplify_static_control",
+                        "-o",
+                        str(opt_path),
+                    ]
+                ),
+                0,
+            )
+
+            optimized_text = opt_path.read_text(encoding="utf-8")
+            self.assertIn("static_trip_count=4", optimized_text)
+            self.assertNotIn("lt i_1, 4:i32", optimized_text)
+            self.assertIn("node v", optimized_text)
+            self.assertIn("branch true_child=", optimized_text)
+
+    def test_gopt_command_projects_bind_input_back_to_seq(self) -> None:
+        bind = """design add1
+stage bind
+schedule kind=control_steps
+
+resources {
+  fu ewms0 : EWMS
+  reg r_i32_0 : i32
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add x, 1 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+
+  map v1 <- t0_0
+  steps [0:1]
+  latency 2
+  value t0_0 -> r_i32_0 live=[1:1]
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bind_path = root / "add1.bind.uhir"
+            out_path = root / "add1.gopt.uhir"
+            bind_path.write_text(bind, encoding="utf-8")
+
+            self.assertEqual(main(["gopt", str(bind_path), "-p", "infer_static", "-o", str(out_path)]), 0)
+
+            optimized_text = out_path.read_text(encoding="utf-8")
+            self.assertIn("stage seq", optimized_text)
+            self.assertNotIn("resources {", optimized_text)
+            self.assertNotIn("class=EWMS", optimized_text)
+            self.assertNotIn("start=0", optimized_text)
+            self.assertNotIn("value t0_0 ->", optimized_text)
+
     def test_alloc_command_lowers_seq_to_alloc_uhir_and_renders_dot(self) -> None:
         seq = """design add1
 stage seq
@@ -267,7 +488,7 @@ region proc_add1 kind=procedure {
             sched_path = root / "add1.sched.uhir"
             alloc_path.write_text(alloc, encoding="utf-8")
 
-            self.assertEqual(main(["sched", str(alloc_path), "-o", str(sched_path)]), 0)
+            self.assertEqual(main(["sched", str(alloc_path), "--algo", "asap", "-o", str(sched_path)]), 0)
 
             sched_text = sched_path.read_text(encoding="utf-8")
             self.assertIn("stage sched", sched_text)
@@ -276,6 +497,31 @@ region proc_add1 kind=procedure {
             self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1", sched_text)
             self.assertIn("steps [0:1]", sched_text)
             self.assertIn("latency 2", sched_text)
+
+    def test_sched_command_requires_algo(self) -> None:
+        alloc = """design add1
+stage alloc
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0
+  node v1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1
+  node v2 = ret v1 class=CTRL ii=0 delay=0
+  node v3 = nop role=sink class=CTRL ii=0 delay=0
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            alloc_path = root / "add1.alloc.uhir"
+            alloc_path.write_text(alloc, encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["sched", str(alloc_path)]), 2)
+            self.assertIn("Missing option '--algo'", stderr.getvalue())
 
     def test_sched_command_accepts_external_flat_sgu_scheduler(self) -> None:
         alloc = """design add1

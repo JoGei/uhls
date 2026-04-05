@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from uhls.backend.hls import bind_dump_to_dot, binding_to_dot, format_bind_dump, lower_alloc_to_sched, lower_sched_to_bind, parse_bind_dump_spec
 from uhls.backend.hls.bind.builtin import LeftEdgeBinder
-from uhls.backend.uhir import lower_module_to_seq, lower_seq_to_alloc, parse_uhir
+from uhls.backend.uhir import (
+    ExecutabilityGraph,
+    create_builtin_gopt_pass,
+    lower_module_to_seq,
+    lower_seq_to_alloc,
+    parse_uhir,
+    parse_uhir_file,
+    run_gopt_passes,
+)
 from uhls.frontend import lower_source_to_uir
-from uhls.backend.uhir import ExecutabilityGraph
 
 
 class BindingLoweringTests(unittest.TestCase):
+    @staticmethod
+    def _infer_static(design):
+        return run_gopt_passes(design, [create_builtin_gopt_pass("infer_static")])
+
     def _full_executability_graph(self) -> ExecutabilityGraph:
         operations = (
             "add",
@@ -424,7 +436,7 @@ class BindingLoweringTests(unittest.TestCase):
         bind_design = lower_sched_to_bind(
             lower_alloc_to_sched(
                 lower_seq_to_alloc(
-                    lower_module_to_seq(lower_source_to_uir(source), top="dot4"),
+                    self._infer_static(lower_module_to_seq(lower_source_to_uir(source), top="dot4")),
                     executability_graph=self._full_executability_graph(),
                 )
             )
@@ -483,7 +495,7 @@ class BindingLoweringTests(unittest.TestCase):
         bind_design = lower_sched_to_bind(
             lower_alloc_to_sched(
                 lower_seq_to_alloc(
-                    lower_module_to_seq(lower_source_to_uir(source), top="dot4"),
+                    self._infer_static(lower_module_to_seq(lower_source_to_uir(source), top="dot4")),
                     executability_graph=self._full_executability_graph(),
                 )
             ),
@@ -492,11 +504,24 @@ class BindingLoweringTests(unittest.TestCase):
 
         dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
         self.assertIn('"dfgsb_unroll_reg_1_5" -> "dfgsb_unroll_op_1_1"', dot)
-        self.assertIn('"dfgsb_unroll_reg_2_4" -> "dfgsb_unroll_op_2_1"', dot)
         self.assertIn('"dfgsb_unroll_reg_7_6" -> "dfgsb_unroll_op_7_1"', dot)
-        self.assertIn('"dfgsb_unroll_reg_8_4" -> "dfgsb_unroll_op_8_1"', dot)
+        self.assertIn('"dfgsb_unroll_op_7_1" -> "dfgsb_unroll_op_8_1"', dot)
+        self.assertIn('"dfgsb_unroll_op_19_2" -> "dfgsb_unroll_op_25_0"', dot)
         self.assertIn('"dfgsb_unroll_op_25_2" -> "dfgsb_unroll_op_25_0"', dot)
         self.assertNotIn('label="t0_0\\n', dot)
+
+    def test_flattened_binding_colors_register_values_per_occurrence(self) -> None:
+        sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
+
+        bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
+
+        loop_region = bind_design.get_region("loop_dot4_for_header_1")
+        self.assertIsNotNone(loop_region)
+        assert loop_region is not None
+
+        sum_bindings = [binding for binding in loop_region.value_bindings if binding.producer == "sum_1"]
+        self.assertGreater(len(sum_bindings), 1)
+        self.assertTrue(all(binding.live_intervals for binding in sum_bindings))
 
     def test_dfgsb_dot_routes_cross_sgu_value_through_register_without_direct_duplicate_edge(self) -> None:
         bind_design = lower_sched_to_bind(

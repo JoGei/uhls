@@ -17,6 +17,14 @@ from .model import (
     UHIRValueBinding,
 )
 from .dot import to_dot
+from .gopt import (
+    GOptPassSpec,
+    builtin_gopt_pass_names,
+    builtin_gopt_specs,
+    create_builtin_gopt_pass,
+    project_to_seq_design,
+    run_gopt_passes,
+)
 from .pretty import format_uhir
 from .text import UHIRParseError, parse_uhir, parse_uhir_file
 
@@ -82,6 +90,7 @@ def __getattr__(name: str) -> object:
 
 __all__ = [
     "ExecutabilityGraph",
+    "GOptPassSpec",
     "UHIRConstant",
     "UHIRDesign",
     "UHIREdge",
@@ -95,6 +104,10 @@ __all__ = [
     "UHIRSchedule",
     "UHIRSourceMap",
     "UHIRValueBinding",
+    "builtin_gopt_pass_names",
+    "builtin_gopt_specs",
+    "create_builtin_gopt_pass",
+    "project_to_seq_design",
     "build_sequencing_graph",
     "dummy_executability_graph",
     "executability_graph_from_uhir",
@@ -106,4 +119,5 @@ __all__ = [
     "to_dot",
     "parse_uhir",
     "parse_uhir_file",
+    "run_gopt_passes",
 ]

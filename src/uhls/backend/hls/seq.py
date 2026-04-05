@@ -33,8 +33,6 @@ from uhls.middleend.uir import (
     ReturnOp,
     StoreOp,
     UnaryOp,
-    Literal,
-    Variable,
     type_name,
 )
 from uhls.utils.graph import breadth_first_walk
@@ -48,8 +46,6 @@ class SGNode:
     opcode: str
     operands: tuple[str, ...] = ()
     result_type: str | None = None
-    resource_class: str = "ctrl"
-    delay: int = 0
     attributes: dict[str, AttributeValue] = field(default_factory=dict)
     children: tuple[str, ...] = ()
 
@@ -212,8 +208,6 @@ class _LoopSummary:
     body_region_id: str
     empty_region_id: str
     body: frozenset[str]
-    exits: frozenset[str]
-    static_trip_count: int | None = None
 
 
 @dataclass
@@ -374,9 +368,6 @@ class _SeqLowerer:
                     loop.helper_id,
                     "loop",
                     (),
-                    resource_class="ctrl",
-                    delay=0,
-                    attributes=_static_trip_count_attributes(loop.static_trip_count),
                     children=(loop.region_id,),
                 )
                 proc_unit.nodes.append(helper)
@@ -414,8 +405,6 @@ class _SeqLowerer:
                     helper_id,
                     "branch",
                     (_format_operand_name(terminator.cond),),
-                    resource_class="ctrl",
-                    delay=0,
                     children=(layout.true_region_id, layout.false_region_id),
                 )
                 proc_unit.nodes.append(helper)
@@ -439,24 +428,6 @@ class _SeqLowerer:
             return
 
         proc_unit.edges.append(SGEdge("data", cursor, sink_id))
-
-    def _append_block_instructions(
-        self,
-        unit: SGUnit,
-        block: object,
-        cursor: str,
-        node_defs: dict[str, str],
-        last_memory: dict[str, str],
-    ) -> str:
-        last_node_id, produced_nodes = self._append_instructions(
-            unit,
-            block.instructions,
-            cursor=cursor,
-            node_defs=node_defs,
-            last_memory=last_memory,
-        )
-        self._connect_produced_nodes_to_sink(unit, produced_nodes)
-        return last_node_id
 
     def _append_instructions(
         self,
@@ -524,7 +495,7 @@ class _SeqLowerer:
         node_defs: dict[str, str],
     ) -> str:
         operands = () if terminator.value is None else (_format_operand_name(terminator.value),)
-        node = SGNode(self._new_node_id(), "ret", operands, resource_class="ctrl", delay=0)
+        node = SGNode(self._new_node_id(), "ret", operands)
         unit.nodes.append(node)
         added_predecessor = False
         if terminator.value is not None:
@@ -551,8 +522,6 @@ class _SeqLowerer:
                     body_region_id=_loop_body_region_id(function.name, info.header),
                     empty_region_id=_loop_empty_region_id(function.name, info.header),
                     body=info.body,
-                    exits=info.exits,
-                    static_trip_count=_static_loop_trip_count(function, info),
                 )
             )
         return summaries
@@ -607,8 +576,6 @@ class _SeqLowerer:
                 branch_id,
                 "branch",
                 branch_operands,
-                resource_class="ctrl",
-                delay=0,
                 children=(loop.body_region_id, loop.empty_region_id),
             )
         )
@@ -695,19 +662,15 @@ class _SeqLowerer:
         opcode = getattr(instruction, "opcode", instruction.__class__.__name__)
         operands = tuple(_instruction_operands(instruction))
         result_type = type_name(getattr(instruction, "type", None))
-        resource_class = _resource_class(instruction)
-        delay = _operation_delay(instruction)
         if isinstance(instruction, CallOp):
             return SGNode(
                 node_id,
                 "call",
                 operands,
                 result_type,
-                resource_class="ctrl",
-                delay=0,
                 children=(_function_region_id(instruction.callee),),
             )
-        return SGNode(node_id, opcode, operands, result_type, resource_class=resource_class, delay=delay)
+        return SGNode(node_id, opcode, operands, result_type)
 
     def _external_stub_unit(self, callee: str) -> SGUnit:
         unit = SGUnit(id=_function_region_id(callee), kind="procedure")
@@ -831,7 +794,7 @@ class _SeqLowerer:
         unit.edges = kept
 
     def _nop_node(self, role: str) -> SGNode:
-        return SGNode(self._new_node_id(), "nop", resource_class="ctrl", delay=0, attributes={"role": role})
+        return SGNode(self._new_node_id(), "nop", attributes={"role": role})
 
     def _new_node_id(self) -> str:
         self.value_counter += 1
@@ -990,33 +953,6 @@ def _instruction_memory_name(instruction: object) -> str | None:
     return None
 
 
-def _resource_class(instruction: object) -> str:
-    if isinstance(instruction, LoadOp):
-        return "memrd"
-    if isinstance(instruction, StoreOp):
-        return "memwr"
-    if isinstance(instruction, CompareOp):
-        return "cmp"
-    if isinstance(instruction, CallOp):
-        return "call"
-    if isinstance(instruction, (PrintOp, ParamOp, PhiOp)):
-        return "ctrl"
-    if isinstance(instruction, (ConstOp, UnaryOp, BinaryOp)):
-        return getattr(instruction, "opcode", "op")
-    return "ctrl"
-
-
-def _operation_delay(instruction: object) -> int:
-    opcode = getattr(instruction, "opcode", "")
-    if opcode in {"mul", "div", "mod"}:
-        return 2
-    if opcode in {"phi", "param", "print", "mov", "const"}:
-        return 0
-    if isinstance(instruction, CallOp):
-        return 0
-    return 1
-
-
 def _instruction_maps(node_id: str, instruction: object) -> list[UHIRSourceMap]:
     dest = _instruction_dest(instruction)
     if dest is not None:
@@ -1057,63 +993,6 @@ def _loop_exit_target(terminator: object) -> str | None:
     return None
 
 
-def _static_trip_count_attributes(trip_count: int | None) -> dict[str, AttributeValue]:
-    if trip_count is None:
-        return {}
-    return {"static_trip_count": trip_count}
-
-
-def _static_loop_trip_count(function: Function, loop_info: object) -> int | None:
-    header = getattr(loop_info, "header", None)
-    body = getattr(loop_info, "body", None)
-    latches = getattr(loop_info, "latches", None)
-    if not isinstance(header, str) or not isinstance(body, frozenset) or not isinstance(latches, tuple) or len(latches) != 1:
-        return None
-
-    block_map = function.block_map()
-    header_block = block_map.get(header)
-    if header_block is None or not isinstance(header_block.terminator, CondBranchOp):
-        return None
-
-    compare_cond = _variable_name(header_block.terminator.cond)
-    compare = next(
-        (
-            instruction
-            for instruction in header_block.instructions
-            if isinstance(instruction, CompareOp) and compare_cond == instruction.dest
-        ),
-        None,
-    )
-    if compare is None:
-        return None
-
-    induction_var, compare_opcode, bound = _normalize_trip_count_compare(header_block, compare)
-    if induction_var is None or compare_opcode is None or bound is None:
-        return None
-
-    phi = next((instruction for instruction in header_block.instructions if isinstance(instruction, PhiOp) and instruction.dest == induction_var), None)
-    if phi is None or len(phi.incoming) != 2:
-        return None
-
-    outside_incoming = next((item for item in phi.incoming if item.pred not in body), None)
-    backedge_incoming = next((item for item in phi.incoming if item.pred in body), None)
-    if outside_incoming is None or backedge_incoming is None:
-        return None
-
-    init = _resolve_constant_in_block(block_map.get(outside_incoming.pred), outside_incoming.value)
-    if init is None:
-        return None
-
-    update = _resolve_induction_update(block_map.get(backedge_incoming.pred), backedge_incoming.value)
-    if update is None:
-        return None
-    update_var, step = update
-    if update_var != induction_var or step == 0:
-        return None
-
-    return _compute_trip_count(init, bound, step, compare_opcode)
-
-
 def _loop_defined_names(function: Function, loop: _LoopSummary) -> set[str]:
     block_map = function.block_map()
     names: set[str] = set()
@@ -1126,94 +1005,6 @@ def _loop_defined_names(function: Function, loop: _LoopSummary) -> set[str]:
             if dest is not None:
                 names.add(dest)
     return names
-
-
-def _normalize_trip_count_compare(header_block: object, compare: CompareOp) -> tuple[str | None, str | None, int | None]:
-    lhs_name = _variable_name(compare.lhs)
-    rhs_name = _variable_name(compare.rhs)
-    lhs_const = _resolve_constant_in_block(header_block, compare.lhs)
-    rhs_const = _resolve_constant_in_block(header_block, compare.rhs)
-
-    if lhs_name is not None and rhs_const is not None:
-        return lhs_name, compare.opcode, rhs_const
-    if rhs_name is not None and lhs_const is not None:
-        return rhs_name, _flip_compare_opcode(compare.opcode), lhs_const
-    return None, None, None
-
-
-def _flip_compare_opcode(opcode: str) -> str | None:
-    return {
-        "lt": "gt",
-        "le": "ge",
-        "gt": "lt",
-        "ge": "le",
-    }.get(opcode)
-
-
-def _resolve_induction_update(block: object | None, value: object) -> tuple[str, int] | None:
-    if block is None:
-        return None
-    value_name = _variable_name(value)
-    if value_name is not None:
-        instruction = _block_definition(block, value_name)
-        if isinstance(instruction, UnaryOp) and instruction.opcode == "mov":
-            return _resolve_induction_update(block, instruction.value)
-        if isinstance(instruction, BinaryOp) and instruction.opcode in {"add", "sub"}:
-            lhs_name = _variable_name(instruction.lhs)
-            rhs_name = _variable_name(instruction.rhs)
-            lhs_const = _resolve_constant_in_block(block, instruction.lhs)
-            rhs_const = _resolve_constant_in_block(block, instruction.rhs)
-            if lhs_name is not None and rhs_const is not None:
-                delta = rhs_const if instruction.opcode == "add" else -rhs_const
-                return lhs_name, delta
-            if rhs_name is not None and lhs_const is not None and instruction.opcode == "add":
-                return rhs_name, lhs_const
-    return None
-
-
-def _resolve_constant_in_block(block: object | None, value: object) -> int | None:
-    if isinstance(value, Literal):
-        return int(value.value)
-    if isinstance(value, int):
-        return int(value)
-    value_name = _variable_name(value)
-    if value_name is not None and block is not None:
-        instruction = _block_definition(block, value_name)
-        if isinstance(instruction, ConstOp):
-            return int(instruction.value)
-        if isinstance(instruction, UnaryOp) and instruction.opcode == "mov":
-            return _resolve_constant_in_block(block, instruction.value)
-    return None
-
-
-def _variable_name(value: object) -> str | None:
-    if isinstance(value, Variable):
-        return value.name
-    if isinstance(value, str) and _looks_like_symbol_operand(value):
-        return value
-    return None
-
-
-def _block_definition(block: object, name: str) -> object | None:
-    for instruction in getattr(block, "instructions", []):
-        if getattr(instruction, "dest", None) == name:
-            return instruction
-    return None
-
-
-def _compute_trip_count(init: int, bound: int, step: int, compare_opcode: str) -> int | None:
-    if step > 0 and compare_opcode in {"lt", "le"}:
-        distance = bound - init if compare_opcode == "lt" else bound - init + 1
-        if distance <= 0:
-            return 0
-        return (distance + step - 1) // step
-    if step < 0 and compare_opcode in {"gt", "ge"}:
-        stride = -step
-        distance = init - bound if compare_opcode == "gt" else init - bound + 1
-        if distance <= 0:
-            return 0
-        return (distance + stride - 1) // stride
-    return None
 
 
 def _hier_edge(source: str, target: str, attributes: dict[str, AttributeValue] | None = None) -> SGEdge:

@@ -33,10 +33,11 @@ _FIXED_ALLOCATIONS = {
     "loop": (_CONTROL_FU, 0, 0),
     "CALL": (_CONTROL_FU, 0, 0),
     "call": (_CONTROL_FU, 0, 0),
+    "sel": (_CONTROL_FU, 0, 0),
     "ret": (_CONTROL_FU, 0, 0),
 }
 _ALLOCATION_ALGORITHMS = frozenset({"min_delay", "min_ii"})
-_STRUCTURAL_EXECUTABILITY_OPS = frozenset({"nop", "branch", "loop", "call", "ret"})
+_STRUCTURAL_EXECUTABILITY_OPS = frozenset({"nop", "branch", "loop", "call", "sel", "ret"})
 
 
 def dummy_executability_graph() -> ExecutabilityGraph:
@@ -437,13 +438,13 @@ def _normalize_weight(weight: object) -> tuple[int, int]:
 def _executability_opcode(opcode: str) -> str | None:
     if opcode in {"CALL", "call"}:
         return "call"
-    if opcode in {"NOP", "nop", "BRANCH", "branch", "LOOP", "loop"}:
+    if opcode in {"NOP", "nop", "BRANCH", "branch", "LOOP", "loop", "sel"}:
         return None
     return opcode
 
 
 def _embedded_executability_opcode(opcode: str) -> str | None:
-    if opcode in {"NOP", "nop", "BRANCH", "branch", "LOOP", "loop", "CALL", "call"}:
+    if opcode in {"NOP", "nop", "BRANCH", "branch", "LOOP", "loop", "CALL", "call", "sel"}:
         return opcode.lower()
     operation = _executability_opcode(opcode)
     return None if operation is None else _normalize_operation_name(operation)

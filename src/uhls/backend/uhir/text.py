@@ -252,9 +252,15 @@ def _parse_node(node_id: str, remainder: str, line_number: int) -> UHIRNode:
     if not expr_text:
         raise UHIRParseError(f"node '{node_id}' is missing an expression at line {line_number}")
     parts = expr_text.split(None, 1)
-    opcode = parts[0]
+    opcode = _normalize_node_opcode(parts[0])
     operands = () if len(parts) == 1 else tuple(_split_top_level(parts[1]))
     return UHIRNode(node_id, opcode, operands, result_type, attrs)
+
+
+def _normalize_node_opcode(opcode: str) -> str:
+    if opcode == "select":
+        return "sel"
+    return opcode
 
 
 def _parse_value_binding(producer: str, register: str, attrs_text: str, line_number: int) -> UHIRValueBinding:
@@ -676,6 +682,31 @@ def _validate_node_for_stage(node: UHIRNode, stage: str) -> None:
         if forbidden:
             raise UHIRParseError(f"exg-stage node '{node.id}' contains forbidden attributes: {', '.join(forbidden)}")
         return
+
+    pred = node.attributes.get("pred")
+    if pred is not None and (not isinstance(pred, str) or not pred):
+        raise UHIRParseError(f"node '{node.id}' has invalid pred=... attribute")
+
+    incoming = node.attributes.get("incoming")
+    if incoming is not None:
+        if node.opcode != "phi":
+            raise UHIRParseError(f"node '{node.id}' may only use incoming=[...] when opcode is 'phi'")
+        if not isinstance(incoming, tuple) or len(incoming) != len(node.operands):
+            raise UHIRParseError(f"phi node '{node.id}' must use incoming=[...] with one label per operand")
+        if any(not isinstance(label, str) or not label for label in incoming):
+            raise UHIRParseError(f"phi node '{node.id}' has invalid incoming=[...] labels")
+
+    if node.opcode == "sel" and len(node.operands) != 3:
+        raise UHIRParseError(f"sel node '{node.id}' must declare exactly three operands: cond, true_value, false_value")
+
+    for name in ("header_label", "true_label", "false_label", "true_input_label", "false_input_label"):
+        value = node.attributes.get(name)
+        if value is None:
+            continue
+        if node.opcode != "branch":
+            raise UHIRParseError(f"node '{node.id}' may only use {name}=... when opcode is 'branch'")
+        if not isinstance(value, str) or not value:
+            raise UHIRParseError(f"branch node '{node.id}' has invalid {name}=... attribute")
 
     class_name = node.attributes.get("class")
     initiation_interval = node.attributes.get("ii")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uhls.utils.graph import topological_sort
+
 from .model import (
     AttributeValue,
     UHIRConstant,
@@ -49,13 +51,27 @@ def format_region(region: UHIRRegion) -> list[str]:
         attrs.append(f"parent={region.parent}")
     lines = [f"region {region.id} {' '.join(attrs)} {{"]
 
-    for ref in region.region_refs:
+    ordered_refs = sorted(region.region_refs, key=lambda ref: ref.target)
+    ordered_nodes = _order_region_nodes(region)
+    node_position = {node.id: index for index, node in enumerate(ordered_nodes)}
+    ordered_edges = _order_region_edges(region, node_position)
+    ordered_mappings = sorted(
+        region.mappings,
+        key=lambda mapping: (node_position.get(mapping.node_id, len(node_position)), mapping.node_id, mapping.source_id),
+    )
+    ordered_value_bindings = sorted(
+        region.value_bindings,
+        key=lambda binding: (binding.producer, binding.register, binding.live_intervals),
+    )
+    ordered_muxes = sorted(region.muxes, key=lambda mux: mux.id)
+
+    for ref in ordered_refs:
         lines.append(f"  region_ref {ref.target}")
-    for node in region.nodes:
+    for node in ordered_nodes:
         lines.append(f"  {format_node(node)}")
-    for edge in region.edges:
+    for edge in ordered_edges:
         lines.append(f"  {format_edge(edge)}")
-    for mapping in region.mappings:
+    for mapping in ordered_mappings:
         lines.append(f"  map {mapping.node_id} <- {mapping.source_id}")
     if region.steps is not None:
         lines.append(f"  steps [{region.steps[0]}:{region.steps[1]}]")
@@ -63,9 +79,9 @@ def format_region(region: UHIRRegion) -> list[str]:
         lines.append(f"  latency {region.latency}")
     if region.initiation_interval is not None:
         lines.append(f"  ii {region.initiation_interval}")
-    for value_binding in region.value_bindings:
+    for value_binding in ordered_value_bindings:
         lines.append(f"  {format_value_binding(value_binding)}")
-    for mux in region.muxes:
+    for mux in ordered_muxes:
         lines.append(f"  {format_mux(mux)}")
 
     lines.append("}")
@@ -132,3 +148,58 @@ def _format_attr_value(value: AttributeValue) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def _order_region_nodes(region: UHIRRegion) -> list[UHIRNode]:
+    base_nodes = sorted(region.nodes, key=_node_priority)
+    node_by_id = {node.id: node for node in base_nodes}
+
+    def neighbors(node: UHIRNode) -> tuple[UHIRNode, ...]:
+        next_nodes: list[UHIRNode] = []
+        for edge in region.edges:
+            if not edge.directed:
+                continue
+            if edge.source != node.id or edge.target not in node_by_id:
+                continue
+            if edge.kind == "seq" and edge.target not in node_by_id:
+                continue
+            target = node_by_id.get(edge.target)
+            if target is not None:
+                next_nodes.append(target)
+        return tuple(next_nodes)
+
+    try:
+        return topological_sort(base_nodes, neighbors, key=lambda node: node.id)
+    except ValueError:
+        return base_nodes
+
+
+def _node_priority(node: UHIRNode) -> tuple[int, str, str]:
+    role = node.attributes.get("role")
+    if node.opcode == "nop" and role == "source":
+        return (0, node.id, node.opcode)
+    if node.opcode == "phi":
+        return (1, node.id, node.opcode)
+    if node.opcode == "nop" and role == "sink":
+        return (4, node.id, node.opcode)
+    return (2, node.id, node.opcode)
+
+
+def _order_region_edges(region: UHIRRegion, node_position: dict[str, int]) -> list[UHIREdge]:
+    kind_rank = {"data": 0, "mem": 1, "seq": 2}
+
+    def endpoint_rank(endpoint: str) -> tuple[int, object]:
+        if endpoint in node_position:
+            return (0, node_position[endpoint])
+        return (1, endpoint)
+
+    return sorted(
+        region.edges,
+        key=lambda edge: (
+            kind_rank.get(edge.kind, 9),
+            endpoint_rank(edge.source),
+            endpoint_rank(edge.target),
+            0 if edge.directed else 1,
+            tuple(sorted(edge.attributes.items())),
+        ),
+    )

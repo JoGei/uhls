@@ -388,6 +388,13 @@ class _SeqLowerer:
                     self._new_node_id(),
                     "branch",
                     (_format_operand_name(header_block.terminator.cond),),
+                    attributes={
+                        "header_label": header_block.label,
+                        "true_label": header_block.terminator.true_target,
+                        "false_label": header_block.terminator.false_target,
+                        "true_input_label": header_block.terminator.true_target,
+                        "false_input_label": header_block.label,
+                    },
                     children=(loop.body_region_id, loop.empty_region_id),
                 )
                 proc_unit.nodes.append(helper)
@@ -427,6 +434,13 @@ class _SeqLowerer:
                     helper_id,
                     "branch",
                     (_format_operand_name(terminator.cond),),
+                    attributes={
+                        "header_label": block.label,
+                        "true_label": terminator.true_target,
+                        "false_label": terminator.false_target,
+                        "true_input_label": block.label if layout.join_target == terminator.true_target else terminator.true_target,
+                        "false_input_label": block.label if layout.join_target == terminator.false_target else terminator.false_target,
+                    },
                     children=(layout.true_region_id, layout.false_region_id),
                 )
                 proc_unit.nodes.append(helper)
@@ -594,6 +608,14 @@ class _SeqLowerer:
                 operands,
                 result_type,
                 children=(_function_region_id(instruction.callee),),
+            )
+        if isinstance(instruction, PhiOp):
+            return SGNode(
+                node_id,
+                opcode,
+                operands,
+                result_type,
+                attributes={"incoming": tuple(item.pred for item in instruction.incoming)},
             )
         return SGNode(node_id, opcode, operands, result_type)
 

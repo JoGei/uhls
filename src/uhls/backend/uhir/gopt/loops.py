@@ -69,6 +69,7 @@ def collect_loop_candidates(design: UHIRDesign) -> list[LoopCandidate]:
 
             body_names = produced_names(body_region)
             header_node_ids = _header_backward_closure(parent_region, branch_node.id)
+            header_node_ids.update(_loop_header_phi_ids(parent_region, body_names))
             if not header_node_ids:
                 continue
             header_nodes = [node_by_id[node_id] for node_id in header_node_ids if node_id in node_by_id]
@@ -267,6 +268,16 @@ def _header_backward_closure(region: UHIRRegion, branch_id: str) -> set[str]:
                 continue
             worklist.append(predecessor)
     return closure
+
+
+def _loop_header_phi_ids(region: UHIRRegion, body_names: set[str]) -> set[str]:
+    phi_ids: set[str] = set()
+    for node in region.nodes:
+        if node.opcode != "phi":
+            continue
+        if any(operand in body_names for operand in node.operands):
+            phi_ids.add(node.id)
+    return phi_ids
 
 
 def _edge_is_loop_header_internal(

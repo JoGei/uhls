@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from .builtin import InferLoopsPass, InferStaticPass, LoopDialectPass, PredicatePass, SimplifyStaticControlPass
+from .builtin import FoldPredicatesPass, InferLoopsPass, InferStaticPass, LoopDialectPass, PredicatePass, SimplifyStaticControlPass
 
 
 @dataclass(frozen=True)
@@ -51,8 +51,14 @@ _GOPT_PASS_SPECS: tuple[GOptPassSpec, ...] = (
     GOptPassSpec(
         name="predicate",
         factory=PredicatePass,
-        description="Future predication-driven control simplification for branch hierarchy.",
+        description="Conservatively predicate pure branch-export dataflow into the parent seq region.",
         example="uhls gopt input.seq.uhir -p predicate -o output.seq.uhir",
+    ),
+    GOptPassSpec(
+        name="fold_predicates",
+        factory=FoldPredicatesPass,
+        description="Fold redundant complementary predicated computations and trivial select nodes.",
+        example="uhls gopt input.seq.uhir -p predicate,fold_predicates -o output.seq.uhir",
     ),
 )
 

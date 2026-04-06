@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from uhls.backend.uhir import UHIRParseError, parse_uhir
+from uhls.backend.uhir import UHIRParseError, parse_uhir, to_dot
 
 
 class UHIRParserTests(unittest.TestCase):
@@ -161,6 +161,66 @@ class UHIRParserTests(unittest.TestCase):
         assert exg_region is not None
         self.assertEqual(exg_region.kind, "executability")
         self.assertFalse(exg_region.edges[0].directed)
+
+    def test_parse_seq_uhir_accepts_predicated_select_and_phi_incoming(self) -> None:
+        design = parse_uhir(
+            """
+            design pred
+            stage seq
+
+            region R0 kind=procedure {
+              node v0 = nop role=source
+              node v1 = branch c true_child=R1 false_child=R2 true_label=then false_label=else true_input_label=then false_input_label=else
+              node v2 = phi a, b : i32 incoming=[then, else]
+              node v3 = add x, y : i32 pred=c
+              node v4 = sel c, a, b : i32
+              node v5 = nop role=sink
+              edge data v1 -> v2
+              edge data v4 -> v5
+            }
+
+            region R1 kind=basicblock parent=R0 {
+              node s = nop role=source
+              node t = nop role=sink
+              edge data s -> t
+            }
+
+            region R2 kind=basicblock parent=R0 {
+              node u = nop role=source
+              node w = nop role=sink
+              edge data u -> w
+            }
+            """
+        )
+
+        region = design.get_region("R0")
+        self.assertIsNotNone(region)
+        assert region is not None
+        phi = next(node for node in region.nodes if node.id == "v2")
+        add = next(node for node in region.nodes if node.id == "v3")
+        select = next(node for node in region.nodes if node.id == "v4")
+        self.assertEqual(phi.attributes["incoming"], ("then", "else"))
+        self.assertEqual(add.attributes["pred"], "c")
+        self.assertEqual(select.operands, ("c", "a", "b"))
+
+    def test_dot_renders_sel_as_structural_control_node(self) -> None:
+        design = parse_uhir(
+            """
+            design pred
+            stage seq
+
+            region R0 kind=procedure {
+              node v0 = nop role=source
+              node v1 = sel c, a, b : i32
+              node v2 = nop role=sink
+              edge data v0 -> v1
+              edge data v1 -> v2
+            }
+            """
+        )
+
+        dot = to_dot(design)
+        self.assertIn('"v1" [label="v1: sel c, a, b : i32", shape=box, style=filled, fillcolor="#e6e6e6"];', dot)
 
     def test_parse_alloc_uhir_rejects_embedded_executability_missing_used_canonical_op(self) -> None:
         with self.assertRaises(UHIRParseError) as raised:

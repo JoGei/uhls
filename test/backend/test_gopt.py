@@ -9,6 +9,56 @@ from uhls.middleend.uir import parse_module
 
 
 class GraphOptimizerTests(unittest.TestCase):
+    def test_seq_phi_keeps_incoming_labels_for_branch_merges(self) -> None:
+        module = parse_module(
+            """
+            func dot4(A:i32[], B:i32[]) -> i32
+
+            block entry:
+                br for_header_1
+
+
+            block for_header_1:
+                i_1:i32 = phi(entry: 0:i32, for_body_2: t4_0)
+                sum_1:i32 = phi(entry: 0:i32, for_body_2: inl_mac_0_t1_0)
+                t0_0:i1 = lt i_1, 4:i32
+                cbr t0_0, for_body_2, for_exit_4
+
+
+            block for_body_2:
+                t1_0:i32 = load A[i_1]
+                t2_0:i32 = load B[i_1]
+                inl_mac_0_t0_0:i32 = mul t1_0, t2_0
+                inl_mac_0_t1_0:i32 = add sum_1, inl_mac_0_t0_0
+                t4_0:i32 = add i_1, 1:i32
+                br for_header_1
+
+
+            block for_exit_4:
+                t5_0:i1 = lt sum_1, 0:i32
+                cbr t5_0, if_then_5, if_end_7
+
+
+            block if_then_5:
+                br if_end_7
+
+
+            block if_end_7:
+                sum_4:i32 = phi(for_exit_4: sum_1, if_then_5: 0:i32)
+                ret sum_4
+            """
+        )
+
+        design = lower_module_to_seq(module, top="dot4")
+        proc = design.get_region("proc_dot4")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        phi = next(node for node in proc.nodes if node.opcode == "phi" and node.operands == ("sum_1", "0:i32"))
+        branch = next(node for node in proc.nodes if node.opcode == "branch" and node.operands == ("t5_0",))
+        self.assertEqual(phi.attributes.get("incoming"), ("for_exit_4", "if_then_5"))
+        self.assertEqual(branch.attributes.get("true_input_label"), "if_then_5")
+        self.assertEqual(branch.attributes.get("false_input_label"), "for_exit_4")
+
     def test_infer_loops_annotates_explicit_loop_hierarchy(self) -> None:
         module = parse_module(
             """
@@ -122,6 +172,57 @@ class GraphOptimizerTests(unittest.TestCase):
         assert loop_region is not None
         self.assertTrue(any(node.opcode == "loop" for node in proc.nodes))
         self.assertTrue(any(node.opcode == "branch" for node in loop_region.nodes))
+
+    def test_translate_loop_dialect_moves_all_loop_carried_header_phis(self) -> None:
+        module = parse_module(
+            """
+            func dot4(A:i32[], B:i32[]) -> i32
+
+            block entry:
+                br for_header_1
+
+
+            block for_header_1:
+                i_1:i32 = phi(entry: 0:i32, for_body_2: t4_0)
+                sum_1:i32 = phi(entry: 0:i32, for_body_2: inl_mac_0_t1_0)
+                t0_0:i1 = lt i_1, 4:i32
+                cbr t0_0, for_body_2, for_exit_4
+
+
+            block for_body_2:
+                t1_0:i32 = load A[i_1]
+                t2_0:i32 = load B[i_1]
+                inl_mac_0_t0_0:i32 = mul t1_0, t2_0
+                inl_mac_0_t1_0:i32 = add sum_1, inl_mac_0_t0_0
+                t4_0:i32 = add i_1, 1:i32
+                br for_header_1
+
+
+            block for_exit_4:
+                ret sum_1
+            """
+        )
+
+        design = run_gopt_passes(
+            lower_module_to_seq(module, top="dot4"),
+            [
+                create_builtin_gopt_pass("infer_loops"),
+                create_builtin_gopt_pass("translate_loop_dialect"),
+            ],
+        )
+
+        proc = design.get_region("proc_dot4")
+        loop_region = design.get_region("loop_dot4_for_header_1")
+        self.assertIsNotNone(proc)
+        self.assertIsNotNone(loop_region)
+        assert proc is not None
+        assert loop_region is not None
+
+        proc_phi_maps = {mapping.source_id for mapping in proc.mappings}
+        loop_phi_maps = {mapping.source_id for mapping in loop_region.mappings}
+        self.assertNotIn("sum_1", proc_phi_maps)
+        self.assertIn("sum_1", loop_phi_maps)
+        self.assertIn("i_1", loop_phi_maps)
 
     def test_project_to_seq_design_strips_later_stage_artifacts(self) -> None:
         design = parse_uhir(
@@ -324,3 +425,93 @@ class GraphOptimizerTests(unittest.TestCase):
 
     def test_loop_dialect_alias_still_resolves(self) -> None:
         self.assertIsInstance(create_builtin_gopt_pass("loop_dialect"), LoopDialectPass)
+
+    def test_predicate_resolves_branch_merge_into_parent_select(self) -> None:
+        module = parse_module(
+            """
+            func dot4(A:i32[], B:i32[]) -> i32
+
+            block entry:
+                br for_header_1
+
+
+            block for_header_1:
+                i_1:i32 = phi(entry: 0:i32, for_body_2: t4_0)
+                sum_1:i32 = phi(entry: 0:i32, for_body_2: inl_mac_0_t1_0)
+                t0_0:i1 = lt i_1, 4:i32
+                cbr t0_0, for_body_2, for_exit_4
+
+
+            block for_body_2:
+                t1_0:i32 = load A[i_1]
+                t2_0:i32 = load B[i_1]
+                inl_mac_0_t0_0:i32 = mul t1_0, t2_0
+                inl_mac_0_t1_0:i32 = add sum_1, inl_mac_0_t0_0
+                t4_0:i32 = add i_1, 1:i32
+                br for_header_1
+
+
+            block for_exit_4:
+                t5_0:i1 = lt sum_1, 0:i32
+                cbr t5_0, if_then_5, if_end_7
+
+
+            block if_then_5:
+                br if_end_7
+
+
+            block if_end_7:
+                sum_4:i32 = phi(for_exit_4: sum_1, if_then_5: 0:i32)
+                ret sum_4
+            """
+        )
+
+        design = run_gopt_passes(lower_module_to_seq(module, top="dot4"), [create_builtin_gopt_pass("predicate")])
+        proc = design.get_region("proc_dot4")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        self.assertIsNone(design.get_region("bb_dot4_if_then_5"))
+        self.assertIsNone(design.get_region("branch_empty_dot4_for_exit_4_false"))
+        self.assertFalse(any(node.opcode == "branch" and node.operands == ("t5_0",) for node in proc.nodes))
+        select = next(node for node in proc.nodes if node.opcode == "sel")
+        self.assertEqual(select.operands, ("t5_0", "0:i32", "sum_1"))
+
+    def test_fold_predicates_collapses_equivalent_complementary_ops(self) -> None:
+        module = parse_module(
+            """
+            func same_add(x:i32, y:i32, c:i32) -> i32
+
+            block entry:
+                t0_0:i1 = lt c, 0:i32
+                cbr t0_0, if_then_1, if_else_2
+
+
+            block if_then_1:
+                t1_0:i32 = add x, y
+                br if_end_3
+
+
+            block if_else_2:
+                t2_0:i32 = add x, y
+                br if_end_3
+
+
+            block if_end_3:
+                t3_0:i32 = phi(if_then_1: t1_0, if_else_2: t2_0)
+                ret t3_0
+            """
+        )
+
+        design = run_gopt_passes(
+            lower_module_to_seq(module, top="same_add"),
+            [create_builtin_gopt_pass("predicate"), create_builtin_gopt_pass("fold_predicates")],
+        )
+        proc = design.get_region("proc_same_add")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        self.assertEqual([node.opcode for node in proc.nodes].count("add"), 1)
+        self.assertFalse(any(node.opcode == "sel" for node in proc.nodes))
+        add_node = next(node for node in proc.nodes if node.opcode == "add")
+        self.assertNotIn("pred", add_node.attributes)
+        self.assertIsNone(design.get_region("bb_same_add_if_then_1"))
+        self.assertIsNone(design.get_region("bb_same_add_if_else_2"))

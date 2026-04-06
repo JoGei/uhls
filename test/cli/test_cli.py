@@ -309,7 +309,8 @@ block for_exit_4:
             self.assertIn("static_trip_count=4", optimized_text)
             self.assertNotIn("lt i_1, 4:i32", optimized_text)
             self.assertIn("node v", optimized_text)
-            self.assertIn("branch true_child=", optimized_text)
+            self.assertIn("true_child=", optimized_text)
+            self.assertIn("false_child=", optimized_text)
 
     def test_gopt_command_projects_bind_input_back_to_seq(self) -> None:
         bind = """design add1

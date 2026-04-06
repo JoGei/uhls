@@ -458,6 +458,33 @@ Optional attributes:
 * implementation-specific annotations
 
 The canonical `seq` emission carries only structural sequencing attributes such as `role`, `child`, `true_child`, and `false_child`.
+A later µhIR graph-optimization step such as `uhls gopt -p infer_static` may annotate trivially statically bounded `loop` hierarchy nodes with `static_trip_count=<int>`.
+For branch-oriented graph rewrites, `seq` may also carry:
+
+* `incoming=[<pred0>, <pred1>, ...]` on `phi` nodes, preserving predecessor labels in operand order
+* `pred=<predicate>` on nodes introduced by `uhls gopt -p predicate`
+* branch provenance such as `header_label`, `true_label`, `false_label`, `true_input_label`, and `false_input_label`
+
+After predication, a join-like dataflow merge may be expressed with:
+
+[source,text]
+----
+node v19 = sel c, a_t, a_f : i32
+----
+
+Interpretation:
+
+* `phi` is a control-flow merge
+  it associates incoming values with predecessor labels via `incoming=[...]`
+* `sel` is a dataflow merge
+  it chooses between already available true/false values via an explicit condition operand
+
+where the three operands are:
+
+* branch condition
+* value for the true arm
+* value for the false arm
+
 Allocation attributes such as `class`, `ii`, and `delay` are introduced by the `alloc` stage.
 
 === Example: flat SGU
@@ -581,7 +608,7 @@ stage seq
 region R0 kind=procedure {
   node v0  = nop                 role=source
   region_ref R1
-  node v1  = loop i                   child=R1
+  node v1  = loop                     child=R1
   node v2  = store Y[i], acc
   node v3  = nop                 role=sink
 
@@ -594,7 +621,7 @@ region R1 kind=loop parent=R0 {
   node v4  = nop                 role=source
   region_ref R2
   region_ref R3
-  node v5  = lt i, N             : i1
+  node v5  = lt i, 4             : i1
   node v6  = branch v5                true_child=R2 false_child=R3
   node v7  = nop                 role=sink
 
@@ -623,6 +650,12 @@ region R3 kind=empty parent=R1 {
   edge seq v12 -> v13
 }
 ----
+
+Future extension:
+
+* For statically timed loops, one possible `gopt` canonicalization is to predicate or inline the `kind=body` region into the surrounding `kind=loop` header SGU when the false alternative is only the trivial `kind=empty` `nop -> nop` region.
+* This would turn the loop-header SGU into a fuller one-iteration template while keeping the outer parent `loop` node as the hierarchical summary vertex.
+* This transformation is intentionally not part of the current baseline; it remains a possible future loop-dialect simplification.
 
 == Stage: `alloc`
 
@@ -706,6 +739,9 @@ Each allocated node should include:
 * `ii=<int>`
 * `delay=<int>`
 
+Structural conditional-merge nodes such as `sel` may remain after `uhls gopt -p predicate`.
+They are treated like control-side logic in the first allocation model and typically receive `class=CTRL ii=0 delay=0`.
+
 Optional attributes:
 
 * width/type information via `: <type>`
@@ -784,11 +820,36 @@ Each scheduled node should include:
 * `start=<int>`
 * `end=<int>`
 
+Timing convention:
+
+* `start` is the first occupied control step
+* `end` is the last occupied control step, inclusive
+* for `delay>0`, `end = start + delay - 1`
+* for `delay=0`, `end = start`
+
 Optional attributes:
 
 * `guard=<predicate>`
 * `slot=<int>`
 * `stage=<int>` for pipelined forms
+* `static_trip_count=<int>` on statically bounded loop hierarchy, typically inferred by `gopt infer_static`
+* `iter_latency=<int>`, `iter_initiation_interval=<int>`, and `iter_ramp_down=<int>` on scheduled `loop` nodes when the loop is summarized hierarchically
+
+For hierarchical loop schedules, the outer `loop` node carries the global loop summary.
+Its child `kind=loop`, `kind=body`, and `kind=empty` regions remain one-iteration templates with local `start`/`end` times; they are not globally expanded once per trip.
+The summarized loop-node delay follows:
+
+[source,text]
+----
+delay = static_trip_count * iter_initiation_interval + iter_ramp_down
+----
+
+For data-independent hierarchical branch scheduling, a `branch` node may summarize its alternatives with:
+
+[source,text]
+----
+delay = max(delay_true_child, delay_false_child)
+----
 
 === Region schedule summary
 
@@ -796,7 +857,7 @@ Optional but recommended:
 
 [source,text]
 ----
-steps <start>..<end>
+steps [<start>:<end>]
 latency <int>
 ii <int>
 ----
@@ -821,7 +882,7 @@ region R0 kind=procedure {
   edge data v3 -> v4
   edge data v4 -> v5
 
-  steps 0..4
+  steps [0:4]
   latency 5
 }
 ----
@@ -933,21 +994,41 @@ Each bound operation node should include at least:
 * `end=<int>`
 * `bind=<resource-id>`
 
+The same inclusive timing convention as `sched` applies:
+
+* `start` is the first occupied control step
+* `end` is the last occupied control step, inclusive
+* for `delay>0`, `end = start + delay - 1`
+* for `delay=0`, `end = start`
+
 === Value-to-register binding lines
 
 Syntax:
 
 [source,text]
 ----
-value <producer-or-value-id> -> <reg-id> live=<start>..<end>
+value <producer-or-value-id> -> <reg-id> live=[<start>:<end>][,<start>:<end>]*
 ----
+
+Preferred convention:
+
+* When a region already maps node ids back to earlier IR/source value ids via `map`,
+  bind-stage `value ...` lines should use that mapped value id.
+* Local node ids remain acceptable as a fallback for hand-written or reduced µhIR
+  that does not carry source mappings.
 
 Example:
 
 [source,text]
 ----
-value v3 -> r_tmp live=2..3
+value %t17 -> r_tmp live=[2:3]
 ----
+
+Well-formedness:
+
+* each interval uses inclusive bounds `[s:e]`
+* each interval must satisfy `s<=e`
+* one value binding may carry one interval or a comma-separated list of intervals
 
 === Mux declarations
 
@@ -997,10 +1078,15 @@ region R0 kind=procedure {
   edge data v3 -> v4
   edge data v4 -> v5
 
-  value v1 -> r_p   live=0..1
-  value v2 -> r_q   live=0..1
-  value v3 -> r_p   live=2..3
-  value v4 -> r_acc live=3..4
+  map v1 <- %p
+  map v2 <- %q
+  map v3 <- %prod
+  map v4 <- %acc_next
+
+  value %p        -> r_p   live=[0:1]
+  value %q        -> r_q   live=[0:1]
+  value %prod     -> r_p   live=[2:3]
+  value %acc_next -> r_acc live=[3:4]
 
   mux mx0 : input=[r_acc, r_next] output=r_acc sel=state
 }
@@ -1183,10 +1269,11 @@ region_stmt ::= node_decl
 node_decl  ::= "node" IDENT "=" OP ARGS [ ":" TYPE ] attr_list
 edge_decl  ::= "edge" IDENT REF ("->" | "--") REF [ "when=" IDENT ]
 map_decl   ::= "map" IDENT "<-" REF
-steps_decl ::= "steps" INT ".." INT
+steps_decl ::= "steps" "[" INT ":" INT "]"
 latency_decl ::= "latency" INT
 ii_decl    ::= "ii" INT
-value_decl ::= "value" REF "->" IDENT "live=" INT ".." INT
+value_decl ::= "value" REF "->" IDENT "live=" live_interval { "," live_interval }
+live_interval ::= "[" INT ":" INT "]"
 mux_decl   ::= "mux" IDENT ":" "input=" "[" list "]" "output=" IDENT "sel=" IDENT
 region_ref_decl ::= "region_ref" IDENT
 ----

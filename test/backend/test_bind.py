@@ -589,6 +589,127 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertIn("reg 1", dot)
         self.assertIn("->", dot)
 
+    def test_dfgsb_dot_separates_unbound_ctrl_ops_in_same_cycle(self) -> None:
+        bind_design = lower_sched_to_bind(
+            parse_uhir(
+                """
+                design pred
+                stage sched
+                schedule kind=control_steps
+
+                region proc_pred kind=procedure {
+                  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+                  node v1 = sel c, a, b : i32 class=CTRL ii=0 delay=0 start=1 end=1
+                  node v2 = ret x class=CTRL ii=0 delay=0 start=1 end=1
+                  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+                  edge data v0 -> v1
+                  edge data v1 -> v2
+                  edge data v2 -> v3
+                }
+                """
+            )
+        )
+
+        dot = bind_dump_to_dot(bind_design, ("dfgsb",))
+        self.assertIn('label="v1\\nsel\\nctrl"', dot)
+        self.assertIn('label="v2\\nret\\nctrl"', dot)
+        self.assertNotIn('label="v1 sel\\nv2 ret"', dot)
+
+    def test_dfgsb_dot_renders_constant_and_input_sources(self) -> None:
+        bind_design = lower_sched_to_bind(
+            parse_uhir(
+                """
+                design source_nodes
+                stage sched
+                input  A : memref<i32>
+                input  idx : i32
+                input  c : i1
+                output result : i32
+                schedule kind=control_steps
+
+                region proc_source_nodes kind=procedure {
+                  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+                  node v1 = load A, idx : i32 class=EWMS ii=1 delay=1 start=0 end=0
+                  node v2 = sel c, x, 0:i32 : i32 class=CTRL ii=0 delay=0 start=1 end=1
+                  node v3 = ret v2 class=CTRL ii=0 delay=0 start=1 end=1
+                  node v4 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+                  edge data v0 -> v1
+                  edge data v1 -> v2
+                  edge data v2 -> v3
+                  edge data v3 -> v4
+
+                  map v1 <- x
+                }
+                """
+            )
+        )
+
+        dot = bind_dump_to_dot(bind_design, ("dfgsb",))
+        self.assertIn('label="A"', dot)
+        self.assertIn('style="filled,bold"', dot)
+        self.assertIn('label="0:i32"', dot)
+        self.assertIn('style="filled,dashed"', dot)
+
+    def test_dfgsb_unroll_renders_input_and_constant_sources_per_consumption(self) -> None:
+        bind_design = lower_sched_to_bind(
+            parse_uhir(
+                """
+                design source_nodes_unroll
+                stage sched
+                input  A : i32
+                input  c : i1
+                schedule kind=control_steps
+
+                region proc_source_nodes_unroll kind=procedure {
+                  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+                  node v1 = sel c, A, 0:i32 : i32 class=CTRL ii=0 delay=0 start=1 end=1
+                  node v2 = sel c, A, 0:i32 : i32 class=CTRL ii=0 delay=0 start=2 end=2
+                  node v3 = ret v2 class=CTRL ii=0 delay=0 start=3 end=3
+                  node v4 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+
+                  edge data v0 -> v1
+                  edge data v1 -> v2
+                  edge data v2 -> v3
+                  edge data v3 -> v4
+                }
+                """
+            )
+        )
+
+        dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
+        self.assertGreaterEqual(dot.count('label="0:i32"'), 2)
+        self.assertGreaterEqual(dot.count('label="A"'), 2)
+
+    def test_dfgsb_dot_renders_output_sink_for_return(self) -> None:
+        bind_design = lower_sched_to_bind(
+            parse_uhir(
+                """
+                design out_node
+                stage sched
+                output result : i32
+                schedule kind=control_steps
+
+                region proc_out_node kind=procedure {
+                  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+                  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
+                  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+                  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+                  edge data v0 -> v1
+                  edge data v1 -> v2
+                  edge data v2 -> v3
+                }
+                """
+            )
+        )
+
+        dot = bind_dump_to_dot(bind_design, ("dfgsb",))
+        self.assertIn('label="v1"', dot)
+        self.assertIn('style="filled,bold"', dot)
+        self.assertIn('-> "dfgsb_proc_out_node_out_0"', dot)
+
     def test_lower_sched_to_bind_reuses_resources_across_mutually_exclusive_branch_sgus(self) -> None:
         sched_design = parse_uhir(
             """

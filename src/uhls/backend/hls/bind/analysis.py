@@ -44,6 +44,23 @@ class _DFGSBDotLayout:
     cluster_id: str
     op_nodes: dict[tuple[str, str], str]
     reg_nodes: dict[tuple[str, str, int], str]
+    source_nodes: dict[str, str]
+    output_nodes: dict[str, str]
+
+
+@dataclass(slots=True, frozen=True)
+class _DFGSBSourceSpec:
+    key: str
+    label: str
+    kind: str
+
+
+@dataclass(slots=True, frozen=True)
+class _DFGSBOutputSpec:
+    key: str
+    label: str
+    region_id: str
+    node_id: str
 
 
 def parse_bind_dump_spec(spec_text: str) -> tuple[str, ...]:
@@ -245,6 +262,8 @@ def _dot_dfgsb(design: UHIRDesign, *, compact: bool) -> list[str]:
             cluster_id=cluster_id,
             label=_region_boundary_label(region, region_by_id),
             entries=grouped.get(region_id, []),
+            source_specs=_collect_dfgsb_source_specs_from_nodes(design, list(region.nodes)),
+            output_specs=_collect_dfgsb_output_specs(design) if region.parent is None else [],
             compact=compact,
         )
         layouts[region_id] = layout
@@ -259,6 +278,8 @@ def _dot_dfgsb_unroll(design: UHIRDesign, *, compact: bool) -> list[str]:
         cluster_id="dfgsb_unroll",
         label="global dataflow graph with schedule and binding (unrolled)",
         entries=entries,
+        source_specs=[],
+        output_specs=_collect_dfgsb_output_specs(design),
         compact=compact,
     )
     lines.extend(_dot_dfgsb_unroll_edges(design, layout, entries))
@@ -841,6 +862,8 @@ def _render_dfgsb_dot_scope(
     cluster_id: str,
     label: str,
     entries: list[_BoundOccurrence],
+    source_specs: list[_DFGSBSourceSpec],
+    output_specs: list[_DFGSBOutputSpec],
     compact: bool,
 ) -> tuple[list[str], _DFGSBDotLayout]:
     lines = [
@@ -848,7 +871,7 @@ def _render_dfgsb_dot_scope(
         f'    label="{_escape_dot(label)}";',
         "    color=gray70;",
     ]
-    layout = _DFGSBDotLayout(cluster_id=cluster_id, op_nodes={}, reg_nodes={})
+    layout = _DFGSBDotLayout(cluster_id=cluster_id, op_nodes={}, reg_nodes={}, source_nodes={}, output_nodes={})
     if not entries:
         lines.append(f'    "{cluster_id}_empty" [label="empty", shape=plaintext, style=""];')
         lines.append("  }")
@@ -867,6 +890,19 @@ def _render_dfgsb_dot_scope(
     lines.append("    { rank=same; " + " ".join(f'"{node_id}";' for node_id in lane_headers) + " }")
     for left_id, right_id in zip(lane_headers, lane_headers[1:]):
         lines.append(f'    "{left_id}" -> "{right_id}" [style=invis, weight=50];')
+
+    if source_specs:
+        source_node_ids: list[str] = []
+        for index, source_spec in enumerate(source_specs):
+            source_id = f"{cluster_id}_src_{index}"
+            source_node_ids.append(source_id)
+            layout.source_nodes[source_spec.key] = source_id
+            lines.append(
+                f'    "{source_id}" [label="{_escape_dot_label(source_spec.label)}", {_dfgsb_source_style_attrs(source_spec.kind)}];'
+            )
+        lines.append("    { rank=same; " + " ".join(f'"{node_id}";' for node_id in source_node_ids) + " }")
+        for left_id, right_id in zip(source_node_ids, source_node_ids[1:]):
+            lines.append(f'    "{left_id}" -> "{right_id}" [style=invis, weight=30];')
 
     row_nodes_by_lane: dict[str, list[str]] = {lane: [] for lane in lanes}
     row_order = _dfgsb_row_order(entries)
@@ -902,6 +938,18 @@ def _render_dfgsb_dot_scope(
         del lane
         for top_id, bottom_id in zip(lane_nodes, lane_nodes[1:]):
             lines.append(f'    "{top_id}" -> "{bottom_id}" [style=invis, weight=20];')
+    if output_specs:
+        output_node_ids: list[str] = []
+        for index, output_spec in enumerate(output_specs):
+            output_id = f"{cluster_id}_out_{index}"
+            output_node_ids.append(output_id)
+            layout.output_nodes[output_spec.key] = output_id
+            lines.append(
+                f'    "{output_id}" [label="{_escape_dot_label(output_spec.label)}", {_dfgsb_source_style_attrs("input")}];'
+            )
+        lines.append("    { rank=same; " + " ".join(f'"{node_id}";' for node_id in output_node_ids) + " }")
+        for left_id, right_id in zip(output_node_ids, output_node_ids[1:]):
+            lines.append(f'    "{left_id}" -> "{right_id}" [style=invis, weight=30];')
     lines.append("  }")
     return lines, layout
 
@@ -923,11 +971,11 @@ def _render_dfgsb_dot_occurrence(
         entry = occupants[0]
         if entry.category == "operation":
             opcode = _compact_opcode(entry.opcode) if compact else entry.opcode
-            label = f"{entry.display_id}\\n{opcode}\\n{entry.bind}"
+            label = f"{entry.display_id}\\n{opcode}\\n{_entry_bind_label(entry)}"
             shape = "ellipse"
             layout.op_nodes[(entry.region_id, entry.display_id)] = node_id
         else:
-            label = entry.bind
+            label = _entry_bind_label(entry)
             shape = "box"
             layout.reg_nodes[(entry.region_id, entry.display_id, time_step)] = node_id
         return node_id, [f'    "{node_id}" [label="{_escape_dot_label(label)}", shape={shape}, fillcolor="{fillcolor}"];']
@@ -947,6 +995,8 @@ def _dot_dfgsb_region_edges(
         layout = layouts.get(region.id)
         if layout is None:
             continue
+        lines.extend(_dot_dfgsb_region_source_edges(design, region, layout))
+        lines.extend(_dot_dfgsb_region_output_edges(design, region, layout))
         lines.extend(_dot_dfgsb_region_data_edges(region, layout, helper))
         lines.extend(
             _dot_dfgsb_region_register_edges(
@@ -958,6 +1008,53 @@ def _dot_dfgsb_region_edges(
                 helper,
             )
         )
+    return lines
+
+
+def _dot_dfgsb_region_source_edges(design: UHIRDesign, region: UHIRRegion, layout: _DFGSBDotLayout) -> list[str]:
+    lines: list[str] = []
+    seen_edges: set[tuple[str, str]] = set()
+    for node in region.nodes:
+        if not _dfgsb_visible_opcode(node.opcode):
+            continue
+        target_id = layout.op_nodes.get((region.id, node.id))
+        if target_id is None:
+            continue
+        for operand in node.operands:
+            source_spec = _dfgsb_operand_source_spec(design, operand)
+            if source_spec is None:
+                continue
+            source_id = layout.source_nodes.get(source_spec.key)
+            if source_id is None:
+                continue
+            edge_key = (source_id, target_id)
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+            lines.append(f'  "{source_id}" -> "{target_id}" [color="#444444", penwidth=1.1];')
+    return lines
+
+
+def _dot_dfgsb_region_output_edges(design: UHIRDesign, region: UHIRRegion, layout: _DFGSBDotLayout) -> list[str]:
+    if region.parent is not None:
+        return []
+    output_specs = _collect_dfgsb_output_specs(design)
+    if not output_specs:
+        return []
+    lines: list[str] = []
+    for node in region.nodes:
+        if node.opcode != "ret":
+            continue
+        source_id = layout.op_nodes.get((region.id, node.id))
+        if source_id is None:
+            continue
+        for output_spec in output_specs:
+            if output_spec.region_id != region.id or output_spec.node_id != node.id:
+                continue
+            target_id = layout.output_nodes.get(output_spec.key)
+            if target_id is None:
+                continue
+            lines.append(f'  "{source_id}" -> "{target_id}" [color="#444444", penwidth=1.3];')
     return lines
 
 
@@ -1125,6 +1222,55 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
         node_entries.sort(key=lambda entry: (entry.start, entry.end, entry.display_id))
     for node_entries in reg_entries_by_node.values():
         node_entries.sort(key=lambda entry: (entry.start, entry.end, entry.display_id))
+
+    for region in design.regions:
+        for node in region.nodes:
+            if not _dfgsb_visible_opcode(node.opcode):
+                continue
+            for entry in op_entries_by_node.get((region.id, node.id), []):
+                target_id = layout.op_nodes.get((entry.region_id, entry.display_id))
+                if target_id is None:
+                    continue
+                for operand_index, operand in enumerate(node.operands):
+                    source_spec = _dfgsb_operand_source_spec(design, operand)
+                    if source_spec is None:
+                        continue
+                    source_id = _ensure_dfgsb_unroll_source_node(
+                        layout=layout,
+                        lines=lines,
+                        source_spec=source_spec,
+                        target_entry=entry,
+                        operand_index=operand_index,
+                    )
+                    edge_key = (source_id, target_id, "source")
+                    if edge_key in seen_edges:
+                        continue
+                    seen_edges.add(edge_key)
+                    lines.append(f'  "{source_id}" -> "{target_id}" [color="#444444", penwidth=1.1];')
+
+    output_specs = _collect_dfgsb_output_specs(design)
+    if output_specs:
+        for region in design.regions:
+            if region.parent is not None:
+                continue
+            for node in region.nodes:
+                if node.opcode != "ret":
+                    continue
+                for entry in op_entries_by_node.get((region.id, node.id), []):
+                    source_id = layout.op_nodes.get((entry.region_id, entry.display_id))
+                    if source_id is None:
+                        continue
+                    for output_spec in output_specs:
+                        if output_spec.region_id != region.id or output_spec.node_id != node.id:
+                            continue
+                        target_id = layout.output_nodes.get(output_spec.key)
+                        if target_id is None:
+                            continue
+                        edge_key = (source_id, target_id, "output")
+                        if edge_key in seen_edges:
+                            continue
+                        seen_edges.add(edge_key)
+                        lines.append(f'  "{source_id}" -> "{target_id}" [color="#444444", penwidth=1.3];')
 
     for region in design.regions:
         bound_producers = _bound_producer_node_ids(region)
@@ -1341,7 +1487,7 @@ def _render_trp_html_table(entries: list[_BoundOccurrence], *, compact: bool) ->
 
 def _entry_label(entry: _BoundOccurrence, *, compact: bool) -> str:
     opcode = _compact_opcode(entry.opcode) if compact else entry.opcode
-    return f"{entry.display_id} {opcode} {entry.bind}"
+    return f"{entry.display_id} {opcode} {_entry_bind_label(entry)}"
 
 
 def _entry_body(entry: _BoundOccurrence, *, compact: bool) -> str:
@@ -1395,7 +1541,7 @@ def _suffixes_for_region_node(entries: list[_BoundOccurrence], region_id: str, n
 
 
 def _dfgsb_lane_order(entries: list[_BoundOccurrence]) -> list[str]:
-    operation_lanes = sorted({entry.bind for entry in entries if entry.category == "operation"})
+    operation_lanes = sorted({_dfgsb_lane_key(entry) for entry in entries if entry.category == "operation"})
     register_lanes = sorted({entry.bind for entry in entries if entry.category == "register"})
     return [*operation_lanes, *register_lanes]
 
@@ -1426,13 +1572,96 @@ def _dfgsb_row_lane_entries(
         return [
             entry
             for entry in entries
-            if entry.category == "operation" and entry.bind == lane and entry.start <= time_step <= entry.end
+            if entry.category == "operation" and _dfgsb_lane_key(entry) == lane and entry.start <= time_step <= entry.end
         ]
     return [
         entry
         for entry in entries
         if entry.category == "register" and entry.bind == lane and entry.start <= time_step <= entry.end
     ]
+
+
+def _dfgsb_lane_key(entry: _BoundOccurrence) -> str:
+    if entry.category == "operation" and entry.class_name == "CTRL" and entry.bind == "ctrl":
+        return f"ctrl:{entry.node_id}"
+    return entry.bind
+
+
+def _dfgsb_source_style_attrs(kind: str) -> str:
+    if kind == "input":
+        return 'shape=box, fillcolor="#ffffff", color="#222222", style="filled,bold", penwidth=2'
+    return 'shape=box, fillcolor="#eeeeee", color="#999999", style="filled,dashed", penwidth=1.3'
+
+
+def _collect_dfgsb_source_specs_from_nodes(design: UHIRDesign, nodes: list[UHIRNode]) -> list[_DFGSBSourceSpec]:
+    source_specs: dict[str, _DFGSBSourceSpec] = {}
+    for node in nodes:
+        if not _dfgsb_visible_opcode(node.opcode):
+            continue
+        for operand in node.operands:
+            source_spec = _dfgsb_operand_source_spec(design, operand)
+            if source_spec is None:
+                continue
+            source_specs.setdefault(source_spec.key, source_spec)
+    return sorted(source_specs.values(), key=lambda spec: (spec.kind, spec.label))
+
+
+def _collect_dfgsb_output_specs(design: UHIRDesign) -> list[_DFGSBOutputSpec]:
+    specs: list[_DFGSBOutputSpec] = []
+    for region in design.regions:
+        if region.parent is not None:
+            continue
+        for node in region.nodes:
+            if node.opcode != "ret":
+                continue
+            label = node.operands[0] if node.operands else (design.outputs[0].name if design.outputs else node.id)
+            specs.append(
+                _DFGSBOutputSpec(
+                    key=f"output:{region.id}:{node.id}",
+                    label=label,
+                    region_id=region.id,
+                    node_id=node.id,
+                )
+            )
+    return specs
+
+
+def _dfgsb_operand_source_spec(design: UHIRDesign, operand: str) -> _DFGSBSourceSpec | None:
+    if operand in {port.name for port in design.inputs}:
+        return _DFGSBSourceSpec(key=f"input:{operand}", label=operand, kind="input")
+    if operand in {const_decl.name for const_decl in design.constants}:
+        return _DFGSBSourceSpec(key=f"const:{operand}", label=operand, kind="constant")
+    literal_head, separator, _literal_tail = operand.partition(":")
+    if separator and literal_head and literal_head[0] in "-0123456789":
+        return _DFGSBSourceSpec(key=f"const:{operand}", label=operand, kind="constant")
+    return None
+
+
+def _ensure_dfgsb_unroll_source_node(
+    *,
+    layout: _DFGSBDotLayout,
+    lines: list[str],
+    source_spec: _DFGSBSourceSpec,
+    target_entry: _BoundOccurrence,
+    operand_index: int,
+) -> str:
+    source_id = (
+        f"{layout.cluster_id}_src_"
+        f"{_port_name(target_entry.display_id)}_{target_entry.start}_{operand_index}"
+    )
+    if source_id in layout.source_nodes:
+        return layout.source_nodes[source_id]
+    layout.source_nodes[source_id] = source_id
+    lines.append(
+        f'  "{source_id}" [label="{_escape_dot_label(source_spec.label)}", {_dfgsb_source_style_attrs(source_spec.kind)}];'
+    )
+    return source_id
+
+
+def _entry_bind_label(entry: _BoundOccurrence) -> str:
+    if entry.class_name == "CTRL" and entry.bind.startswith("ctrl:"):
+        return "ctrl"
+    return entry.bind
 
 
 def _producer_node_by_name(region: UHIRRegion) -> dict[str, UHIRNode]:

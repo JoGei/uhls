@@ -25,7 +25,7 @@ def _render_region(region: UHIRRegion, compact: bool = False) -> list[str]:
     lines.append("  color=gray70;")
     for node in region.nodes:
         label = _escape(_node_label(node, compact=compact))
-        is_hierarchical = node.opcode in {"call", "loop", "branch"}
+        is_hierarchical = node.opcode in {"call", "loop", "branch", "sel"}
         shape = "box" if is_hierarchical else "ellipse"
         fillcolor = "#e6e6e6" if is_hierarchical else "#e8eef8" if node.opcode == "nop" else "#ffffff"
         lines.append(
@@ -102,7 +102,7 @@ def _node_label(node: object, compact: bool = False) -> str:
 
 def _compact_node_label(node: object) -> str:
     opcode = getattr(node, "opcode", "")
-    structural = {"call", "loop", "branch", "nop"}
+    structural = {"call", "loop", "branch", "nop", "sel"}
     if opcode in structural:
         short = opcode
     else:

@@ -33,11 +33,20 @@ _FIXED_ALLOCATIONS = {
     "loop": (_CONTROL_FU, 0, 0),
     "CALL": (_CONTROL_FU, 0, 0),
     "call": (_CONTROL_FU, 0, 0),
+    "PHI": (_CONTROL_FU, 0, 0),
+    "phi": (_CONTROL_FU, 0, 0),
+    "PRINT": (_CONTROL_FU, 0, 0),
+    "print": (_CONTROL_FU, 0, 0),
+    "CONST": (_CONTROL_FU, 0, 0),
+    "const": (_CONTROL_FU, 0, 0),
+    "PARAM": (_CONTROL_FU, 0, 0),
+    "param": (_CONTROL_FU, 0, 0),
     "sel": (_CONTROL_FU, 0, 0),
     "ret": (_CONTROL_FU, 0, 0),
 }
 _ALLOCATION_ALGORITHMS = frozenset({"min_delay", "min_ii"})
-_STRUCTURAL_EXECUTABILITY_OPS = frozenset({"nop", "branch", "loop", "call", "sel", "ret"})
+_STRUCTURAL_EXECUTABILITY_OPS = frozenset({"nop", "branch", "loop", "call", "phi", "print", "const", "param", "sel", "ret"})
+_IMPLICIT_EXECUTABILITY_OPS = frozenset({"br", "cbr", "call", "const", "param", "phi", "print", "ret"})
 
 
 def dummy_executability_graph() -> ExecutabilityGraph:
@@ -267,7 +276,11 @@ def _validate_and_select_allocations(
             )
         raise ValueError(f"executability graph edge {source!r} -> {target!r} references unknown vertices")
 
-    missing = sorted(operation for operation in _UIR_LANGUAGE_OPCODES if not executable_on.get(operation))
+    missing = sorted(
+        operation
+        for operation in _UIR_LANGUAGE_OPCODES
+        if operation not in _IMPLICIT_EXECUTABILITY_OPS and not executable_on.get(operation)
+    )
     if missing:
         names = ", ".join(missing)
         raise ValueError(f"executability graph does not cover all canonical µIR operations: {names}")

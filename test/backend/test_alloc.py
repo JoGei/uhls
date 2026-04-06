@@ -294,6 +294,57 @@ class AllocationLoweringTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not cover all canonical"):
             lower_seq_to_alloc(seq_design, executability_graph=graph)
 
+    def test_lower_seq_to_alloc_accepts_implicit_control_coverage_in_exg(self) -> None:
+        seq_design = lower_module_to_seq(
+            Module(
+                functions=[
+                    Function(
+                        name="add1",
+                        params=[Parameter("x", "i32")],
+                        return_type="i32",
+                        blocks=[Block("entry", instructions=[BinaryOp("add", "y", "i32", "x", 1)], terminator=ReturnOp("y"))],
+                    )
+                ],
+            )
+        )
+
+        covered_ops = (
+            "add",
+            "sub",
+            "mul",
+            "div",
+            "mod",
+            "and",
+            "or",
+            "xor",
+            "not",
+            "neg",
+            "eq",
+            "ne",
+            "lt",
+            "le",
+            "gt",
+            "ge",
+            "shl",
+            "shr",
+            "mov",
+            "load",
+            "store",
+        )
+        graph = ExecutabilityGraph(
+            functional_units=("fu_generic",),
+            operations=covered_ops,
+            edges=tuple(("fu_generic", operation, 1, 1) for operation in covered_ops),
+        )
+
+        alloc_design = lower_seq_to_alloc(seq_design, executability_graph=graph)
+
+        proc = alloc_design.get_region("proc_add1")
+        assert proc is not None
+        ret_node = next(node for node in proc.nodes if node.opcode == "ret")
+        self.assertEqual(ret_node.attributes["class"], "CTRL")
+        self.assertEqual(ret_node.attributes["delay"], 0)
+
     def test_lower_seq_to_alloc_rejects_edge_weights_with_ii_greater_than_delay(self) -> None:
         seq_design = lower_module_to_seq(
             Module(

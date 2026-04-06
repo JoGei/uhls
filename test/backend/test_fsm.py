@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from uhls.backend.hls import CompatibilityBinder, lower_bind_to_fsm, lower_sched_to_bind
+from uhls.backend.hls import CompatibilityBinder, fsm_to_dot, lower_bind_to_fsm, lower_sched_to_bind
 from uhls.backend.uhir import parse_uhir
 
 
@@ -70,6 +70,33 @@ class FSMLoweringTests(unittest.TestCase):
         region = fsm_design.get_region("proc_add1")
         assert region is not None
         self.assertEqual(region.value_bindings[0].register, "r_i32_0")
+
+    def test_fsm_to_dot_uses_vertical_state_progression(self) -> None:
+        bind_design = parse_uhir(
+            """
+            design add1
+            stage bind
+            schedule kind=control_steps
+            resources {
+              fu ewms0 : EWMS
+            }
+
+            region proc_add1 kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+              node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              steps [0:1]
+              latency 2
+            }
+            """
+        )
+
+        dot = fsm_to_dot(lower_bind_to_fsm(bind_design))
+        self.assertIn("rankdir=TB;", dot)
 
     def test_lower_bind_to_fsm_emits_mux_select_actions(self) -> None:
         bind_design = parse_uhir(

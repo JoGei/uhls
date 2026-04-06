@@ -9,7 +9,7 @@ from uhls.backend.uhir.model import UHIRController, UHIRDesign
 
 def fsm_to_dot(design: UHIRDesign) -> str:
     """Render one fsm-stage design as a controller state diagram."""
-    lines = [f'digraph "{design.name}.fsm" {{', "  rankdir=LR;", '  labelloc="t";', f'  label="{_escape(design.name)} FSM";']
+    lines = [f'digraph "{design.name}.fsm" {{', "  rankdir=TB;", '  labelloc="t";', f'  label="{_escape(design.name)} FSM";']
     for controller in design.controllers:
         lines.extend(_render_controller(controller))
     lines.append("}")

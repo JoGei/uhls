@@ -43,7 +43,8 @@ class _DFGSBTableLayout:
 @dataclass(slots=True)
 class _DFGSBDotLayout:
     cluster_id: str
-    op_nodes: dict[tuple[str, str], str]
+    op_entry_nodes: dict[tuple[str, str], str]
+    op_exit_nodes: dict[tuple[str, str], str]
     reg_nodes: dict[tuple[str, str, int], str]
     source_nodes: dict[str, str]
     output_nodes: dict[str, str]
@@ -883,7 +884,14 @@ def _render_dfgsb_dot_scope(
         f'    label="{_escape_dot(label)}";',
         "    color=gray70;",
     ]
-    layout = _DFGSBDotLayout(cluster_id=cluster_id, op_nodes={}, reg_nodes={}, source_nodes={}, output_nodes={})
+    layout = _DFGSBDotLayout(
+        cluster_id=cluster_id,
+        op_entry_nodes={},
+        op_exit_nodes={},
+        reg_nodes={},
+        source_nodes={},
+        output_nodes={},
+    )
     if not entries:
         lines.append(f'    "{cluster_id}_empty" [label="empty", shape=plaintext, style=""];')
         lines.append("  }")
@@ -985,7 +993,8 @@ def _render_dfgsb_dot_occurrence(
             opcode = _compact_opcode(entry.opcode) if compact else entry.opcode
             label = f"{entry.display_id}\\n{opcode}\\n{_entry_bind_label(entry)}"
             shape = "ellipse"
-            layout.op_nodes[(entry.region_id, entry.display_id)] = node_id
+            layout.op_entry_nodes.setdefault((entry.region_id, entry.display_id), node_id)
+            layout.op_exit_nodes[(entry.region_id, entry.display_id)] = node_id
         else:
             label = _entry_bind_label(entry)
             shape = "box"
@@ -994,6 +1003,14 @@ def _render_dfgsb_dot_occurrence(
 
     joined = "\\n".join(_entry_body(entry, compact=compact) for entry in occupants)
     return node_id, [f'    "{node_id}" [label="{_escape_dot_label(joined)}", shape=box, fillcolor="{fillcolor}"];']
+
+
+def _layout_op_entry_id(layout: _DFGSBDotLayout, region_id: str, display_id: str) -> str | None:
+    return layout.op_entry_nodes.get((region_id, display_id))
+
+
+def _layout_op_exit_id(layout: _DFGSBDotLayout, region_id: str, display_id: str) -> str | None:
+    return layout.op_exit_nodes.get((region_id, display_id))
 
 
 def _dot_dfgsb_region_edges(
@@ -1029,7 +1046,7 @@ def _dot_dfgsb_region_source_edges(design: UHIRDesign, region: UHIRRegion, layou
     for node in region.nodes:
         if not _dfgsb_visible_opcode(node.opcode):
             continue
-        target_id = layout.op_nodes.get((region.id, node.id))
+        target_id = _layout_op_entry_id(layout, region.id, node.id)
         if target_id is None:
             continue
         for operand in node.operands:
@@ -1057,7 +1074,7 @@ def _dot_dfgsb_region_output_edges(design: UHIRDesign, region: UHIRRegion, layou
     for node in region.nodes:
         if node.opcode != "ret":
             continue
-        source_id = layout.op_nodes.get((region.id, node.id))
+        source_id = _layout_op_exit_id(layout, region.id, node.id)
         if source_id is None:
             continue
         for output_spec in output_specs:
@@ -1076,11 +1093,11 @@ def _dot_dfgsb_region_data_edges(region: UHIRRegion, layout: _DFGSBDotLayout, he
     for node in region.nodes:
         if not _dfgsb_visible_opcode(node.opcode) or node.id in bound_producers:
             continue
-        source_id = layout.op_nodes.get((region.id, node.id))
+        source_id = _layout_op_exit_id(layout, region.id, node.id)
         if source_id is None:
             continue
         for target in _dfgsb_visible_targets(region, node.id, helper):
-            target_id = layout.op_nodes.get((region.id, target.id))
+            target_id = _layout_op_entry_id(layout, region.id, target.id)
             if target_id is None:
                 continue
             lines.append(f'  "{source_id}" -> "{target_id}" [color="#444444", penwidth=1.3];')
@@ -1108,7 +1125,7 @@ def _dot_dfgsb_region_register_edges(
         if producer is None or not _dfgsb_visible_opcode(producer.opcode):
             continue
         value_label = binding.producer
-        producer_id = layout.op_nodes.get((region.id, producer.id))
+        producer_id = _layout_op_exit_id(layout, region.id, producer.id)
         if producer_id is None:
             continue
         local_consumers = [
@@ -1127,10 +1144,9 @@ def _dot_dfgsb_region_register_edges(
             if entry.node_id in helper.get_value_names(region, producer)
         ]
         if not matching_entries:
-            producer_id = layout.op_nodes.get((region.id, producer.id))
             if producer_id is not None:
                 for target in _dfgsb_visible_targets(region, producer.id, helper):
-                    target_id = layout.op_nodes.get((region.id, target.id))
+                    target_id = _layout_op_entry_id(layout, region.id, target.id)
                     if target_id is None:
                         continue
                     edge_key = (producer_id, target_id, "hidden")
@@ -1166,7 +1182,7 @@ def _dot_dfgsb_region_register_edges(
                 if target_layout is None:
                     continue
                 target_row = helper.get_node_interval(consumer.region, consumer.node)[0] + consumer.start_shift
-                consumer_id = target_layout.op_nodes.get((consumer.region.id, consumer.node.id))
+                consumer_id = _layout_op_entry_id(target_layout, consumer.region.id, consumer.node.id)
                 if consumer_id is None:
                     continue
                 if target_row < reg_entry.start:
@@ -1192,7 +1208,7 @@ def _dot_dfgsb_region_register_edges(
                 target_layout = layouts.get(consumer.region.id)
                 if target_layout is None:
                     continue
-                consumer_id = target_layout.op_nodes.get((consumer.region.id, consumer.node.id))
+                consumer_id = _layout_op_entry_id(target_layout, consumer.region.id, consumer.node.id)
                 if consumer_id is None:
                     continue
                 edge_key = (exit_reg_id, consumer_id, "cross")
@@ -1221,7 +1237,7 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
 
     for entry in entries:
         if entry.category == "operation":
-            op_node_id = layout.op_nodes.get((entry.region_id, entry.display_id))
+            op_node_id = _layout_op_entry_id(layout, entry.region_id, entry.display_id)
             if op_node_id is None:
                 continue
             suffix = _display_suffix(entry.node_id, entry.display_id)
@@ -1240,7 +1256,7 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
             if not _dfgsb_visible_opcode(node.opcode):
                 continue
             for entry in op_entries_by_node.get((region.id, node.id), []):
-                target_id = layout.op_nodes.get((entry.region_id, entry.display_id))
+                target_id = _layout_op_entry_id(layout, entry.region_id, entry.display_id)
                 if target_id is None:
                     continue
                 for operand_index, operand in enumerate(node.operands):
@@ -1269,7 +1285,7 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
                 if node.opcode != "ret":
                     continue
                 for entry in op_entries_by_node.get((region.id, node.id), []):
-                    source_id = layout.op_nodes.get((entry.region_id, entry.display_id))
+                    source_id = _layout_op_exit_id(layout, entry.region_id, entry.display_id)
                     if source_id is None:
                         continue
                     for output_spec in output_specs:
@@ -1353,7 +1369,7 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
                     )
                 if producer_entry is None:
                     continue
-                producer_id = layout.op_nodes.get((producer_entry.region_id, producer_entry.display_id))
+                producer_id = _layout_op_exit_id(layout, producer_entry.region_id, producer_entry.display_id)
                 first_reg_id = layout.reg_nodes.get((reg_entry.region_id, reg_entry.display_id, reg_entry.start))
                 if producer_id is None or first_reg_id is None:
                     continue
@@ -1384,7 +1400,7 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
                         )
                         if alias_entry is None:
                             continue
-                        alias_op_id = layout.op_nodes.get((alias_entry.region_id, alias_entry.display_id))
+                        alias_op_id = _layout_op_exit_id(layout, alias_entry.region_id, alias_entry.display_id)
                         alias_reg_id = layout.reg_nodes.get((reg_entry.region_id, reg_entry.display_id, alias_entry.end + 1))
                         if alias_op_id is None or alias_reg_id is None:
                             continue
@@ -1412,7 +1428,7 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
                         if not (reg_entry.start <= consumer_entry.start <= reg_entry.end):
                             continue
                         reg_id = layout.reg_nodes.get((reg_entry.region_id, reg_entry.display_id, consumer_entry.start))
-                        consumer_id = layout.op_nodes.get((consumer_entry.region_id, consumer_entry.display_id))
+                        consumer_id = _layout_op_entry_id(layout, consumer_entry.region_id, consumer_entry.display_id)
                         if reg_id is None or consumer_id is None:
                             continue
                         edge_key = (reg_id, consumer_id, "consume")
@@ -1435,7 +1451,7 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
                         for consumer_entry in op_entries_by_node.get((alias_consumer.region.id, alias_consumer.node.id), []):
                             if consumer_entry.start < reg_entry.start:
                                 continue
-                            consumer_id = layout.op_nodes.get((consumer_entry.region_id, consumer_entry.display_id))
+                            consumer_id = _layout_op_entry_id(layout, consumer_entry.region_id, consumer_entry.display_id)
                             if exit_reg_id is None or consumer_id is None:
                                 continue
                             edge_key = (exit_reg_id, consumer_id, "alias_consume")

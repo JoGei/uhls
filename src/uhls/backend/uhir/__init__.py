@@ -27,6 +27,7 @@ from .gopt import (
 )
 from .pretty import format_uhir
 from .text import UHIRParseError, parse_uhir, parse_uhir_file
+from .timing import TimingBinary, TimingCall, TimingExpr, TimingUnary, TimingVar, parse_timing_expr
 
 if TYPE_CHECKING:
     from uhls.backend.hls.alloc import ExecutabilityGraph
@@ -104,6 +105,11 @@ __all__ = [
     "UHIRSchedule",
     "UHIRSourceMap",
     "UHIRValueBinding",
+    "TimingBinary",
+    "TimingCall",
+    "TimingExpr",
+    "TimingUnary",
+    "TimingVar",
     "builtin_gopt_pass_names",
     "builtin_gopt_specs",
     "create_builtin_gopt_pass",
@@ -119,5 +125,6 @@ __all__ = [
     "to_dot",
     "parse_uhir",
     "parse_uhir_file",
+    "parse_timing_expr",
     "run_gopt_passes",
 ]

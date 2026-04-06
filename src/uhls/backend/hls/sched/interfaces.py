@@ -7,7 +7,10 @@ from dataclasses import dataclass, field
 from collections.abc import Iterator
 from typing import Callable, Protocol
 
-from uhls.backend.uhir.model import UHIREdge, UHIRRegion
+from uhls.backend.uhir.model import TimingValue, UHIREdge, UHIRRegion
+
+
+ScheduleInterval = tuple[TimingValue, TimingValue]
 
 
 @dataclass(slots=True, frozen=True)
@@ -15,9 +18,10 @@ class SGUScheduleResult:
     """One scheduler result for one flat sequencing graph unit."""
 
     region_id: str
-    node_starts: dict[str, tuple[int, int]]
-    latency: int
-    initiation_interval: int | None = None
+    node_starts: dict[str, ScheduleInterval]
+    latency: TimingValue
+    initiation_interval: TimingValue | None = None
+    steps: ScheduleInterval | None = None
     metadata: dict[str, object] = field(default_factory=dict)
 
 

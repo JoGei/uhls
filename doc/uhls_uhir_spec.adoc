@@ -817,15 +817,33 @@ Each scheduled node should include:
 
 * `class=<resource-class>`
 * `delay=<int>`
-* `start=<int>`
-* `end=<int>`
+* `start=<int|timing-expr>`
+* `end=<int|timing-expr>`
 
 Timing convention:
 
 * `start` is the first occupied control step
 * `end` is the last occupied control step, inclusive
-* for `delay>0`, `end = start + delay - 1`
-* for `delay=0`, `end = start`
+* in fully static schedules, for `delay>0`, `end = start + delay - 1`
+* in fully static schedules, for `delay=0`, `end = start`
+* for dynamic scheduling extensions, `start`, `end`, `delay`, `steps`, `latency`, and `ii` may carry symbolic timing expressions instead of concrete integers
+
+`timing-expr` is a textual arithmetic sublanguage intended for transfer-format use.
+It is restricted to:
+
+* integer literals
+* identifiers
+* simple function calls such as `max(a, b)`
+* unary `-`
+* binary `+`, `-`, and `*`
+* parentheses
+
+Examples:
+
+* `4`
+* `tc`
+* `tc * ii`
+* `(tc - 1) * ii + rd`
 
 Optional attributes:
 
@@ -833,7 +851,7 @@ Optional attributes:
 * `slot=<int>`
 * `stage=<int>` for pipelined forms
 * `static_trip_count=<int>` on statically bounded loop hierarchy, typically inferred by `gopt infer_static`
-* `iter_latency=<int>`, `iter_initiation_interval=<int>`, and `iter_ramp_down=<int>` on scheduled `loop` nodes when the loop is summarized hierarchically
+* `iter_latency=<int|timing-expr>`, `iter_initiation_interval=<int|timing-expr>`, and `iter_ramp_down=<int|timing-expr>` on scheduled `loop` nodes when the loop is summarized hierarchically
 
 For hierarchical loop schedules, the outer `loop` node carries the global loop summary.
 Its child `kind=loop`, `kind=body`, and `kind=empty` regions remain one-iteration templates with local `start`/`end` times; they are not globally expanded once per trip.
@@ -851,6 +869,46 @@ For data-independent hierarchical branch scheduling, a `branch` node may summari
 delay = max(delay_true_child, delay_false_child)
 ----
 
+When a hierarchical control node is fully statically timed, it should carry:
+
+[source,text]
+----
+timing=static
+----
+
+When a hierarchical control node cannot be fully resolved statically at `sched` time, it may carry a symbolic control contract:
+
+[source,text]
+----
+timing=symbolic
+completion=symb_done_<node-id>
+----
+
+The node `delay` remains the best available schedule summary. For dynamic `call` and `loop` nodes this is typically:
+
+[source,text]
+----
+delay=symb_delay_<node-id>
+----
+
+Additional control-kind-specific attributes may be attached:
+
+* `branch_condition=<value-id>` on symbolic `branch` nodes
+* `continue_condition=<value-id>` on symbolic `loop` nodes
+* `iterate_when=<value-id>` on symbolic `loop` nodes when the iterate-again polarity should be explicit
+* `exit_when=!<value-id>` on symbolic `loop` nodes when the exit polarity should be explicit
+* `handshake=ready_done` on symbolic `call` and `loop` nodes whose datapath side exposes one ordered ready/done contract
+* `ready=symb_ready_<node-id>` on symbolic `call` and `loop` nodes
+
+When initiation interval cannot be resolved statically but must still be carried toward later control synthesis, hierarchical `call` and `loop` nodes may also use:
+
+[source,text]
+----
+ii=symb_ii_<node-id>
+----
+
+These attributes are intended as a bridge between `sched` and later `fsm` synthesis. They describe what runtime condition or completion event controls the hierarchy node, without requiring the `sched` stage to fully resolve dynamic control timing.
+
 === Region schedule summary
 
 Optional but recommended:
@@ -858,8 +916,8 @@ Optional but recommended:
 [source,text]
 ----
 steps [<start>:<end>]
-latency <int>
-ii <int>
+latency <int|timing-expr>
+ii <int|timing-expr>
 ----
 
 === Example: flat scheduled form
@@ -1270,12 +1328,22 @@ node_decl  ::= "node" IDENT "=" OP ARGS [ ":" TYPE ] attr_list
 edge_decl  ::= "edge" IDENT REF ("->" | "--") REF [ "when=" IDENT ]
 map_decl   ::= "map" IDENT "<-" REF
 steps_decl ::= "steps" "[" INT ":" INT "]"
-latency_decl ::= "latency" INT
-ii_decl    ::= "ii" INT
+steps_decl ::= "steps" "[" timing_expr ":" timing_expr "]"
+latency_decl ::= "latency" timing_expr
+ii_decl    ::= "ii" timing_expr
 value_decl ::= "value" REF "->" IDENT "live=" live_interval { "," live_interval }
 live_interval ::= "[" INT ":" INT "]"
 mux_decl   ::= "mux" IDENT ":" "input=" "[" list "]" "output=" IDENT "sel=" IDENT
 region_ref_decl ::= "region_ref" IDENT
+
+timing_expr ::= timing_sum
+timing_sum ::= timing_product { ("+" | "-") timing_product }
+timing_product ::= timing_factor { "*" timing_factor }
+timing_factor ::= INT
+                | IDENT
+                | IDENT "(" timing_expr { "," timing_expr } ")"
+                | "-" timing_factor
+                | "(" timing_expr ")"
 ----
 
 == Summary

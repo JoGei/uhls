@@ -11,6 +11,7 @@ from uhls.backend.uhir import (
     parse_uhir,
     run_gopt_passes,
 )
+from uhls.backend.uhir.timing import parse_timing_expr
 from uhls.frontend import lower_source_to_uir
 from uhls.middleend.uir import BinaryOp, Block, CallOp, CompareOp, CondBranchOp, Function, Module, Parameter, ReturnOp
 
@@ -77,6 +78,18 @@ class _FixedScheduler:
                     starts[node.id] = (9, 9)
             return SGUScheduleResult(region.id, starts, latency=10)
         raise AssertionError(f"unexpected region {region.id}")
+
+
+class _SymbolicScheduler:
+    def schedule_sgu(self, region) -> SGUScheduleResult:
+        starts = {node.id: (parse_timing_expr("t0"), parse_timing_expr("t1")) for node in region.nodes}
+        return SGUScheduleResult(
+            region.id,
+            starts,
+            latency=parse_timing_expr("L"),
+            initiation_interval=parse_timing_expr("II"),
+            steps=(parse_timing_expr("t0"), parse_timing_expr("t1")),
+        )
 
 
 class SchedulingLoweringTests(unittest.TestCase):
@@ -173,6 +186,36 @@ class SchedulingLoweringTests(unittest.TestCase):
         self.assertEqual(callee.latency, 3)
         self.assertEqual(caller.latency, 10)
 
+    def test_lower_alloc_to_sched_accepts_symbolic_schedule_result_for_flat_region(self) -> None:
+        alloc_design = lower_seq_to_alloc(
+            lower_module_to_seq(
+                Module(
+                    name="demo",
+                    functions=[
+                        Function(
+                            name="add1",
+                            params=[Parameter("x", "i32")],
+                            return_type="i32",
+                            blocks=[Block("entry", instructions=[BinaryOp("add", "y", "i32", "x", 1)], terminator=ReturnOp("y"))],
+                        )
+                    ],
+                )
+            ),
+            executability_graph=_full_executability_graph(),
+        )
+
+        sched_design = lower_alloc_to_sched(alloc_design, scheduler=_SymbolicScheduler())
+        proc = sched_design.get_region("proc_add1")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        add_node = next(node for node in proc.nodes if node.opcode == "add")
+
+        self.assertEqual(str(add_node.attributes["start"]), "t0")
+        self.assertEqual(str(add_node.attributes["end"]), "t1")
+        self.assertEqual(tuple(str(value) for value in proc.steps), ("t0", "t1"))
+        self.assertEqual(str(proc.latency), "L")
+        self.assertEqual(str(proc.initiation_interval), "II")
+
     def test_lower_alloc_to_sched_accepts_statically_bounded_loops(self) -> None:
         alloc_design = lower_seq_to_alloc(
             self._infer_static(
@@ -233,6 +276,14 @@ class SchedulingLoweringTests(unittest.TestCase):
         self.assertEqual(iter_initiation_interval, loop_region.latency)
         self.assertGreaterEqual(iter_initiation_interval, body_region.latency)
         self.assertEqual(loop_node.attributes["delay"], 4 * iter_initiation_interval + iter_ramp_down)
+        self.assertEqual(loop_node.attributes["ii"], iter_initiation_interval)
+        self.assertEqual(loop_node.attributes["timing"], "static")
+        self.assertNotIn("completion", loop_node.attributes)
+        self.assertNotIn("ready", loop_node.attributes)
+        self.assertNotIn("handshake", loop_node.attributes)
+        self.assertNotIn("continue_condition", loop_node.attributes)
+        self.assertNotIn("iterate_when", loop_node.attributes)
+        self.assertNotIn("exit_when", loop_node.attributes)
 
     def test_lower_alloc_to_sched_uses_max_child_latency_for_branches(self) -> None:
         alloc_design = lower_seq_to_alloc(
@@ -286,6 +337,158 @@ class SchedulingLoweringTests(unittest.TestCase):
         assert false_region is not None
 
         self.assertEqual(branch_node.attributes["delay"], max(true_region.latency or 0, false_region.latency or 0))
+        self.assertEqual(branch_node.attributes["timing"], "static")
+        self.assertNotIn("completion", branch_node.attributes)
+        self.assertNotIn("branch_condition", branch_node.attributes)
+
+    def test_lower_alloc_to_sched_uses_symbolic_max_for_dynamic_branch_latency(self) -> None:
+        alloc_design = parse_uhir(
+            """
+            design dyn_branch
+            stage alloc
+
+            region proc_dyn_branch kind=procedure {
+              region_ref bb_true
+              region_ref bb_false
+              node v0 = nop role=source class=CTRL ii=0 delay=0
+              node v1 = branch c true_child=bb_true false_child=bb_false class=CTRL ii=0 delay=0
+              node v2 = nop role=sink class=CTRL ii=0 delay=0
+              edge data v0 -> v1
+              edge data v1 -> v2
+            }
+
+            region bb_true kind=basic parent=proc_dyn_branch {
+              node t0 = nop role=source class=CTRL ii=0 delay=0
+              node t1 = add a, b : i32 class=FU_FAST_ADD ii=1 delay=1
+              node t2 = nop role=sink class=CTRL ii=0 delay=0
+              edge data t0 -> t1
+              edge data t1 -> t2
+            }
+
+            region bb_false kind=basic parent=proc_dyn_branch {
+              node f0 = nop role=source class=CTRL ii=0 delay=0
+              node f1 = add a, b : i32 class=FU_FAST_ADD ii=1 delay=1
+              node f2 = add f1, c : i32 class=FU_FAST_ADD ii=1 delay=1
+              node f3 = nop role=sink class=CTRL ii=0 delay=0
+              edge data f0 -> f1
+              edge data f1 -> f2
+              edge data f2 -> f3
+            }
+            """
+        )
+
+        sched_design = lower_alloc_to_sched(alloc_design, scheduler=_SymbolicScheduler())
+        proc = sched_design.get_region("proc_dyn_branch")
+        assert proc is not None
+        branch_node = next(node for node in proc.nodes if node.opcode == "branch")
+        self.assertEqual(str(branch_node.attributes["delay"]), "max(L, L)")
+        self.assertEqual(branch_node.attributes["timing"], "symbolic")
+        self.assertEqual(branch_node.attributes["completion"], "symb_done_v1")
+        self.assertEqual(branch_node.attributes["branch_condition"], "c")
+        self.assertNotIn("ready", branch_node.attributes)
+        self.assertNotIn("handshake", branch_node.attributes)
+        self.assertNotIn("continue_condition", branch_node.attributes)
+
+    def test_lower_alloc_to_sched_uses_symbolic_loop_summary_when_not_static(self) -> None:
+        alloc_design = parse_uhir(
+            """
+            design dyn_loop
+            stage alloc
+
+            region proc_dyn_loop kind=procedure {
+              region_ref loop_header_1
+              node v0 = nop role=source class=CTRL ii=0 delay=0
+              node v1 = loop child=loop_header_1 class=CTRL ii=0 delay=0
+              node v2 = nop role=sink class=CTRL ii=0 delay=0
+              edge data v0 -> v1
+              edge data v1 -> v2
+            }
+
+            region loop_header_1 kind=loop parent=proc_dyn_loop {
+              region_ref loop_body_1
+              region_ref loop_exit_1
+              node h0 = nop role=source class=CTRL ii=0 delay=0
+              node h1 = branch c true_child=loop_body_1 false_child=loop_exit_1 class=CTRL ii=0 delay=0
+              node h2 = nop role=sink class=CTRL ii=0 delay=0
+              edge data h0 -> h1
+              edge data h1 -> h2
+            }
+
+            region loop_body_1 kind=body parent=loop_header_1 {
+              node b0 = nop role=source class=CTRL ii=0 delay=0
+              node b1 = add x, y : i32 class=FU_FAST_ADD ii=1 delay=1
+              node b2 = nop role=sink class=CTRL ii=0 delay=0
+              edge data b0 -> b1
+              edge data b1 -> b2
+            }
+
+            region loop_exit_1 kind=empty parent=loop_header_1 {
+              node e0 = nop role=source class=CTRL ii=0 delay=0
+              node e1 = nop role=sink class=CTRL ii=0 delay=0
+              edge data e0 -> e1
+            }
+            """
+        )
+
+        sched_design = lower_alloc_to_sched(alloc_design, scheduler=_SymbolicScheduler())
+        proc = sched_design.get_region("proc_dyn_loop")
+        assert proc is not None
+        loop_node = next(node for node in proc.nodes if node.opcode == "loop")
+        self.assertNotIn("iter_latency", loop_node.attributes)
+        self.assertNotIn("iter_initiation_interval", loop_node.attributes)
+        self.assertNotIn("iter_ramp_down", loop_node.attributes)
+        self.assertEqual(str(loop_node.attributes["delay"]), "symb_delay_v1")
+        self.assertEqual(str(loop_node.attributes["ii"]), "II")
+        self.assertEqual(loop_node.attributes["timing"], "symbolic")
+        self.assertEqual(loop_node.attributes["completion"], "symb_done_v1")
+        self.assertEqual(loop_node.attributes["ready"], "symb_ready_v1")
+        self.assertEqual(loop_node.attributes["handshake"], "ready_done")
+        self.assertEqual(loop_node.attributes["continue_condition"], "c")
+        self.assertEqual(loop_node.attributes["iterate_when"], "c")
+        self.assertEqual(loop_node.attributes["exit_when"], "!c")
+        self.assertNotIn("branch_condition", loop_node.attributes)
+
+    def test_lower_alloc_to_sched_uses_symbolic_call_summary_when_callee_is_dynamic(self) -> None:
+        alloc_design = parse_uhir(
+            """
+            design dyn_call
+            stage alloc
+
+            region proc_caller kind=procedure {
+              region_ref proc_callee
+              node v0 = nop role=source class=CTRL ii=0 delay=0
+              node v1 = call x child=proc_callee class=CTRL ii=0 delay=0
+              node v2 = ret v1 class=CTRL ii=0 delay=0
+              node v3 = nop role=sink class=CTRL ii=0 delay=0
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+            }
+
+            region proc_callee kind=procedure {
+              node c0 = nop role=source class=CTRL ii=0 delay=0
+              node c1 = add x, y : i32 class=FU_FAST_ADD ii=1 delay=1
+              node c2 = ret c1 class=CTRL ii=0 delay=0
+              node c3 = nop role=sink class=CTRL ii=0 delay=0
+              edge data c0 -> c1
+              edge data c1 -> c2
+              edge data c2 -> c3
+            }
+            """
+        )
+
+        sched_design = lower_alloc_to_sched(alloc_design, scheduler=_SymbolicScheduler())
+        caller = sched_design.get_region("proc_caller")
+        assert caller is not None
+        call_node = next(node for node in caller.nodes if node.opcode == "call")
+        self.assertEqual(str(call_node.attributes["delay"]), "symb_delay_v1")
+        self.assertEqual(str(call_node.attributes["ii"]), "II")
+        self.assertEqual(call_node.attributes["timing"], "symbolic")
+        self.assertEqual(call_node.attributes["completion"], "symb_done_v1")
+        self.assertEqual(call_node.attributes["ready"], "symb_ready_v1")
+        self.assertEqual(call_node.attributes["handshake"], "ready_done")
+        self.assertNotIn("branch_condition", call_node.attributes)
+        self.assertNotIn("continue_condition", call_node.attributes)
 
     def test_lower_alloc_to_sched_rejects_non_sink_leaf_nodes(self) -> None:
         alloc_design = parse_uhir(

@@ -6,6 +6,7 @@ from uhls.utils.graph import topological_sort
 
 from .model import (
     AttributeValue,
+    TimingValue,
     UHIRConstant,
     UHIRDesign,
     UHIREdge,
@@ -74,11 +75,11 @@ def format_region(region: UHIRRegion) -> list[str]:
     for mapping in ordered_mappings:
         lines.append(f"  map {mapping.node_id} <- {mapping.source_id}")
     if region.steps is not None:
-        lines.append(f"  steps [{region.steps[0]}:{region.steps[1]}]")
+        lines.append(f"  steps [{_format_timing_value(region.steps[0])}:{_format_timing_value(region.steps[1])}]")
     if region.latency is not None:
-        lines.append(f"  latency {region.latency}")
+        lines.append(f"  latency {_format_timing_value(region.latency)}")
     if region.initiation_interval is not None:
-        lines.append(f"  ii {region.initiation_interval}")
+        lines.append(f"  ii {_format_timing_value(region.initiation_interval)}")
     for value_binding in ordered_value_bindings:
         lines.append(f"  {format_value_binding(value_binding)}")
     for mux in ordered_muxes:
@@ -147,6 +148,10 @@ def _format_attr_value(value: AttributeValue) -> str:
         return f"[{', '.join(value)}]"
     if isinstance(value, bool):
         return "true" if value else "false"
+    return str(value)
+
+
+def _format_timing_value(value: TimingValue) -> str:
     return str(value)
 
 

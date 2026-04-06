@@ -13,6 +13,7 @@ from uhls.backend.uhir.model import (
     UHIRSchedule,
     UHIRSourceMap,
 )
+from uhls.backend.uhir.timing import TimingBinary, TimingCall, TimingExpr, TimingVar
 
 from .interfaces import SGUScheduleResult, SGUScheduler
 from .registry import create_builtin_scheduler
@@ -87,11 +88,7 @@ def _build_hierarchy(
         for node in region.nodes:
             child_ids = _hierarchy_children(node)
             if node.opcode == "loop":
-                if _static_trip_count(node) is None:
-                    raise NotImplementedError(
-                        f"sched lowering currently supports only statically bounded loop timing; "
-                        f"region '{region.id}' node '{node.id}' is missing static_trip_count"
-                    )
+                pass
             elif len(child_ids) > 1:
                 if node.opcode != "branch":
                     raise NotImplementedError(
@@ -123,10 +120,35 @@ def _materialize_child_latencies(region: UHIRRegion, region_by_id: dict[str, UHI
             if child.latency is None:
                 raise ValueError(f"child region '{child.id}' must be scheduled before parent '{region.id}'")
         if node.opcode == "loop":
-            node.attributes["delay"] = _static_loop_total_latency(node, children[0], region_by_id)
+            node.attributes["delay"] = _loop_total_latency(node, children[0], region_by_id)
+            node.attributes["ii"] = _loop_initiation_interval(node, children[0])
+            if _static_trip_count(node) is None:
+                continue_condition = _loop_continue_condition(children[0])
+                _set_symbolic_hierarchy_contract(
+                    node,
+                    handshake="ready_done",
+                    ready=_symbolic_ready_name(node),
+                    continue_condition=continue_condition,
+                    iterate_when=continue_condition,
+                    exit_when=_negated_condition(continue_condition),
+                )
+            else:
+                _set_static_hierarchy_contract(node)
             continue
         if node.opcode == "branch":
-            node.attributes["delay"] = max(child.latency or 0 for child in children)
+            node.attributes["delay"] = _branch_total_latency(children)
+            if isinstance(node.attributes["delay"], TimingExpr):
+                _set_symbolic_hierarchy_contract(node, branch_condition=_branch_condition(node))
+            else:
+                _set_static_hierarchy_contract(node)
+            continue
+        if node.opcode == "call":
+            node.attributes["delay"] = _call_total_latency(node, children[0])
+            node.attributes["ii"] = _call_initiation_interval(node, children[0])
+            if isinstance(node.attributes["delay"], TimingExpr):
+                _set_symbolic_hierarchy_contract(node, handshake="ready_done", ready=_symbolic_ready_name(node))
+            else:
+                _set_static_hierarchy_contract(node)
             continue
         node.attributes["delay"] = children[0].latency
 
@@ -145,7 +167,9 @@ def _apply_schedule_result(region: UHIRRegion, result: SGUScheduleResult) -> Non
         raise ValueError(f"scheduler returned unknown nodes for region '{region.id}': {', '.join(extras)}")
 
     for node_id, (start, end) in result.node_starts.items():
-        if end < start:
+        if not isinstance(start, (int, TimingExpr)) or not isinstance(end, (int, TimingExpr)):
+            raise ValueError(f"scheduler returned invalid start/end types for region '{region.id}' node '{node_id}'")
+        if isinstance(start, int) and isinstance(end, int) and end < start:
             raise ValueError(f"scheduler returned end < start for region '{region.id}' node '{node_id}'")
         node_by_id[node_id].attributes["start"] = start
         node_by_id[node_id].attributes["end"] = end
@@ -157,15 +181,20 @@ def _apply_schedule_result(region: UHIRRegion, result: SGUScheduleResult) -> Non
     }
     interior_nodes = [node for node in region.nodes if node.id not in source_sink_ids]
     if not interior_nodes:
-        region.steps = (0, 0)
+        region.steps = (0, 0) if result.steps is None else result.steps
         region.latency = result.latency
         region.initiation_interval = result.initiation_interval
         return
 
-    region.steps = (
-        min(int(node.attributes["start"]) for node in interior_nodes),
-        max(int(node.attributes["end"]) for node in interior_nodes),
-    )
+    if result.steps is not None:
+        region.steps = result.steps
+    elif all(isinstance(node.attributes["start"], int) and isinstance(node.attributes["end"], int) for node in interior_nodes):
+        region.steps = (
+            min(int(node.attributes["start"]) for node in interior_nodes),
+            max(int(node.attributes["end"]) for node in interior_nodes),
+        )
+    else:
+        region.steps = None
     region.latency = result.latency
     region.initiation_interval = result.initiation_interval
 
@@ -182,14 +211,14 @@ def _shift_regions_into_global_time(
 def _shift_region(region: UHIRRegion, region_by_id: dict[str, UHIRRegion], *, offset: int) -> None:
     if offset:
         for node in region.nodes:
-            node.attributes["start"] = int(node.attributes["start"]) + offset
-            node.attributes["end"] = int(node.attributes["end"]) + offset
+            node.attributes["start"] = _timing_add(node.attributes["start"], offset)
+            node.attributes["end"] = _timing_add(node.attributes["end"], offset)
         if region.steps is not None:
-            region.steps = (region.steps[0] + offset, region.steps[1] + offset)
+            region.steps = (_timing_add(region.steps[0], offset), _timing_add(region.steps[1], offset))
 
     for node in region.nodes:
         for child_id in _hierarchy_children(node):
-            child_offset = 0 if node.opcode == "loop" else int(node.attributes["start"])
+            child_offset = 0 if node.opcode == "loop" else node.attributes["start"]
             _shift_region(region_by_id[child_id], region_by_id, offset=child_offset)
 
 
@@ -237,6 +266,146 @@ def _static_loop_total_latency(loop_node: UHIRNode, header_region: UHIRRegion, r
     loop_node.attributes["iter_initiation_interval"] = iter_initiation_interval
     loop_node.attributes["iter_ramp_down"] = iter_ramp_down
     return trip_count * iter_initiation_interval + iter_ramp_down
+
+
+def _loop_total_latency(loop_node: UHIRNode, header_region: UHIRRegion, region_by_id: dict[str, UHIRRegion]) -> int | TimingExpr:
+    trip_count = _static_trip_count(loop_node)
+    if trip_count is not None:
+        return _static_loop_total_latency(loop_node, header_region, region_by_id)
+    for name in ("iter_latency", "iter_initiation_interval", "iter_ramp_down"):
+        loop_node.attributes.pop(name, None)
+    return _symbolic_delay_var(loop_node)
+
+
+def _loop_initiation_interval(loop_node: UHIRNode, header_region: UHIRRegion) -> int | TimingExpr:
+    static_iter_ii = loop_node.attributes.get("iter_initiation_interval")
+    if isinstance(static_iter_ii, (int, TimingExpr)):
+        return static_iter_ii
+    if isinstance(header_region.initiation_interval, (int, TimingExpr)):
+        return header_region.initiation_interval
+    return _symbolic_ii_var(loop_node)
+
+
+def _branch_total_latency(children: list[UHIRRegion]) -> int | TimingExpr:
+    latencies = [child.latency for child in children]
+    if all(isinstance(latency, int) for latency in latencies):
+        return max(latency for latency in latencies if latency is not None)
+    expr_args: list[int | TimingExpr] = []
+    for index, latency in enumerate(latencies):
+        if isinstance(latency, (int, TimingExpr)):
+            expr_args.append(latency)
+        else:
+            expr_args.append(TimingVar(f"child_{index}_lat"))
+    return TimingCall("max", tuple(expr_args))
+
+
+def _call_total_latency(call_node: UHIRNode, child_region: UHIRRegion) -> int | TimingExpr:
+    if isinstance(child_region.latency, int):
+        return child_region.latency
+    return _symbolic_delay_var(call_node)
+
+
+def _call_initiation_interval(call_node: UHIRNode, child_region: UHIRRegion) -> int | TimingExpr:
+    if isinstance(child_region.initiation_interval, (int, TimingExpr)):
+        return child_region.initiation_interval
+    return _symbolic_ii_var(call_node)
+
+
+def _timing_add(left: int | TimingExpr, right: int | TimingExpr) -> int | TimingExpr:
+    if isinstance(left, int) and isinstance(right, int):
+        return left + right
+    if isinstance(left, int) and left == 0:
+        return right
+    if isinstance(right, int) and right == 0:
+        return left
+    return TimingBinary(left, "+", right)
+
+
+def _symbolic_delay_var(node: UHIRNode) -> TimingExpr:
+    return TimingVar(f"symb_delay_{node.id}")
+
+
+def _symbolic_ii_var(node: UHIRNode) -> TimingExpr:
+    return TimingVar(f"symb_ii_{node.id}")
+
+
+def _symbolic_ready_name(node: UHIRNode) -> str:
+    return f"symb_ready_{node.id}"
+
+
+def _symbolic_done_name(node: UHIRNode) -> str:
+    return f"symb_done_{node.id}"
+
+
+def _set_static_hierarchy_contract(node: UHIRNode) -> None:
+    node.attributes["timing"] = "static"
+    for name in (
+        "completion",
+        "ready",
+        "handshake",
+        "branch_condition",
+        "continue_condition",
+        "iterate_when",
+        "exit_when",
+    ):
+        node.attributes.pop(name, None)
+
+
+def _set_symbolic_hierarchy_contract(
+    node: UHIRNode,
+    *,
+    handshake: str | None = None,
+    ready: str | None = None,
+    branch_condition: str | None = None,
+    continue_condition: str | None = None,
+    iterate_when: str | None = None,
+    exit_when: str | None = None,
+) -> None:
+    node.attributes["timing"] = "symbolic"
+    node.attributes["completion"] = _symbolic_done_name(node)
+    if handshake is not None:
+        node.attributes["handshake"] = handshake
+    else:
+        node.attributes.pop("handshake", None)
+    if ready is not None:
+        node.attributes["ready"] = ready
+    else:
+        node.attributes.pop("ready", None)
+    if branch_condition is not None:
+        node.attributes["branch_condition"] = branch_condition
+    else:
+        node.attributes.pop("branch_condition", None)
+    if continue_condition is not None:
+        node.attributes["continue_condition"] = continue_condition
+    else:
+        node.attributes.pop("continue_condition", None)
+    if iterate_when is not None:
+        node.attributes["iterate_when"] = iterate_when
+    else:
+        node.attributes.pop("iterate_when", None)
+    if exit_when is not None:
+        node.attributes["exit_when"] = exit_when
+    else:
+        node.attributes.pop("exit_when", None)
+
+
+def _branch_condition(node: UHIRNode) -> str | None:
+    if len(node.operands) == 1:
+        return node.operands[0]
+    return None
+
+
+def _loop_continue_condition(header_region: UHIRRegion) -> str | None:
+    branch = next((node for node in header_region.nodes if node.opcode == "branch"), None)
+    if branch is None:
+        return None
+    return _branch_condition(branch)
+
+
+def _negated_condition(condition: str | None) -> str | None:
+    if condition is None:
+        return None
+    return f"!{condition}"
 
 
 def _clone_sched_region(region: UHIRRegion) -> UHIRRegion:

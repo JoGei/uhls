@@ -185,6 +185,40 @@ class BindingLoweringTests(unittest.TestCase):
             [("t1_0", "r_i32_0", 1, 1), ("t2_0", "r_i32_0", 2, 2)],
         )
 
+    def test_lower_sched_to_bind_preserves_dynamic_call_contract(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design dyn_contract
+            stage sched
+            schedule kind=hierarchical
+
+            region proc_dyn_contract kind=procedure {
+              region_ref proc_callee
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v2 = call x child=proc_callee class=CTRL ii=II delay=symb_delay_v2 start=1 end=symb_delay_v2 timing=symbolic completion=symb_done_v2 ready=symb_ready_v2 handshake=ready_done
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+              edge data v0 -> v2
+              edge data v2 -> v3
+            }
+
+            region proc_callee kind=procedure {
+              node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node c1 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+              edge data c0 -> c1
+            }
+            """
+        )
+
+        bind_design = lower_sched_to_bind(sched_design)
+        region = bind_design.get_region("proc_dyn_contract")
+        assert region is not None
+        call_node = next(node for node in region.nodes if node.opcode == "call")
+        self.assertEqual(str(call_node.attributes["ii"]), "II")
+        self.assertEqual(call_node.attributes["ready"], "symb_ready_v2")
+        self.assertEqual(call_node.attributes["completion"], "symb_done_v2")
+        self.assertEqual(call_node.attributes["handshake"], "ready_done")
+
     def test_lower_sched_to_bind_extends_loop_carried_value_liveness_to_header_phi(self) -> None:
         sched_design = parse_uhir(
             """
@@ -461,10 +495,10 @@ class BindingLoweringTests(unittest.TestCase):
             if "|" in line and line.split("|", 1)[0].strip().isdigit()
         ]
         last_time_line = max(time_lines, key=lambda line: int(line.split("|", 1)[0].strip()))
-        self.assertTrue(ret_line.startswith("  28 |") or ret_line.startswith("28 |"))
+        self.assertIn("v7 ret", ret_line)
         self.assertIn("@3 add", last_add_line)
         self.assertNotIn(" ret", last_add_line)
-        self.assertTrue(last_time_line.startswith("  28 |") or last_time_line.startswith("28 |"))
+        self.assertTrue(last_time_line.startswith("  29 |") or last_time_line.startswith("29 |"))
 
     def test_flattened_binding_colors_register_values_per_occurrence(self) -> None:
         sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
@@ -496,10 +530,10 @@ class BindingLoweringTests(unittest.TestCase):
         bind_design = lower_sched_to_bind(sched_design)
 
         dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
-        self.assertIn('"dfgsb_unroll_op_5_1" -> "dfgsb_unroll_reg_6_4"', dot)
-        self.assertIn('"dfgsb_unroll_reg_6_4" -> "dfgsb_unroll_op_6_1"', dot)
-        self.assertIn('"dfgsb_unroll_op_16_1" -> "dfgsb_unroll_op_17_1"', dot)
-        self.assertIn('"dfgsb_unroll_op_15_1" -> "dfgsb_unroll_reg_16_5"', dot)
+        self.assertIn('"dfgsb_unroll_reg_15_7" -> "dfgsb_unroll_op_15_2" [color="#1f78b4", penwidth=1.3, label="sum_1"', dot)
+        self.assertIn('"dfgsb_unroll_op_16_2" -> "dfgsb_unroll_reg_17_5" [color="#1f78b4", penwidth=1.3, label="t5_0"', dot)
+        self.assertIn('"dfgsb_unroll_reg_17_5" -> "dfgsb_unroll_op_17_0" [color="#1f78b4", penwidth=1.3, label="t5_0"', dot)
+        self.assertIn('"dfgsb_unroll_op_17_0" -> "dfgsb_unroll_op_17_1"', dot)
 
     def test_flattened_dfgsb_unroll_renders_final_loop_value_into_post_loop_consumer(self) -> None:
         sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
@@ -507,9 +541,10 @@ class BindingLoweringTests(unittest.TestCase):
         bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
 
         dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
-        self.assertIn('"dfgsb_unroll_op_15_1" -> "dfgsb_unroll_reg_16_4"', dot)
-        self.assertIn('"dfgsb_unroll_reg_16_4" -> "dfgsb_unroll_op_16_1"', dot)
-        self.assertIn('"dfgsb_unroll_op_16_1" -> "dfgsb_unroll_op_17_1"', dot)
+        self.assertIn('"dfgsb_unroll_op_15_2" -> "dfgsb_unroll_reg_16_6" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
+        self.assertIn('"dfgsb_unroll_reg_16_6" -> "dfgsb_unroll_op_16_2" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
+        self.assertIn('"dfgsb_unroll_reg_16_6" -> "dfgsb_unroll_op_17_0" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
+        self.assertIn('"dfgsb_unroll_op_17_0" -> "dfgsb_unroll_op_17_1"', dot)
 
     def test_dfgsb_dot_routes_cross_sgu_value_through_register_without_direct_duplicate_edge(self) -> None:
         bind_design = lower_sched_to_bind(
@@ -554,8 +589,8 @@ class BindingLoweringTests(unittest.TestCase):
 
         dot = bind_dump_to_dot(bind_design, ("dfgsb",))
         self.assertIn('label="r_i32_0"', dot)
-        self.assertIn('"dfgsb_proc_child_use_op_0_1" -> "dfgsb_proc_child_use_reg_1_2" [color="#1f78b4", penwidth=1.3, label="v1"', dot)
-        self.assertIn('"dfgsb_proc_child_use_reg_1_2" -> "dfgsb_bb_child_op_1_0" [color="#1f78b4", penwidth=1.1, style=dashed, label="v1"', dot)
+        self.assertIn('"dfgsb_proc_child_use_op_0_2" -> "dfgsb_proc_child_use_reg_1_3" [color="#1f78b4", penwidth=1.3, label="v1"', dot)
+        self.assertIn('"dfgsb_proc_child_use_reg_1_3" -> "dfgsb_bb_child_op_1_0" [color="#1f78b4", penwidth=1.1, style=dashed, label="v1"', dot)
         self.assertNotIn('"dfgsb_proc_child_use_reg_2_2"', dot)
         self.assertNotIn('"dfgsb_proc_child_use_op_0_0" -> "dfgsb_bb_child_op_1_0"', dot)
 

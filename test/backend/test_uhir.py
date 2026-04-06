@@ -113,6 +113,54 @@ class UHIRParserTests(unittest.TestCase):
         self.assertEqual(region.nodes[2].attributes["end"], 2)
         self.assertEqual(region.nodes[3].attributes["guard"], "true_path")
 
+    def test_parse_sched_uhir_accepts_symbolic_timing(self) -> None:
+        design = parse_uhir(
+            """
+            design dyn
+            stage sched
+            schedule kind=hierarchical
+
+            region R0 kind=procedure {
+              node v0 = loop child=R1 class=CTRL ii=0 delay=T*ii + rd start=0 end=T*ii + rd - 1
+              steps [0:T*ii + rd - 1]
+              latency T*ii + rd
+              ii ii_loop
+            }
+
+            region R1 kind=loop parent=R0 {
+              node h0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node h1 = branch c true_child=R2 false_child=R3 class=CTRL ii=0 delay=max(body, exit) start=cmp_t end=cmp_t + max(body, exit) - 1
+              node h2 = nop role=sink class=CTRL ii=0 delay=0 start=done_t end=done_t
+              edge data h0 -> h1
+              edge data h1 -> h2
+              steps [0:done_t]
+              latency iter_lat
+              ii iter_ii
+            }
+
+            region R2 kind=body parent=R1 {
+              node b0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node b1 = add x, y : i32 class=EWMS ii=1 delay=1 start=1 end=1
+              node b2 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+              edge data b0 -> b1
+              edge data b1 -> b2
+            }
+
+            region R3 kind=empty parent=R1 {
+              node e0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node e1 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+              edge data e0 -> e1
+            }
+            """
+        )
+
+        self.assertEqual(str(design.regions[0].steps[0]), "0")
+        self.assertEqual(str(design.regions[0].steps[1]), "T * ii + rd - 1")
+        self.assertEqual(str(design.regions[0].latency), "T * ii + rd")
+        self.assertEqual(str(design.regions[0].initiation_interval), "ii_loop")
+        self.assertEqual(str(design.regions[0].nodes[0].attributes["delay"]), "T * ii + rd")
+        self.assertEqual(str(design.regions[0].nodes[0].attributes["end"]), "T * ii + rd - 1")
+
     def test_parse_alloc_uhir_requires_class_and_delay_without_schedule(self) -> None:
         design = parse_uhir(
             """

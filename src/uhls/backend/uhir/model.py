@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-AttributeValue = str | int | bool | tuple[str, ...]
+from .timing import TimingExpr
+
+AttributeValue = str | int | bool | tuple[str, ...] | TimingExpr
+TimingValue = int | TimingExpr
 
 
 @dataclass(slots=True, frozen=True)
@@ -122,9 +125,9 @@ class UHIRRegion:
     mappings: list[UHIRSourceMap] = field(default_factory=list)
     value_bindings: list[UHIRValueBinding] = field(default_factory=list)
     muxes: list[UHIRMux] = field(default_factory=list)
-    steps: tuple[int, int] | None = None
-    latency: int | None = None
-    initiation_interval: int | None = None
+    steps: tuple[TimingValue, TimingValue] | None = None
+    latency: TimingValue | None = None
+    initiation_interval: TimingValue | None = None
 
 
 @dataclass(slots=True)

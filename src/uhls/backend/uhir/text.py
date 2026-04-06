@@ -22,6 +22,7 @@ from .model import (
     UHIRSourceMap,
     UHIRValueBinding,
 )
+from .timing import TimingExpr, parse_timing_expr
 
 _IDENT_RE = r"[A-Za-z_][\w$]*"
 _DESIGN_RE = re.compile(rf"^design\s+({_IDENT_RE})$")
@@ -35,8 +36,8 @@ _NODE_RE = re.compile(rf"^node\s+({_IDENT_RE})\s*=\s*(.+)$")
 _EDGE_RE = re.compile(rf"^edge\s+({_IDENT_RE})\s+(\S+)\s*(->|--)\s*(\S+)(?:\s+(.*))?$")
 _MAP_RE = re.compile(rf"^map\s+({_IDENT_RE})\s*<-\s*(\S+)$")
 _STEPS_RE = re.compile(r"^steps\s+(.+)$")
-_LATENCY_RE = re.compile(r"^latency\s+(-?\d+)$")
-_II_RE = re.compile(r"^ii\s+(-?\d+)$")
+_LATENCY_RE = re.compile(r"^latency\s+(.+)$")
+_II_RE = re.compile(r"^ii\s+(.+)$")
 _VALUE_RE = re.compile(r"^value\s+(\S+)\s*->\s*(\S+)\s+(.+)$")
 _MUX_RE = re.compile(rf"^mux\s+({_IDENT_RE})\s*:\s*(.+)$")
 _FU_RE = re.compile(rf"^fu\s+({_IDENT_RE})\s*:\s*({_IDENT_RE})$")
@@ -233,9 +234,9 @@ def _parse_region(lines: list[str], index: int) -> tuple[UHIRRegion, int]:
         elif match := _STEPS_RE.fullmatch(line):
             region.steps = _parse_steps_interval(match.group(1), line_number)
         elif match := _LATENCY_RE.fullmatch(line):
-            region.latency = int(match.group(1))
+            region.latency = _parse_timing_scalar_text(match.group(1), line_number, "latency")
         elif match := _II_RE.fullmatch(line):
-            region.initiation_interval = int(match.group(1))
+            region.initiation_interval = _parse_timing_scalar_text(match.group(1), line_number, "ii")
         elif match := _VALUE_RE.fullmatch(line):
             region.value_bindings.append(_parse_value_binding(match.group(1), match.group(2), match.group(3), line_number))
         elif match := _MUX_RE.fullmatch(line):
@@ -277,7 +278,7 @@ def _parse_value_binding(producer: str, register: str, attrs_text: str, line_num
     return UHIRValueBinding(producer, register, _parse_live_intervals(live, line_number))
 
 
-def _parse_steps_interval(text: str, line_number: int) -> tuple[int, int]:
+def _parse_steps_interval(text: str, line_number: int) -> tuple[int | str, int | str]:
     normalized = text.strip()
     if not (normalized.startswith("[") and normalized.endswith("]")):
         raise UHIRParseError(f"steps interval must use [start:end] syntax at line {line_number}: {normalized!r}")
@@ -285,14 +286,21 @@ def _parse_steps_interval(text: str, line_number: int) -> tuple[int, int]:
     if ":" not in body:
         raise UHIRParseError(f"steps interval must use [start:end] syntax at line {line_number}: {normalized!r}")
     start_text, end_text = (piece.strip() for piece in body.split(":", 1))
-    try:
-        start = int(start_text)
-        end = int(end_text)
-    except ValueError as exc:
-        raise UHIRParseError(f"steps interval must use integer bounds at line {line_number}: {normalized!r}") from exc
-    if start > end:
+    start = _parse_timing_scalar_text(start_text, line_number, "steps start")
+    end = _parse_timing_scalar_text(end_text, line_number, "steps end")
+    if isinstance(start, int) and isinstance(end, int) and start > end:
         raise UHIRParseError(f"steps interval must satisfy start<=end at line {line_number}: {normalized!r}")
     return start, end
+
+
+def _parse_timing_scalar_text(text: str, line_number: int, context: str) -> int | str:
+    normalized = text.strip()
+    if not normalized:
+        raise UHIRParseError(f"{context} must not be empty at line {line_number}")
+    try:
+        return parse_timing_expr(normalized)
+    except ValueError as exc:
+        raise UHIRParseError(f"invalid {context} timing expression at line {line_number}: {normalized!r}") from exc
 
 
 def _parse_live_intervals(text: str, line_number: int) -> tuple[tuple[int, int], ...]:
@@ -580,6 +588,28 @@ def _validate_design(design: UHIRDesign) -> None:
                 raise UHIRParseError(f"{region_stage} µhIR region '{region.id}' must not contain schedule summaries")
             if region.value_bindings or region.muxes:
                 raise UHIRParseError(f"{region_stage} µhIR region '{region.id}' must not contain bind-only statements")
+        if region_stage == "sched":
+            if region.steps is not None:
+                start, end = region.steps
+                if not isinstance(start, (int, TimingExpr)) or not isinstance(end, (int, TimingExpr)):
+                    raise UHIRParseError(f"sched µhIR region '{region.id}' has invalid steps summary")
+                if isinstance(start, int) and isinstance(end, int) and start > end:
+                    raise UHIRParseError(f"sched µhIR region '{region.id}' has steps with start>end")
+            if region.latency is not None and not isinstance(region.latency, (int, TimingExpr)):
+                raise UHIRParseError(f"sched µhIR region '{region.id}' has invalid latency summary")
+            if region.initiation_interval is not None and not isinstance(region.initiation_interval, (int, TimingExpr)):
+                raise UHIRParseError(f"sched µhIR region '{region.id}' has invalid ii summary")
+        if region_stage == "bind":
+            if region.steps is not None:
+                start, end = region.steps
+                if not isinstance(start, int) or not isinstance(end, int):
+                    raise UHIRParseError(f"bind µhIR region '{region.id}' must use integer steps summary")
+                if start > end:
+                    raise UHIRParseError(f"bind µhIR region '{region.id}' has steps with start>end")
+            if region.latency is not None and not isinstance(region.latency, int):
+                raise UHIRParseError(f"bind µhIR region '{region.id}' must use integer latency")
+            if region.initiation_interval is not None and not isinstance(region.initiation_interval, int):
+                raise UHIRParseError(f"bind µhIR region '{region.id}' must use integer ii")
         if region_stage == "exg" and region.mappings:
             raise UHIRParseError(f"exg µhIR region '{region.id}' must not contain source mappings")
         if design.stage == "sched" and (region.value_bindings or region.muxes):
@@ -711,21 +741,41 @@ def _validate_node_for_stage(node: UHIRNode, stage: str) -> None:
     class_name = node.attributes.get("class")
     initiation_interval = node.attributes.get("ii")
     delay = node.attributes.get("delay")
+    if stage == "sched":
+        for name in ("ii", "delay", "start", "end", "iter_latency", "iter_initiation_interval", "iter_ramp_down"):
+            value = node.attributes.get(name)
+            if isinstance(value, str):
+                try:
+                    node.attributes[name] = parse_timing_expr(value)
+                except ValueError as exc:
+                    raise UHIRParseError(f"sched-stage node '{node.id}' has invalid {name}=... timing expression") from exc
+        initiation_interval = node.attributes.get("ii")
+        delay = node.attributes.get("delay")
     if stage in {"alloc", "sched", "bind"}:
         if not isinstance(class_name, str) or not class_name:
             raise UHIRParseError(f"node '{node.id}' is missing class=...")
     if stage == "alloc":
         if not isinstance(initiation_interval, int):
             raise UHIRParseError(f"node '{node.id}' is missing ii=...")
-    if stage in {"alloc", "sched", "bind"}:
+    if stage in {"alloc", "bind"}:
         if not isinstance(delay, int):
             raise UHIRParseError(f"node '{node.id}' is missing delay=...")
-    if stage in {"sched", "bind"}:
+    if stage == "sched":
+        if not isinstance(delay, (int, TimingExpr)):
+            raise UHIRParseError(f"sched-stage node '{node.id}' is missing delay=...")
+    if stage == "bind":
         start = node.attributes.get("start")
         end = node.attributes.get("end")
         if not isinstance(start, int) or not isinstance(end, int):
             raise UHIRParseError(f"{stage}-stage node '{node.id}' is missing start/end attributes")
         if end < start:
+            raise UHIRParseError(f"{stage}-stage node '{node.id}' has end < start")
+    if stage == "sched":
+        start = node.attributes.get("start")
+        end = node.attributes.get("end")
+        if not isinstance(start, (int, TimingExpr)) or not isinstance(end, (int, TimingExpr)):
+            raise UHIRParseError(f"{stage}-stage node '{node.id}' is missing start/end attributes")
+        if isinstance(start, int) and isinstance(end, int) and end < start:
             raise UHIRParseError(f"{stage}-stage node '{node.id}' has end < start")
     if stage in {"seq", "alloc"}:
         forbidden = [name for name in ("start", "end", "bind") if name in node.attributes]

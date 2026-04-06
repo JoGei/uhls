@@ -68,6 +68,60 @@ class UHIRControllerLink:
 
 
 @dataclass(slots=True, frozen=True)
+class UHIRAssign:
+    """One uglir combinational assignment."""
+
+    target: str
+    expr: str
+
+
+@dataclass(slots=True, frozen=True)
+class UHIRAttach:
+    """One uglir instance-port attachment."""
+
+    instance: str
+    port: str
+    signal: str
+
+
+@dataclass(slots=True, frozen=True)
+class UHIRGlueMuxCase:
+    """One uglir mux alternative."""
+
+    key: str
+    source: str
+
+
+@dataclass(slots=True)
+class UHIRGlueMux:
+    """One uglir explicit glue mux declaration."""
+
+    name: str
+    type: str
+    select: str
+    cases: list[UHIRGlueMuxCase] = field(default_factory=list)
+
+
+@dataclass(slots=True, frozen=True)
+class UHIRSeqUpdate:
+    """One uglir sequential register update."""
+
+    target: str
+    value: str
+    enable: str | None = None
+
+
+@dataclass(slots=True)
+class UHIRSeqBlock:
+    """One uglir sequential block with one optional reset branch."""
+
+    clock: str
+    reset: str | None = None
+    reset_updates: list[UHIRSeqUpdate] = field(default_factory=list)
+    updates: list[UHIRSeqUpdate] = field(default_factory=list)
+
+
+@dataclass(slots=True, frozen=True)
 class UHIRConstant:
     """One top-level constant declaration."""
 
@@ -190,6 +244,10 @@ class UHIRDesign:
     schedule: UHIRSchedule | None = None
     resources: list[UHIRResource] = field(default_factory=list)
     controllers: list[UHIRController] = field(default_factory=list)
+    assigns: list[UHIRAssign] = field(default_factory=list)
+    attachments: list[UHIRAttach] = field(default_factory=list)
+    glue_muxes: list[UHIRGlueMux] = field(default_factory=list)
+    seq_blocks: list[UHIRSeqBlock] = field(default_factory=list)
     regions: list[UHIRRegion] = field(default_factory=list)
 
     def get_region(self, region_id: str) -> UHIRRegion | None:

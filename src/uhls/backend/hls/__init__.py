@@ -29,6 +29,7 @@ from .sched import (
     lower_alloc_to_sched,
 )
 from .seq import build_sequencing_graph, lower_module_to_seq
+from .uglir import lower_fsm_to_uglir
 
 __all__ = [
     "ALAPScheduler",
@@ -58,6 +59,7 @@ __all__ = [
     "format_bind_dump",
     "lower_alloc_to_sched",
     "lower_bind_to_fsm",
+    "lower_fsm_to_uglir",
     "lower_module_to_seq",
     "lower_sched_to_bind",
     "lower_seq_to_alloc",

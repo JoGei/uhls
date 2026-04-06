@@ -1,0 +1,674 @@
+= µhLS µglIR Hardware Glue IR Specification
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Overview
+
+This document specifies the *µglIR* textual intermediate representation used by
+*µhLS* after FSMD synthesis and before RTL emission.
+
+The common file extension is:
+
+[source,text]
+----
+.uglir
+----
+
+Typical filenames are:
+
+[source,text]
+----
+fir.uglir
+dot4.uglir
+----
+
+The intended backend flow becomes:
+
+[source,text]
+----
+µIR
+  -> seq.uhir
+  -> alloc.uhir
+  -> sched.uhir
+  -> bind.uhir
+  -> fsm.uhir
+  -> .uglir
+  -> Verilog
+  -> Yosys / ASIC flow
+----
+
+The name *µglIR* means:
+
+* `u`  — micro
+* `gl` — glue
+* `IR` — intermediate representation
+
+Its role is to describe the *hardware glue structure* of one design:
+
+* registers
+* nets
+* muxes
+* component instances
+* controller state storage
+* explicit signal connectivity
+
+It does *not* restate the internals of arithmetic or memory components.
+
+== Purpose
+
+µglIR is the first backend IR whose primary viewpoint is *signal-oriented
+hardware structure* instead of graph refinement or control-step actions.
+
+It exists to separate:
+
+* FSMD semantics
+  * states
+  * transitions
+  * actions such as `issue`, `latch`, `select`
+
+from:
+
+* RTL syntax
+  * Verilog module syntax
+  * always-block shape
+  * blocking/non-blocking conventions
+  * target-specific code style
+
+The central design rule is:
+
+____
+µglIR describes how µhLS components are glued together, not how those
+components compute internally.
+____
+
+So a component such as an adder, multiplier, memory port, or child controller
+appears in µglIR as an *instance with ports*, not as re-expanded behavioral
+logic.
+
+== Design Goals
+
+µglIR is designed to be:
+
+* human-readable
+* line-oriented
+* easy to diff
+* explicit about connectivity
+* explicit about sequential state
+* explicit about controller/datapath interfacing
+* easy to lower into Verilog mechanically
+
+It should also serve as the main validation point for hardware structure before
+RTL printing.
+
+== Position Relative To `fsm`
+
+`fsm.uhir` is *action-oriented*.
+
+It says:
+
+* which states exist
+* when transitions fire
+* which actions happen in each state
+
+µglIR is *signal-oriented*.
+
+It says:
+
+* which registers, nets, muxes, and instances exist
+* which signals drive which ports
+* which enables and select lines are asserted
+* which state register implements the controller
+* how sequential updates are applied
+
+In short:
+
+* `fsm` describes *control intent*
+* `uglir` describes *hardware realization*
+
+== Common Structure
+
+All µglIR files share one common outer structure.
+
+A file contains:
+
+* one `design` declaration
+* one `stage uglir` declaration
+* optional port declarations
+* optional constant declarations
+* one `resources` block
+* zero or more structural declaration blocks
+* one or more sequential/combinational logic blocks
+
+Minimal example:
+
+[source,text]
+----
+design add1
+stage uglir
+
+input  clk : clock
+input  rst : i1
+input  req_valid : i1
+output req_ready : i1
+
+resources {
+  reg state : u2 reset=0
+  reg r_acc : i32
+  net next_state : u2
+  inst ewms0 : EWMS
+}
+----
+
+== Common Lexical Conventions
+
+=== Comments
+
+Comments begin with `#` and continue to the end of the line.
+
+[source,text]
+----
+# this is a comment
+----
+
+=== Identifiers
+
+Identifiers are used for:
+
+* design names
+* ports
+* registers
+* nets
+* muxes
+* instances
+* controller states
+* symbolic control signals
+
+Examples:
+
+[source,text]
+----
+dot4
+req_valid
+state
+r_acc
+mx0
+ewms0
+DONE
+done_valid
+----
+
+Recommended style:
+
+* registers: `r_acc`, `state`
+* nets: `next_state`, `req_fire`
+* muxes: `mx0`, `mx_r_acc`
+* instances: `ewms0`, `memA`
+
+=== Types
+
+Scalar examples:
+
+[source,text]
+----
+i1
+i8
+i16
+i32
+u2
+u3
+u8
+u16
+u32
+clock
+----
+
+Aggregate and interface-like types may be introduced later, but the first
+version should prefer explicit scalar ports and explicit component instances.
+
+=== Attribute Syntax
+
+Attributes use `key=value`.
+
+Examples:
+
+[source,text]
+----
+reset=0
+width=2
+kind=state
+----
+
+Lists use brackets:
+
+[source,text]
+----
+input=[r_acc, ewms0_y]
+----
+
+== Top-Level Declarations
+
+=== Design Declaration
+
+Every file must begin with exactly one design declaration.
+
+Syntax:
+
+[source,text]
+----
+design <design-name>
+----
+
+=== Stage Declaration
+
+Every file must declare exactly one stage.
+
+Syntax:
+
+[source,text]
+----
+stage uglir
+----
+
+=== Port Declarations
+
+Ports describe the hardware module interface.
+
+Syntax:
+
+[source,text]
+----
+input  <name> : <type>
+output <name> : <type>
+----
+
+Recommended top-level handshake names are:
+
+* `req_valid`
+* `req_ready`
+* `resp_valid`
+* `resp_ready`
+
+Clock/reset are explicit ports, typically:
+
+* `clk : clock`
+* `rst : i1`
+
+=== Constants
+
+Constant declarations may appear at top-level when one named literal is useful
+across multiple assignments.
+
+Syntax:
+
+[source,text]
+----
+const <name> = <value> : <type>
+----
+
+Example:
+
+[source,text]
+----
+const IDLE = 0 : u3
+----
+
+== Resources Block
+
+The `resources` block declares named hardware objects.
+
+Syntax:
+
+[source,text]
+----
+resources {
+  reg  <name> : <type> [reset=<literal>]
+  net  <name> : <type>
+  inst <name> : <component-kind>
+  mux  <name> : <type>
+}
+----
+
+Example:
+
+[source,text]
+----
+resources {
+  reg  state : u3 reset=0
+  reg  r_i32_0 : i32
+  net  next_state : u3
+  net  req_fire : i1
+  inst ewms0 : EWMS
+  mux  mx_r_i32_0 : i32
+}
+----
+
+Semantics:
+
+* `reg`
+  * clocked storage element
+* `net`
+  * combinational signal
+* `inst`
+  * external datapath or controller component instance
+* `mux`
+  * explicit multiplexer object, later lowered to combinational selection logic
+
+== Structural Statements
+
+The first version of µglIR should support four core structural statements:
+
+* `assign`
+* instance port attachment
+* `mux`
+* `link`
+
+=== Instance Port Attachment
+
+Instance hookups use one explicit application-like form:
+
+Syntax:
+
+[source,text]
+----
+<inst>.<port>(<net>)
+----
+
+Examples:
+
+[source,text]
+----
+ewms0.a(r_i32_0)
+ewms0.b(x_in)
+ewms0.y(ewms0_y)
+----
+
+Rules:
+
+* the argument must be one named `net`, `reg`, or top-level port name
+* direct port-to-port hookups are not allowed
+* forms such as `inst0.out(inst1.in)` are illegal
+* when one instance output must feed another instance input, µglIR must first
+  declare one helper `net` and attach both ports to that net
+
+Example:
+
+[source,text]
+----
+net ewms0_y : i32
+ewms0.y(ewms0_y)
+mx_r_acc.in1(ewms0_y)
+----
+
+=== Assign
+
+`assign` defines one combinational named signal.
+
+Syntax:
+
+[source,text]
+----
+assign <name> = <expr>
+----
+
+Examples:
+
+[source,text]
+----
+assign req_fire = req_valid & req_ready
+assign resp_fire = resp_valid & resp_ready
+assign req_ready = (state == IDLE)
+assign result = r_i32_1
+----
+
+The expression language should initially remain small:
+
+* literals
+* signal references
+* unary `!`
+* binary `&`, `|`, `^`
+* equality/inequality
+* simple concatenation or slices later if needed
+
+=== Mux
+
+`mux` declares the explicit source alternatives for one selected datapath signal.
+
+Syntax:
+
+[source,text]
+----
+mux <name> : <type> sel=<select-signal> {
+  <key> -> <source>
+  <key> -> <source>
+  ...
+}
+----
+
+Example:
+
+[source,text]
+----
+mux mx_r_acc : i32 sel=sel_r_acc {
+  hold  -> r_acc
+  ewms0 -> ewms0.y
+}
+----
+
+Semantics:
+
+* the mux is explicit structural glue
+* the select signal is named separately
+* downstream instance port attachments or sequential updates consume the mux output
+
+=== Link
+
+`link` expresses one explicit controller/datapath or parent/child-controller
+glue relation.
+
+Syntax:
+
+[source,text]
+----
+link <instance-or-controller> {
+  <lhs> <-> <rhs>
+  ...
+}
+----
+
+Example:
+
+[source,text]
+----
+link C_loop_hdr {
+  act_valid  <-> activate_v4
+  act_ready  <-> ready_v4
+  done_valid <-> done_v4
+  done_ready <-> resp_ready
+}
+----
+
+The exact textual form may evolve, but µglIR should make such handshake wiring
+explicit instead of hiding it in naming conventions.
+
+== Sequential Logic
+
+µglIR should make state updates explicit.
+
+Syntax:
+
+[source,text]
+----
+seq <clock-name> {
+  if <reset-signal> {
+    <reg> <= <value>
+    ...
+  } else {
+    <reg> <= <value>
+    if <enable> {
+      <reg> <= <value>
+    }
+  }
+}
+----
+
+Example:
+
+[source,text]
+----
+seq clk {
+  if rst {
+    state <= IDLE
+    r_i32_0 <= 0:i32
+  } else {
+    state <= next_state
+    if latch_r_i32_0 {
+      r_i32_0 <= mx_r_i32_0
+    }
+  }
+}
+----
+
+Semantics:
+
+* all `reg` updates occur synchronously on the named clock
+* explicit enables model FSMD `latch=[...]`
+* the controller state register is just another register in µglIR
+
+== Combinational Controller Logic
+
+Controller next-state and output decode logic should appear as explicit
+combinational assignments.
+
+Example:
+
+[source,text]
+----
+assign req_ready = (state == IDLE)
+assign resp_valid = (state == DONE)
+
+assign next_state =
+  state == IDLE ? (req_fire ? T0 : IDLE) :
+  state == T0   ? T1 :
+  state == T1   ? DONE :
+                  IDLE
+----
+
+The exact expression syntax may later be normalized with explicit `switch`
+blocks, but the semantics should remain combinational and explicit.
+
+== Controller/Datapath Contract
+
+µglIR assumes the following split:
+
+* controller state and transition logic are explicit in µglIR
+* datapath component internals are opaque instance behavior
+* muxes, register enables, and handshake glue are explicit in µglIR
+
+So one FSMD action bundle such as:
+
+[source,text]
+----
+emit T2 issue=[ewms0<-v2] latch=[r_acc] select=[mx_r_acc<-ewms0]
+----
+
+would lower conceptually to:
+
+* one or more instance port attachments driving `ewms0`
+* one mux select assignment for `mx_r_acc`
+* one latch-enable signal for `r_acc`
+* one sequential guarded update of `r_acc`
+
+== Relationship To Components
+
+µglIR does not redefine component functionality.
+
+For example:
+
+* `inst ewms0 : EWMS`
+
+means:
+
+* one instance of component kind `EWMS` exists
+* µglIR must attach its inputs/outputs to named nets
+* µglIR need not restate how `EWMS` computes its result
+
+This keeps µglIR focused on *glue logic*.
+
+== Initial Lowering Expectations
+
+The first `fsm -> uglir` lowering should be expected to produce:
+
+* top-level ports
+* one state register and next-state net per controller
+* request/response handshake nets
+* one register object per bound register
+* one instance per bound FU or memory port
+* one explicit mux/select object where routing is needed
+* explicit sequential updates for controller state and data registers
+* explicit parent/child controller links for recursive dynamic control
+
+== Example
+
+[source,text]
+----
+design add1
+stage uglir
+
+input  clk : clock
+input  rst : i1
+input  req_valid : i1
+input  resp_ready : i1
+input  x : i32
+output req_ready : i1
+output resp_valid : i1
+output result : i32
+
+resources {
+  reg  state : u3 reset=0
+  reg  r_i32_0 : i32
+  net  next_state : u3
+  net  req_fire : i1
+  net  resp_fire : i1
+  net  latch_r_i32_0 : i1
+  net  ewms0_y : i32
+  inst ewms0 : EWMS
+}
+
+assign req_fire = req_valid & req_ready
+assign resp_fire = resp_valid & resp_ready
+assign req_ready = (state == IDLE)
+assign resp_valid = (state == DONE)
+
+ewms0.a(x)
+ewms0.y(ewms0_y)
+assign result = r_i32_0
+
+seq clk {
+  if rst {
+    state <= IDLE
+    r_i32_0 <= 0:i32
+  } else {
+    state <= next_state
+    if latch_r_i32_0 {
+      r_i32_0 <= ewms0_y
+    }
+  }
+}
+----
+
+== Open Items
+
+The following areas are intentionally left open for later refinement:
+
+* exact expression grammar for combinational logic
+* whether muxes are always explicit objects or may be inlined into `assign`
+* concrete syntax for controller links
+* memory-port instance conventions
+* whether top-level output driving should always use `assign`
+* reset polarity/style conventions
+* multi-clock designs
+* hierarchy flattening versus nested module-style µglIR
+
+These should be resolved only when the first `fsm -> uglir` lowering is
+implemented.

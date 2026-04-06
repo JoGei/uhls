@@ -27,6 +27,7 @@ from uhls.backend.hls import (
     fsm_to_dot,
     format_bind_dump,
     lower_bind_to_fsm,
+    lower_fsm_to_uglir,
     parse_bind_dump_spec,
 )
 from uhls.backend.uhir import (
@@ -918,6 +919,31 @@ def fsm_cmd(input_path: Path, encoding: str, emit_dot: bool, output: Path | None
         raise CLIError(f"'fsm' expects bind-stage µhIR input, got stage '{design.stage}'")
     lowered = lower_bind_to_fsm(design, encoding=encoding)
     _write_or_print_text(fsm_to_dot(lowered) if emit_dot else format_uhir(lowered), output)
+
+
+@cli.command(
+    "uglir",
+    help=(
+        "Lower fsm-stage µhIR to the uglir hardware-glue stage.\n"
+        "\n"
+        "Examples:\n"
+        "\n"
+        "\b\n"
+        "  uhls uglir input.fsm.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls uglir input.fsm.uhir -o output.uglir\n"
+    ),
+)
+@click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
+def uglir_cmd(input_path: Path, output: Path | None) -> None:
+    """Lower fsm-stage µhIR to uglir."""
+    design = parse_uhir_file(input_path)
+    if design.stage != "fsm":
+        raise CLIError(f"'uglir' expects fsm-stage µhIR input, got stage '{design.stage}'")
+    lowered = lower_fsm_to_uglir(design)
+    _write_or_print_text(format_uhir(lowered), output)
 
 
 @cli.command("hls-emit")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from math import ceil, log2
+import re
 from typing import Any
 
 from uhls.backend.uhir.model import (
@@ -22,15 +23,16 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
     """Lower one static fsm-stage µhIR design to one initial uglir shell."""
     if design.stage != "fsm":
         raise ValueError(f"uglir lowering expects fsm-stage µhIR input, got stage '{design.stage}'")
-    if any(controller.attributes.get("protocol") != "req_resp" for controller in design.controllers):
-        raise ValueError("initial uglir lowering currently supports only one static top-level req_resp controller")
-    if len(design.controllers) != 1:
-        raise ValueError("initial uglir lowering currently expects exactly one controller")
-
-    controller = design.controllers[0]
+    if not design.controllers:
+        raise ValueError("uglir lowering expects at least one fsm controller")
+    top_controller = _require_top_level_controller(design)
+    controller_codes = {
+        controller.name: {state.name: state.attributes["code"] for state in controller.states}
+        for controller in design.controllers
+    }
     lowered = UHIRDesign(name=design.name, stage="uglir")
     memory_interfaces = _memory_interfaces(design, component_library)
-    _validate_memory_interface_schedule(controller, memory_interfaces)
+    _validate_memory_interface_schedule(top_controller, memory_interfaces)
     lowered.inputs = [
         UHIRPort("input", "clk", "clock"),
         UHIRPort("input", "rst", "i1"),
@@ -45,13 +47,24 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
     lowered.outputs.extend(_lowered_data_outputs(design, memory_interfaces))
     lowered.constants = list(design.constants)
 
-    state_type = _state_type(controller)
-    lowered.resources.append(UHIRResource("reg", "state", state_type))
-    lowered.resources.append(UHIRResource("net", "next_state", state_type))
     lowered.resources.append(UHIRResource("net", "req_fire", "i1"))
     lowered.resources.append(UHIRResource("net", "resp_fire", "i1"))
     for interface in memory_interfaces.values():
         lowered.resources.append(UHIRResource("port", interface["memory_name"], interface["component_name"], interface["memory_name"]))
+    for controller in design.controllers:
+        state_type = _state_type(controller)
+        lowered.resources.append(UHIRResource("reg", _controller_state_id(controller, top_controller), state_type))
+        lowered.resources.append(UHIRResource("net", _controller_next_state_id(controller, top_controller), state_type))
+        for port in controller.inputs:
+            signal_id = _controller_port_signal_id(controller, port.name, top_controller)
+            if signal_id not in {"req_valid", "resp_ready"}:
+                lowered.resources.append(UHIRResource("net", signal_id, port.type))
+        for port in controller.outputs:
+            signal_id = _controller_port_signal_id(controller, port.name, top_controller)
+            if signal_id not in {"req_ready", "resp_valid"}:
+                lowered.resources.append(UHIRResource("net", signal_id, port.type))
+    for signal_name in _link_export_signal_names(design, top_controller):
+        lowered.resources.append(UHIRResource("net", signal_name, "i1"))
 
     for resource in design.resources:
         if resource.kind == "fu":
@@ -67,10 +80,10 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         elif resource.kind == "reg":
             lowered.resources.append(UHIRResource("reg", resource.id, resource.value))
 
-    state_code = {state.name: state.attributes["code"] for state in controller.states}
     latch_targets = sorted(
         {
             register
+            for controller in design.controllers
             for emit in controller.emits
             for register in emit.attributes.get("latch", ())
         }
@@ -84,46 +97,77 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         [
             UHIRAssign("req_fire", "req_valid & req_ready"),
             UHIRAssign("resp_fire", "resp_valid & resp_ready"),
-            UHIRAssign("req_ready", _state_eq_expr(state_code["IDLE"])),
-            UHIRAssign("resp_valid", _state_eq_expr(state_code["DONE"])),
-            UHIRAssign("next_state", _next_state_expr(controller, state_code)),
         ]
     )
+    for controller in design.controllers:
+        for port in controller.outputs:
+            lowered.assigns.append(
+                UHIRAssign(
+                    _controller_port_signal_id(controller, port.name, top_controller),
+                    _controller_output_expr(controller, port.name, controller_codes[controller.name], top_controller),
+                )
+            )
+        lowered.assigns.append(
+            UHIRAssign(
+                _controller_next_state_id(controller, top_controller),
+                _next_state_expr(controller, controller_codes[controller.name], top_controller),
+            )
+        )
+    for assign in _controller_link_assigns(design, top_controller, controller_codes):
+        lowered.assigns.append(assign)
 
     for resource in design.resources:
         if resource.kind != "fu":
             continue
         if component_library is None:
-            lowered.assigns.append(UHIRAssign(f"{resource.id}_go", _issue_expr(controller, resource.id, state_code)))
+            lowered.assigns.append(UHIRAssign(f"{resource.id}_go", _issue_expr(design.controllers, top_controller, resource.id, controller_codes)))
             lowered.attachments.append(UHIRAttach(resource.id, "go", f"{resource.id}_go"))
             if any(candidate.id == f"{resource.id}_y" for candidate in lowered.resources):
                 lowered.attachments.append(UHIRAttach(resource.id, "y", f"{resource.id}_y"))
             continue
 
         port_names = _instance_port_names(component_library, resource.value)
-        if "go" in port_names:
-            lowered.assigns.append(UHIRAssign(f"{resource.id}_go", _issue_expr(controller, resource.id, state_code)))
+        issue_bindings = _component_issue_bindings(component_library, resource.value)
+        for port_name, binding_key in issue_bindings.items():
+            if port_name not in port_names:
+                raise ValueError(
+                    f"component '{resource.value}' issue binding references unknown port '{port_name}'"
+                )
+            lowered.assigns.append(
+                UHIRAssign(
+                    f"{resource.id}_{port_name}",
+                    _issue_port_expr(
+                        design.controllers,
+                        top_controller,
+                        resource.id,
+                        _port_type(component_library, resource.value, port_name),
+                        binding_key,
+                        controller_codes,
+                    ),
+                )
+            )
         if "op" in port_names:
             lowered.assigns.append(
                 UHIRAssign(
                     f"{resource.id}_op",
-                    _opcode_expr(design, controller, resource.id, resource.value, state_code, component_library),
+                    _opcode_expr(design, design.controllers, top_controller, resource.id, resource.value, controller_codes, component_library),
                 )
             )
         for port_name, port_type in _instance_input_ports(component_library, resource.value):
-            if port_name in {"go", "op"}:
+            if port_name == "op" or port_name in issue_bindings:
                 continue
             lowered.assigns.append(
                 UHIRAssign(
                     f"{resource.id}_{port_name}",
                     _operand_port_expr(
                         design,
-                        controller,
+                        design.controllers,
+                        top_controller,
                         resource.id,
                         resource.value,
                         port_name,
                         port_type,
-                        state_code,
+                        controller_codes,
                         component_library,
                     ),
                 )
@@ -132,11 +176,11 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
             lowered.attachments.append(UHIRAttach(resource.id, port_name, f"{resource.id}_{port_name}"))
 
     for register in latch_targets:
-        lowered.assigns.append(UHIRAssign(f"latch_{register}", _latch_expr(controller, register, state_code)))
+        lowered.assigns.append(UHIRAssign(f"latch_{register}", _latch_expr(design.controllers, top_controller, register, controller_codes)))
         lowered.assigns.append(
             UHIRAssign(
                 f"sel_{register}",
-                _select_expr(design, controller, register, state_code, component_library),
+                _select_expr(design, design.controllers, top_controller, register, controller_codes, component_library),
             )
         )
         lowered.glue_muxes.append(_build_register_mux(design, register, component_library))
@@ -147,15 +191,26 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
     for output_name, driver in _output_drivers(design, component_library).items():
         lowered.assigns.append(UHIRAssign(output_name, driver))
 
-    seq_block = UHIRSeqBlock(
+    top_seq_block = UHIRSeqBlock(
         clock="clk",
         reset="rst",
-        reset_updates=[UHIRSeqUpdate("state", str(state_code["IDLE"]))],
-        updates=[UHIRSeqUpdate("state", "next_state")],
+        reset_updates=[UHIRSeqUpdate(_controller_state_id(top_controller, top_controller), str(controller_codes[top_controller.name]["IDLE"]))],
+        updates=[UHIRSeqUpdate(_controller_state_id(top_controller, top_controller), _controller_next_state_id(top_controller, top_controller))],
     )
     for register in latch_targets:
-        seq_block.updates.append(UHIRSeqUpdate(register, f"mx_{register}", f"latch_{register}"))
-    lowered.seq_blocks.append(seq_block)
+        top_seq_block.updates.append(UHIRSeqUpdate(register, f"mx_{register}", f"latch_{register}"))
+    lowered.seq_blocks.append(top_seq_block)
+    for controller in design.controllers:
+        if controller.name == top_controller.name:
+            continue
+        lowered.seq_blocks.append(
+            UHIRSeqBlock(
+                clock="clk",
+                reset="rst",
+                reset_updates=[UHIRSeqUpdate(_controller_state_id(controller, top_controller), str(controller_codes[controller.name]["IDLE"]))],
+                updates=[UHIRSeqUpdate(_controller_state_id(controller, top_controller), _controller_next_state_id(controller, top_controller))],
+            )
+        )
     return lowered
 
 
@@ -168,55 +223,110 @@ def _state_type(controller) -> str:
     return f"u{width}"
 
 
-def _state_eq_expr(code: int) -> str:
-    return f"state == {code}"
+def _require_top_level_controller(design: UHIRDesign):
+    top_level = [controller for controller in design.controllers if controller.attributes.get("protocol") == "req_resp"]
+    if len(top_level) != 1:
+        raise ValueError("uglir lowering currently expects exactly one top-level req_resp controller")
+    return top_level[0]
 
 
-def _next_state_expr(controller, state_code: dict[str, int]) -> str:
+def _state_eq_expr(state_signal: str, code: int) -> str:
+    return f"{state_signal} == {code}"
+
+
+def _controller_state_id(controller, top_controller) -> str:
+    return "state" if controller.name == top_controller.name else f"{controller.name}_state"
+
+
+def _controller_next_state_id(controller, top_controller) -> str:
+    return "next_state" if controller.name == top_controller.name else f"{controller.name}_next_state"
+
+
+def _controller_port_signal_id(controller, port_name: str, top_controller) -> str:
+    if controller.name == top_controller.name and port_name in {"req_valid", "resp_ready", "req_ready", "resp_valid"}:
+        return port_name
+    return f"{controller.name}_{port_name}"
+
+
+def _rewrite_controller_expr(expr: str, controller, top_controller) -> str:
+    port_map = {
+        port.name: _controller_port_signal_id(controller, port.name, top_controller)
+        for port in [*controller.inputs, *controller.outputs]
+    }
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(0)
+        return port_map.get(name, name)
+
+    return re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\b", replace, expr)
+
+
+def _next_state_expr(controller, state_code: dict[str, int], top_controller) -> str:
+    state_signal = _controller_state_id(controller, top_controller)
     branches: list[str] = []
     for transition in controller.transitions:
         condition = transition.attributes.get("when")
-        transition_condition = "true" if not isinstance(condition, str) or not condition else condition
+        transition_condition = "true" if not isinstance(condition, str) or not condition else _rewrite_controller_expr(condition, controller, top_controller)
         branches.append(
-            f"({ _state_eq_expr(state_code[transition.source]) } && ({transition_condition})) ? {state_code[transition.target]}"
+            f"({ _state_eq_expr(state_signal, state_code[transition.source]) } && ({transition_condition})) ? {state_code[transition.target]}"
         )
     return " : ".join(branches) + f" : {state_code['IDLE']}"
 
 
-def _issue_expr(controller, resource_id: str, state_code: dict[str, int]) -> str:
+def _issue_expr(controllers, top_controller, resource_id: str, controller_codes: dict[str, dict[str, int]]) -> str:
     active_states = [
-        state_name
-        for state_name, attrs in ((emit.state, emit.attributes) for emit in controller.emits)
+        _state_eq_expr(_controller_state_id(controller, top_controller), controller_codes[controller.name][emit.state])
+        for controller in controllers
+        for emit in controller.emits
+        for attrs in (emit.attributes,)
         for issue in _iter_issue_actions(attrs)
         if issue.split("<-", 1)[0] == resource_id
     ]
     if not active_states:
         return "false"
-    return " | ".join(_state_eq_expr(state_code[state_name]) for state_name in active_states)
+    return " | ".join(active_states)
 
 
-def _latch_expr(controller, register: str, state_code: dict[str, int]) -> str:
+def _issue_port_expr(
+    controllers,
+    top_controller,
+    resource_id: str,
+    port_type: str,
+    binding_key: str,
+    controller_codes: dict[str, dict[str, int]],
+) -> str:
+    active_condition = _issue_expr(controllers, top_controller, resource_id, controller_codes)
+    if active_condition == "false":
+        return _default_net_expr(port_type)
+    if binding_key == "true" and _default_net_expr(port_type) == "false":
+        return active_condition
+    return f"({active_condition}) ? {binding_key} : {_default_net_expr(port_type)}"
+
+
+def _latch_expr(controllers, top_controller, register: str, controller_codes: dict[str, dict[str, int]]) -> str:
     active_states = [
-        emit.state
+        _state_eq_expr(_controller_state_id(controller, top_controller), controller_codes[controller.name][emit.state])
+        for controller in controllers
         for emit in controller.emits
         if register in emit.attributes.get("latch", ())
     ]
     if not active_states:
         return "false"
-    return " | ".join(_state_eq_expr(state_code[state_name]) for state_name in active_states)
+    return " | ".join(active_states)
 
 
 def _select_expr(
     design: UHIRDesign,
-    controller,
+    controllers,
+    top_controller,
     register: str,
-    state_code: dict[str, int],
+    controller_codes: dict[str, dict[str, int]],
     component_library: dict[str, dict[str, Any]] | None = None,
 ) -> str:
-    choices = _register_state_sources(design, controller, register, component_library)
+    choices = _register_state_sources(design, controllers, top_controller, register, controller_codes, component_library)
     if not choices:
         return "hold"
-    branches = [f"{_state_eq_expr(state_code[state])} ? {source}" for state, source in sorted(choices.items(), key=lambda item: state_code[item[0]])]
+    branches = [f"{condition} ? {source}" for condition, source in choices]
     return " : ".join(branches) + " : hold"
 
 
@@ -237,65 +347,197 @@ def _build_register_mux(
     return glue_mux
 
 
+def _controller_region_ids(controller, design: UHIRDesign) -> tuple[str, ...]:
+    roots: list[str] = []
+    region = controller.attributes.get("region")
+    if isinstance(region, str) and region:
+        roots.append(region)
+    false_region = controller.attributes.get("false_region")
+    if isinstance(false_region, str) and false_region:
+        roots.append(false_region)
+    children_by_parent: dict[str, list[str]] = {}
+    for region in design.regions:
+        if region.parent is None:
+            continue
+        children_by_parent.setdefault(region.parent, []).append(region.id)
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def visit(region_id: str) -> None:
+        if region_id in seen:
+            return
+        seen.add(region_id)
+        ordered.append(region_id)
+        for child_id in children_by_parent.get(region_id, ()):
+            visit(child_id)
+
+    for root in roots:
+        visit(root)
+    return tuple(ordered)
+
+
+def _controller_output_expr(controller, port_name: str, state_code: dict[str, int], top_controller) -> str:
+    active_states = [
+        _state_eq_expr(_controller_state_id(controller, top_controller), state_code[emit.state])
+        for emit in controller.emits
+        if emit.attributes.get(port_name) is True
+    ]
+    if not active_states:
+        return "false"
+    return " | ".join(active_states)
+
+
+def _controller_action_expr(
+    controller,
+    top_controller,
+    action_name: str,
+    node_id: str,
+    state_code: dict[str, int],
+) -> str:
+    active_states = [
+        _state_eq_expr(_controller_state_id(controller, top_controller), state_code[emit.state])
+        for emit in controller.emits
+        if node_id in emit.attributes.get(action_name, ())
+    ]
+    if not active_states:
+        return "false"
+    return " | ".join(active_states)
+
+
+def _controller_signal_ref(controller, top_controller, signal_name: str) -> str:
+    known_ports = {port.name for port in [*controller.inputs, *controller.outputs]}
+    if signal_name in known_ports:
+        return _controller_port_signal_id(controller, signal_name, top_controller)
+    return signal_name
+
+
+def _link_export_signal_names(design: UHIRDesign, top_controller) -> list[str]:
+    declared = {
+        port.name
+        for port in [*design.inputs, *design.outputs]
+    }
+    declared.update(constant.name for constant in design.constants)
+    declared.update(resource.id for resource in design.resources)
+    exported: list[str] = []
+    seen: set[str] = set()
+    for controller in design.controllers:
+        known_ports = {port.name for port in [*controller.inputs, *controller.outputs]}
+        for link in controller.links:
+            for attr_name in ("ready", "done"):
+                mapping = link.attributes.get(attr_name)
+                if not isinstance(mapping, tuple) or len(mapping) != 2:
+                    continue
+                parent_signal = mapping[0]
+                if not isinstance(parent_signal, str) or not parent_signal:
+                    continue
+                if parent_signal in declared or parent_signal in known_ports or parent_signal in seen:
+                    continue
+                seen.add(parent_signal)
+                exported.append(parent_signal)
+    return exported
+
+
+def _controller_link_assigns(design: UHIRDesign, top_controller, controller_codes: dict[str, dict[str, int]]) -> list[UHIRAssign]:
+    controllers_by_name = {controller.name: controller for controller in design.controllers}
+    assigns: list[UHIRAssign] = []
+    for parent in design.controllers:
+        for link in parent.links:
+            child = controllers_by_name.get(link.child)
+            if child is None:
+                raise ValueError(f"uglir lowering references unknown child controller '{link.child}'")
+            act_mapping = link.attributes.get("act")
+            if isinstance(act_mapping, tuple) and len(act_mapping) == 2:
+                _, child_input = act_mapping
+                assigns.append(
+                    UHIRAssign(
+                        _controller_port_signal_id(child, child_input, top_controller),
+                        _controller_action_expr(parent, top_controller, "activate", link.node, controller_codes[parent.name]),
+                    )
+                )
+            ready_mapping = link.attributes.get("ready")
+            if isinstance(ready_mapping, tuple) and len(ready_mapping) == 2:
+                parent_signal, child_output = ready_mapping
+                assigns.append(
+                    UHIRAssign(
+                        str(parent_signal),
+                        _controller_port_signal_id(child, str(child_output), top_controller),
+                    )
+                )
+            done_mapping = link.attributes.get("done")
+            if isinstance(done_mapping, tuple) and len(done_mapping) == 2:
+                parent_signal, child_output = done_mapping
+                assigns.append(
+                    UHIRAssign(
+                        str(parent_signal),
+                        _controller_port_signal_id(child, str(child_output), top_controller),
+                    )
+                )
+            done_ready_mapping = link.attributes.get("done_ready")
+            if isinstance(done_ready_mapping, tuple) and len(done_ready_mapping) == 2:
+                parent_signal, child_input = done_ready_mapping
+                assigns.append(
+                    UHIRAssign(
+                        _controller_port_signal_id(child, str(child_input), top_controller),
+                        _controller_signal_ref(parent, top_controller, str(parent_signal)),
+                    )
+                )
+    return assigns
+
+
 def _register_possible_sources(
     design: UHIRDesign,
     register: str,
     component_library: dict[str, dict[str, Any]] | None,
 ) -> list[str]:
-    producer_to_instance = _producer_instance_map(design)
     sources: list[str] = []
     for region in design.regions:
         for binding in region.value_bindings:
             if binding.register != register:
                 continue
-            instance = producer_to_instance.get(binding.producer)
-            if instance is not None:
-                sources.append(_instance_result_signal(design, instance, component_library))
+            source = _resolve_producer_signal(design, binding.producer, component_library)
+            if source is not None:
+                sources.append(source)
     return sources
 
 
 def _register_state_sources(
     design: UHIRDesign,
-    controller,
+    controllers,
+    top_controller,
     register: str,
+    controller_codes: dict[str, dict[str, int]],
     component_library: dict[str, dict[str, Any]] | None,
-) -> dict[str, str]:
-    producer_to_instance = _producer_instance_map(design)
-    live_start_to_instance: dict[int, str] = {}
-    for region in design.regions:
-        for binding in region.value_bindings:
-            if binding.register != register:
-                continue
-            instance = producer_to_instance.get(binding.producer)
-            if instance is None:
-                continue
-            live_start_to_instance[binding.live_start] = _instance_result_signal(design, instance, component_library)
-    choices: dict[str, str] = {}
-    for emit in controller.emits:
-        if register not in emit.attributes.get("latch", ()):
+) -> list[tuple[str, str]]:
+    region_by_id = {region.id: region for region in design.regions}
+    choices: list[tuple[str, str]] = []
+    for controller in controllers:
+        if not controller.attributes.get("region"):
             continue
-        if emit.state.startswith("T"):
-            time_step = int(emit.state[1:])
-            source = live_start_to_instance.get(time_step)
-            if source is not None:
-                choices[emit.state] = source
+        live_start_to_source: dict[int, str] = {}
+        for region_id in _controller_region_ids(controller, design):
+            region = region_by_id.get(region_id)
+            if region is None:
+                continue
+            for binding in region.value_bindings:
+                if binding.register != register:
+                    continue
+                source = _resolve_producer_signal(design, binding.producer, component_library)
+                if source is None:
+                    continue
+                live_start_to_source[binding.live_start] = source
+        for emit in controller.emits:
+            if register not in emit.attributes.get("latch", ()):
+                continue
+            if emit.state.startswith("T"):
+                time_step = int(emit.state[1:])
+                source = live_start_to_source.get(time_step)
+                if source is not None:
+                    condition = _state_eq_expr(
+                        _controller_state_id(controller, top_controller),
+                        controller_codes[controller.name][emit.state],
+                    )
+                    choices.append((condition, source))
     return choices
-
-
-def _producer_instance_map(design: UHIRDesign) -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    for region in design.regions:
-        local_names: dict[str, str] = {}
-        for node in region.nodes:
-            bind = node.attributes.get("bind")
-            if isinstance(bind, str):
-                local_names[node.id] = bind
-        for source_map in region.mappings:
-            bind = local_names.get(source_map.node_id)
-            if bind is not None:
-                mapping[source_map.source_id] = bind
-        mapping.update(local_names)
-    return mapping
 
 
 def _producer_register_map(design: UHIRDesign) -> dict[str, str]:
@@ -348,11 +590,21 @@ def _memory_port_type(
     return None
 
 
+def _port_type(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+    port_name: str,
+) -> str:
+    port_type = _memory_port_type(component_library, component_name, port_name)
+    if port_type is None:
+        raise ValueError(f"component '{component_name}' does not define port '{port_name}'")
+    return port_type
+
+
 def _output_drivers(
     design: UHIRDesign,
     component_library: dict[str, dict[str, Any]] | None,
 ) -> dict[str, str]:
-    producer_to_instance = _producer_instance_map(design)
     producer_to_register = _producer_register_map(design)
     returned_values: list[str] = []
     for region in design.regions:
@@ -365,10 +617,8 @@ def _output_drivers(
     for output, returned in zip(design.outputs, returned_values, strict=False):
         if returned in producer_to_register:
             drivers[output.name] = producer_to_register[returned]
-        elif returned in producer_to_instance:
-            drivers[output.name] = _instance_result_signal(design, producer_to_instance[returned], component_library)
         else:
-            drivers[output.name] = returned
+            drivers[output.name] = _resolve_value_signal(design, returned, component_library)
     return drivers
 
 
@@ -518,37 +768,39 @@ def _validate_memory_interface_schedule(controller, memory_interfaces: dict[str,
 
 def _operand_port_expr(
     design: UHIRDesign,
-    controller,
+    controllers,
+    top_controller,
     resource_id: str,
     component_name: str,
     port_name: str,
     port_type: str,
-    state_code: dict[str, int],
+    controller_codes: dict[str, dict[str, int]],
     component_library: dict[str, dict[str, Any]],
 ) -> str:
     node_by_id = {node.id: node for region in design.regions for node in region.nodes}
     branches: list[tuple[str, str]] = []
-    for emit in controller.emits:
-        for issue in _iter_issue_actions(emit.attributes):
-            instance, _, node_id = issue.partition("<-")
-            if instance != resource_id or not node_id:
-                continue
-            node = node_by_id.get(node_id)
-            if node is None:
-                continue
-            binding_key = _component_port_binding(component_library, component_name, node.opcode, port_name)
-            if binding_key is None:
-                continue
-            source_expr = _binding_key_expr(design, node, binding_key, component_library)
-            branches.append((emit.state, source_expr))
+    for controller in controllers:
+        for emit in controller.emits:
+            for issue in _iter_issue_actions(emit.attributes):
+                instance, _, node_id = issue.partition("<-")
+                if instance != resource_id or not node_id:
+                    continue
+                node = node_by_id.get(node_id)
+                if node is None:
+                    continue
+                binding_key = _component_port_binding(component_library, component_name, node.opcode, port_name)
+                if binding_key is None:
+                    continue
+                source_expr = _binding_key_expr(design, node, binding_key, component_library)
+                condition = _state_eq_expr(_controller_state_id(controller, top_controller), controller_codes[controller.name][emit.state])
+                branches.append((condition, source_expr))
 
     if not branches:
         return _default_net_expr(port_type)
     unique_exprs = {expr for _, expr in branches}
     if len(unique_exprs) == 1:
         return next(iter(unique_exprs))
-    ordered = sorted(branches, key=lambda item: state_code[item[0]])
-    parts = [f"{_state_eq_expr(state_code[state])} ? {expr}" for state, expr in ordered]
+    parts = [f"{condition} ? {expr}" for condition, expr in branches]
     return " : ".join(parts) + f" : {_default_net_expr(port_type)}"
 
 
@@ -628,6 +880,72 @@ def _instance_result_signal(
     raise ValueError(f"component '{component_name}' bound at '{instance_id}' has no output port")
 
 
+def _node_result_signal(
+    design: UHIRDesign,
+    node,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> str | None:
+    bind = node.attributes.get("bind")
+    if not isinstance(bind, str):
+        return None
+    if component_library is None:
+        return f"{bind}_y"
+    component_name = _resource_value(design, bind)
+    result_port = _component_result_port(component_library, component_name, node.opcode)
+    if result_port is not None:
+        return f"{bind}_{result_port}"
+    return _instance_result_signal(design, bind, component_library)
+
+
+def _component_result_port(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+    opcode_name: str,
+) -> str | None:
+    component = component_library.get(component_name)
+    if component is None:
+        raise ValueError(f"component library does not define component '{component_name}'")
+    supports = component.get("supports")
+    if not isinstance(supports, dict):
+        raise ValueError(f"component '{component_name}' must define object-valued 'supports'")
+    support = supports.get(opcode_name)
+    if support is None:
+        raise ValueError(f"component '{component_name}' does not support opcode '{opcode_name}'")
+    if not isinstance(support, dict):
+        raise ValueError(f"component '{component_name}' support '{opcode_name}' must be an object")
+    binding = support.get("bind")
+    if binding is None:
+        return None
+    if not isinstance(binding, dict):
+        raise ValueError(f"component '{component_name}' support '{opcode_name}' must use object-valued 'bind'")
+    result_ports = [port_name for port_name, binding_key in binding.items() if binding_key == "result"]
+    if len(result_ports) > 1:
+        raise ValueError(
+            f"component '{component_name}' support '{opcode_name}' must map at most one output port to 'result'"
+        )
+    return result_ports[0] if result_ports else None
+
+
+def _component_issue_bindings(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+) -> dict[str, str]:
+    component = component_library.get(component_name)
+    if component is None:
+        raise ValueError(f"component library does not define component '{component_name}'")
+    issue = component.get("issue")
+    if issue is None:
+        return {}
+    if not isinstance(issue, dict):
+        raise ValueError(f"component '{component_name}' must use object-valued 'issue' bindings")
+    normalized: dict[str, str] = {}
+    for port_name, binding_key in issue.items():
+        if not isinstance(binding_key, str) or not binding_key:
+            raise ValueError(f"component '{component_name}' issue binding '{port_name}' must be a non-empty string")
+        normalized[str(port_name)] = binding_key
+    return normalized
+
+
 def _component_port_binding(
     component_library: dict[str, dict[str, Any]],
     component_name: str,
@@ -685,11 +1003,33 @@ def _resolve_value_signal(
     producer_to_register = _producer_register_map(design)
     if value_id in producer_to_register:
         return producer_to_register[value_id]
-    producer_to_instance = _producer_instance_map(design)
-    instance = producer_to_instance.get(value_id)
-    if instance is not None:
-        return _instance_result_signal(design, instance, component_library)
+    result_signal = _resolve_producer_signal(design, value_id, component_library)
+    if result_signal is not None:
+        return result_signal
     return value_id
+
+
+def _resolve_producer_signal(
+    design: UHIRDesign,
+    value_id: str,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> str | None:
+    producer_node = _producer_node_map(design).get(value_id)
+    if producer_node is None:
+        return None
+    return _node_result_signal(design, producer_node, component_library)
+
+
+def _producer_node_map(design: UHIRDesign) -> dict[str, Any]:
+    mapping: dict[str, Any] = {}
+    for region in design.regions:
+        local_nodes = {node.id: node for node in region.nodes}
+        mapping.update(local_nodes)
+        for source_map in region.mappings:
+            node = local_nodes.get(source_map.node_id)
+            if node is not None:
+                mapping[source_map.source_id] = node
+    return mapping
 
 
 def _default_net_expr(port_type: str) -> str:
@@ -700,10 +1040,11 @@ def _default_net_expr(port_type: str) -> str:
 
 def _opcode_expr(
     design: UHIRDesign,
-    controller,
+    controllers,
+    top_controller,
     resource_id: str,
     component_name: str,
-    state_code: dict[str, int],
+    controller_codes: dict[str, dict[str, int]],
     component_library: dict[str, dict[str, Any]],
 ) -> str:
     component = component_library.get(component_name)
@@ -714,32 +1055,31 @@ def _opcode_expr(
         raise ValueError(f"component '{component_name}' must define object-valued 'supports'")
 
     node_opcode = {node.id: node.opcode for region in design.regions for node in region.nodes}
-    state_to_opcode: dict[str, int] = {}
-    for emit in controller.emits:
-        for issue in _iter_issue_actions(emit.attributes):
-            instance, _, node_id = issue.partition("<-")
-            if instance != resource_id or not node_id:
-                continue
-            opcode_name = node_opcode.get(node_id)
-            if opcode_name is None:
-                continue
-            support = supports.get(opcode_name)
-            if not isinstance(support, dict):
-                raise ValueError(f"component '{component_name}' does not support opcode '{opcode_name}'")
-            opcode_literal = support.get("opcode")
-            if not isinstance(opcode_literal, int):
-                raise ValueError(f"component '{component_name}' support '{opcode_name}' must define integer 'opcode'")
-            state_to_opcode[emit.state] = opcode_literal
+    state_to_opcode: list[tuple[str, int]] = []
+    for controller in controllers:
+        for emit in controller.emits:
+            for issue in _iter_issue_actions(emit.attributes):
+                instance, _, node_id = issue.partition("<-")
+                if instance != resource_id or not node_id:
+                    continue
+                opcode_name = node_opcode.get(node_id)
+                if opcode_name is None:
+                    continue
+                support = supports.get(opcode_name)
+                if not isinstance(support, dict):
+                    raise ValueError(f"component '{component_name}' does not support opcode '{opcode_name}'")
+                opcode_literal = support.get("opcode")
+                if not isinstance(opcode_literal, int):
+                    raise ValueError(f"component '{component_name}' support '{opcode_name}' must define integer 'opcode'")
+                condition = _state_eq_expr(_controller_state_id(controller, top_controller), controller_codes[controller.name][emit.state])
+                state_to_opcode.append((condition, opcode_literal))
 
     if not state_to_opcode:
         return "0"
-    unique_opcodes = set(state_to_opcode.values())
+    unique_opcodes = {opcode for _, opcode in state_to_opcode}
     if len(unique_opcodes) == 1:
         return str(next(iter(unique_opcodes)))
-    branches = [
-        f"{_state_eq_expr(state_code[state])} ? {opcode}"
-        for state, opcode in sorted(state_to_opcode.items(), key=lambda item: state_code[item[0]])
-    ]
+    branches = [f"{condition} ? {opcode}" for condition, opcode in state_to_opcode]
     return " : ".join(branches) + " : 0"
 
 

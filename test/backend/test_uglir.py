@@ -197,6 +197,195 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertIn("ewms0.op(ewms0_op)", rendered)
         self.assertNotIn("ewms0.go(", rendered)
 
+    def test_lower_fsm_to_uglir_uses_component_issue_and_result_bindings(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design seqadd1
+            stage fsm
+            schedule kind=control_steps
+            input  x : i32
+            output result : i32
+            resources {
+              fu seq0 : SEQADD
+              reg r_i32_0 : i32
+            }
+            controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_seqadd1 {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=1
+              state T0 code=2
+              state T1 code=4
+              state T2 code=8
+              state DONE code=16
+              transition IDLE -> T0 when=req_valid && req_ready
+              transition T0 -> T1
+              transition T1 -> T2
+              transition T2 -> DONE
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[seq0<-v1]
+              emit T1 latch=[r_i32_0]
+              emit DONE resp_valid=true
+            }
+
+            region proc_seqadd1 kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=seq0
+              node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              steps [0:1]
+              latency 2
+              value v1 -> r_i32_0 live=[1:1]
+            }
+            """
+        )
+        component_library = json.loads(
+            """
+            {
+              "components": {
+                "SEQADD": {
+                  "kind": "sequential",
+                  "issue": {
+                    "start": "true"
+                  },
+                  "ports": {
+                    "start": { "dir": "input", "type": "i1" },
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "out": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "add": {
+                      "ii": 1,
+                      "d": 1,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "out": "result"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+        )["components"]
+
+        uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
+
+        resource_ids = [resource.id for resource in uglir_design.resources]
+        self.assertIn("seq0_start", resource_ids)
+        self.assertIn("seq0_a", resource_ids)
+        self.assertIn("seq0_b", resource_ids)
+        self.assertIn("seq0_out", resource_ids)
+        self.assertNotIn("seq0_go", resource_ids)
+        attachments = {(attachment.instance, attachment.port, attachment.signal) for attachment in uglir_design.attachments}
+        self.assertIn(("seq0", "start", "seq0_start"), attachments)
+        self.assertIn(("seq0", "out", "seq0_out"), attachments)
+        assigns = {(assign.target, assign.expr) for assign in uglir_design.assigns}
+        self.assertIn(("seq0_start", "state == 2"), assigns)
+        self.assertIn(("seq0_a", "x"), assigns)
+        self.assertIn(("seq0_b", "1:i32"), assigns)
+        mux = next(mux for mux in uglir_design.glue_muxes if mux.name == "mx_r_i32_0")
+        self.assertIn(("seq0_out", "seq0_out"), [(case.key, case.source) for case in mux.cases])
+        rendered = format_uhir(uglir_design)
+        self.assertIn("assign seq0_start = state == 2", rendered)
+        self.assertIn("seq0.start(seq0_start)", rendered)
+        self.assertIn("seq0.out(seq0_out)", rendered)
+        self.assertNotIn("seq0.go(", rendered)
+
+    def test_lower_fsm_to_uglir_lowers_recursive_controller_links_to_nets(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design dyn_call
+            stage fsm
+            schedule kind=hierarchical
+            resources {
+              fu fu_add0 : FU_ADD
+            }
+            controller C0 encoding=binary protocol=req_resp completion_order=in_order overlap=true region=proc_dyn_call {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=0
+              state P0 code=1
+              state WAIT_v1 code=2
+              state DONE code=3
+              transition IDLE -> P0 when=req_valid && req_ready && symb_ready_v1
+              transition P0 -> WAIT_v1
+              transition WAIT_v1 -> DONE when=symb_done_v1
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit P0 activate=[v1]
+              emit DONE resp_valid=true
+              link C_callee via=v1 act=[activate, act_valid] ready=[symb_ready_v1, act_ready] done=[symb_done_v1, done_valid] done_ready=[resp_ready, done_ready]
+            }
+
+            controller C_callee encoding=binary protocol=act_done completion_order=in_order overlap=true region=callee parent_node=v1 {
+              input  act_valid : i1
+              input  done_ready : i1
+              output act_ready : i1
+              output done_valid : i1
+              state IDLE code=0
+              state T0 code=1
+              state DONE code=2
+              transition IDLE -> T0 when=act_valid && act_ready
+              transition T0 -> DONE
+              transition DONE -> IDLE when=done_valid && done_ready
+              emit IDLE act_ready=true
+              emit DONE done_valid=true
+            }
+
+            region proc_dyn_call kind=procedure {
+              region_ref callee
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = call child=callee class=CTRL ii=1 delay=1 start=0 end=0 timing=symbolic completion=symb_done_v1 ready=symb_ready_v1 handshake=ready_done
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge seq v1 -> callee hierarchy=true
+              edge seq callee -> v1 hierarchy=true
+            }
+
+            region callee kind=procedure parent=proc_dyn_call {
+              node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node c1 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+              edge data c0 -> c1
+            }
+            """
+        )
+
+        uglir_design = lower_fsm_to_uglir(fsm_design)
+
+        resource_ids = [resource.id for resource in uglir_design.resources]
+        self.assertIn("state", resource_ids)
+        self.assertIn("next_state", resource_ids)
+        self.assertIn("C_callee_state", resource_ids)
+        self.assertIn("C_callee_next_state", resource_ids)
+        self.assertIn("C_callee_act_valid", resource_ids)
+        self.assertIn("C_callee_done_ready", resource_ids)
+        self.assertIn("C_callee_act_ready", resource_ids)
+        self.assertIn("C_callee_done_valid", resource_ids)
+        self.assertIn("symb_ready_v1", resource_ids)
+        self.assertIn("symb_done_v1", resource_ids)
+        assigns = {(assign.target, assign.expr) for assign in uglir_design.assigns}
+        self.assertIn(("C_callee_act_valid", "state == 1"), assigns)
+        self.assertIn(("C_callee_done_ready", "resp_ready"), assigns)
+        self.assertIn(("symb_ready_v1", "C_callee_act_ready"), assigns)
+        self.assertIn(("symb_done_v1", "C_callee_done_valid"), assigns)
+        self.assertIn(("C_callee_act_ready", "C_callee_state == 0"), assigns)
+        self.assertIn(("C_callee_done_valid", "C_callee_state == 2"), assigns)
+        rendered = format_uhir(uglir_design)
+        self.assertIn("reg C_callee_state : u2", rendered)
+        self.assertIn("net C_callee_act_valid : i1", rendered)
+        self.assertIn("assign symb_done_v1 = C_callee_done_valid", rendered)
+
     def test_lower_fsm_to_uglir_expands_memref_interface_for_memory_component(self) -> None:
         fsm_design = parse_uhir(
             """

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from .builtin import LeftEdgeBinder
+from .builtin import CompatibilityBinder, LeftEdgeBinder
 from .interfaces import OperationBinder
 
 _BUILTIN_BINDER_FACTORIES: dict[str, Callable[..., OperationBinder]] = {
+    "compat": CompatibilityBinder,
     "left_edge": LeftEdgeBinder,
 }
 

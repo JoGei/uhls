@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from itertools import combinations
 
 from uhls.backend.uhir.model import UHIRDesign, UHIRNode, UHIRRegion, UHIRValueBinding
+from uhls.backend.uhir.timing import TimingExpr
 from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 from uhls.utils.graph import interval_conflicts
 
@@ -139,7 +140,7 @@ def _format_one_dump(design: UHIRDesign, dump_kind: str, *, compact: bool) -> li
 def _format_conflict_like(design: UHIRDesign, *, compatibility: bool) -> list[str]:
     graph_name = "compatibility" if compatibility else "conflict"
     graph_type = "compatibility graph" if compatibility else "conflict graph"
-    lines = [f"bind_dump {graph_name}"]
+    lines = [f"bind_dump {graph_name}", f"binding_mode {_bind_analysis_mode(design)}"]
     for (category, class_name), region_entries in _group_entries(_collect_local_bound_entries(design)).items():
         lines.append(f"class {class_name} ({category} {graph_type})")
         for region_id, entries in sorted(region_entries.items()):
@@ -158,7 +159,7 @@ def _format_conflict_like(design: UHIRDesign, *, compatibility: bool) -> list[st
 
 
 def _format_trp(design: UHIRDesign, *, compact: bool) -> list[str]:
-    lines = ["bind_dump trp"]
+    lines = ["bind_dump trp", f"binding_mode {_bind_analysis_mode(design)}"]
     for scope_id, entries in sorted(_group_by_scope(_collect_local_trp_entries(design)).items()):
         lines.append(f"region {scope_id} (time-resource plane)")
         lines.extend(f"  {line}" for line in _render_trp_text(entries, compact=compact))
@@ -167,7 +168,7 @@ def _format_trp(design: UHIRDesign, *, compact: bool) -> list[str]:
 
 def _format_trp_unroll(design: UHIRDesign, *, compact: bool) -> list[str]:
     entries = _collect_scroll_bound_entries(design)
-    lines = ["bind_dump trp_unroll", "global (time-resource plane unrolled)"]
+    lines = ["bind_dump trp_unroll", f"binding_mode {_bind_analysis_mode(design)}", "global (time-resource plane unrolled)"]
     lines.extend(f"  {line}" for line in _render_trp_text(entries, compact=compact))
     return lines
 
@@ -175,7 +176,7 @@ def _format_trp_unroll(design: UHIRDesign, *, compact: bool) -> list[str]:
 def _format_dfgsb(design: UHIRDesign, *, compact: bool) -> list[str]:
     region_by_id = {region.id: region for region in design.regions}
     grouped = _group_by_scope(_filter_dfgsb_entries(design, _collect_local_dfgsb_entries(design)))
-    lines = ["bind_dump dfgsb"]
+    lines = ["bind_dump dfgsb", f"binding_mode {_bind_analysis_mode(design)}"]
     first = True
     for region_id in _hierarchy_region_order(design):
         if not first:
@@ -189,9 +190,20 @@ def _format_dfgsb(design: UHIRDesign, *, compact: bool) -> list[str]:
 
 def _format_dfgsb_unroll(design: UHIRDesign, *, compact: bool) -> list[str]:
     entries = _filter_dfgsb_entries(design, _collect_scroll_bound_entries(design))
-    lines = ["bind_dump dfgsb_unroll", "global (dataflow graph with schedule and binding, unrolled)"]
+    lines = [
+        "bind_dump dfgsb_unroll",
+        f"binding_mode {_bind_analysis_mode(design)}",
+        "global (dataflow graph with schedule and binding, unrolled)",
+    ]
     lines.extend(f"  {line}" for line in _render_dfgsb_text(entries, compact=compact))
     return lines
+
+
+def _bind_analysis_mode(design: UHIRDesign) -> str:
+    """Return a small semantic label for the bind artifact shape."""
+    has_register_resources = any(resource.kind == "reg" for resource in design.resources)
+    has_value_bindings = any(region.value_bindings for region in design.regions)
+    return "op_and_reg" if has_register_resources or has_value_bindings else "fu_only"
 
 
 def _dot_conflict_like(design: UHIRDesign, *, compatibility: bool, compact: bool) -> list[str]:
@@ -1964,6 +1976,15 @@ def _analysis_bind(node: UHIRNode, class_name: str) -> str:
 def _validate_bind_design(design: UHIRDesign) -> None:
     if design.stage != "bind":
         raise ValueError(f"bind dump rendering expects bind-stage µhIR input, got stage '{design.stage}'")
+    for region in design.regions:
+        for node in region.nodes:
+            start = node.attributes.get("start")
+            end = node.attributes.get("end")
+            if isinstance(start, TimingExpr) or isinstance(end, TimingExpr):
+                raise ValueError(
+                    "bind dump rendering currently requires concrete bind timing; "
+                    f"node '{region.id}/{node.id}' still carries symbolic start/end"
+                )
 
 
 def _escape_dot(text: str) -> str:

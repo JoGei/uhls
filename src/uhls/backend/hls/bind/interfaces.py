@@ -9,6 +9,7 @@ from itertools import combinations
 from typing import Protocol
 
 from uhls.backend.uhir.model import UHIREdge, UHIRDesign, UHIRNode, UHIRRegion, UHIRResource, UHIRValueBinding
+from uhls.backend.uhir.timing import TimingExpr
 from uhls.utils.graph import intervals_overlap
 
 
@@ -62,13 +63,25 @@ class OperationBinderBase(ABC):
                     continue
                 yield region, node
 
-    def validate_sched_design(self, design: UHIRDesign) -> None:
-        """Assert one sched-stage design shape before binding it."""
+    def validate_sched_stage(self, design: UHIRDesign) -> None:
+        """Assert one sched-stage design shell before binding it."""
         if design.stage != "sched":
             raise ValueError(f"operation binding expects sched-stage µhIR input, got stage '{design.stage}'")
         if design.schedule is None:
             raise ValueError("operation binding requires schedule kind=...")
+
+    def validate_sched_design(self, design: UHIRDesign) -> None:
+        """Assert one sched-stage design shape before binding it."""
+        self.validate_sched_stage(design)
         for region, node in self.iter_bindable_nodes(design):
+            start = node.attributes.get("start")
+            end = node.attributes.get("end")
+            if isinstance(start, TimingExpr) or isinstance(end, TimingExpr):
+                raise ValueError(
+                    f"operation binding currently requires concrete sched timing; "
+                    f"bindable node '{region.id}/{node.id}' has symbolic start/end "
+                    f"(use the FU-only 'compat' binder for symbolic schedules)"
+                )
             self.get_node_interval(region, node)
 
     def assert_fully_static_design(self, design: UHIRDesign) -> None:

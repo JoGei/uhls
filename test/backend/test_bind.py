@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from uhls.backend.hls import bind_dump_to_dot, binding_to_dot, format_bind_dump, lower_alloc_to_sched, lower_sched_to_bind, parse_bind_dump_spec
-from uhls.backend.hls.bind.builtin import LeftEdgeBinder
+from uhls.backend.hls.bind.builtin import CompatibilityBinder, LeftEdgeBinder
 from uhls.backend.uhir import (
     ExecutabilityGraph,
     create_builtin_gopt_pass,
@@ -28,6 +28,21 @@ class BindingLoweringTests(unittest.TestCase):
                 create_builtin_gopt_pass("infer_static"),
             ],
         )
+
+    def _static_dot4_relu_sched_design(self):
+        seq_design = run_gopt_passes(
+            parse_uhir_file(Path("dot4_relu.uhir")),
+            [
+                create_builtin_gopt_pass("infer_loops"),
+                create_builtin_gopt_pass("translate_loop_dialect"),
+                create_builtin_gopt_pass("infer_static"),
+                create_builtin_gopt_pass("simplify_static_control"),
+                create_builtin_gopt_pass("predicate"),
+                create_builtin_gopt_pass("fold_predicates"),
+            ],
+        )
+        alloc_design = lower_seq_to_alloc(seq_design, executability_graph=self._full_executability_graph())
+        return lower_alloc_to_sched(alloc_design)
 
     def _full_executability_graph(self) -> ExecutabilityGraph:
         operations = (
@@ -218,6 +233,209 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertEqual(call_node.attributes["ready"], "symb_ready_v2")
         self.assertEqual(call_node.attributes["completion"], "symb_done_v2")
         self.assertEqual(call_node.attributes["handshake"], "ready_done")
+
+    def test_lower_sched_to_bind_rejects_symbolic_sched_timing(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design dyn_sched
+            stage sched
+            schedule kind=hierarchical
+
+            region proc_dyn_sched kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add x, y : i32 class=FU_ADD ii=1 delay=1 start=max(0, symb_delay_v4) end=max(0, symb_delay_v4) + 1 - 1
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+              edge data v0 -> v1
+              edge data v1 -> v2
+            }
+            """
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires concrete sched timing"):
+            lower_sched_to_bind(sched_design)
+
+    def test_compat_binder_accepts_symbolic_sched_timing(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design dyn_compat
+            stage sched
+            schedule kind=hierarchical
+
+            region proc_dyn_compat kind=procedure {
+              region_ref proc_callee
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = call x child=proc_callee class=CTRL ii=II delay=symb_delay_v1 start=0 end=symb_delay_v1 - 1 timing=symbolic completion=symb_done_v1 ready=symb_ready_v1 handshake=ready_done
+              node v2 = add a, b : i32 class=FU_ADD ii=1 delay=1 start=max(0, symb_delay_v1) end=max(0, symb_delay_v1) + 1 - 1
+              node v3 = add v2, c : i32 class=FU_ADD ii=1 delay=1 start=max(0, max(0, symb_delay_v1) + 1) end=max(0, max(0, symb_delay_v1) + 1) + 1 - 1
+              node v4 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+            }
+
+            region proc_callee kind=procedure {
+              node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node c1 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+              edge data c0 -> c1
+            }
+            """
+        )
+
+        bind_design = lower_sched_to_bind(sched_design, binder=CompatibilityBinder())
+        region = bind_design.get_region("proc_dyn_compat")
+        assert region is not None
+        add_nodes = [node for node in region.nodes if node.opcode == "add"]
+        self.assertEqual([resource.id for resource in bind_design.resources], ["fu_add0"])
+        self.assertEqual([node.attributes["bind"] for node in add_nodes], ["fu_add0", "fu_add0"])
+        self.assertEqual(region.value_bindings, [])
+
+    def test_compat_binder_reuses_fu_across_mutually_exclusive_dynamic_branch_arms(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design dyn_branch_share
+            stage sched
+            schedule kind=hierarchical
+
+            region proc_dyn_branch_share kind=procedure {
+              region_ref bb_true
+              region_ref bb_false
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = branch c true_child=bb_true false_child=bb_false class=CTRL ii=0 delay=symb_delay_v1 start=1 end=symb_delay_v1 timing=symbolic completion=symb_done_v1 branch_condition=c
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+              edge data v0 -> v1
+              edge data v1 -> v2
+            }
+
+            region bb_true kind=basic parent=proc_dyn_branch_share {
+              node t0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+              node t1 = add a, b : i32 class=EWMS ii=1 delay=1 start=2 end=2
+              node t2 = nop role=sink class=CTRL ii=0 delay=0 start=3 end=3
+
+              edge data t0 -> t1
+              edge data t1 -> t2
+            }
+
+            region bb_false kind=basic parent=proc_dyn_branch_share {
+              node f0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+              node f1 = add c, d : i32 class=EWMS ii=1 delay=1 start=2 end=2
+              node f2 = nop role=sink class=CTRL ii=0 delay=0 start=3 end=3
+
+              edge data f0 -> f1
+              edge data f1 -> f2
+            }
+            """
+        )
+
+        bind_design = lower_sched_to_bind(sched_design, binder=CompatibilityBinder())
+        true_region = bind_design.get_region("bb_true")
+        false_region = bind_design.get_region("bb_false")
+        assert true_region is not None
+        assert false_region is not None
+
+        true_add = next(node for node in true_region.nodes if node.opcode == "add")
+        false_add = next(node for node in false_region.nodes if node.opcode == "add")
+        self.assertEqual(true_add.attributes["bind"], false_add.attributes["bind"])
+        self.assertEqual([resource.id for resource in bind_design.resources if resource.kind == "fu"], ["ewms0"])
+
+    def test_compat_binder_reuses_register_across_mutually_exclusive_dynamic_branch_values(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design dyn_branch_value_share
+            stage sched
+            schedule kind=hierarchical
+
+            region proc_dyn_branch_value_share kind=procedure {
+              region_ref bb_true
+              region_ref bb_false
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = branch c true_child=bb_true false_child=bb_false class=CTRL ii=0 delay=symb_delay_v1 start=1 end=symb_delay_v1 timing=symbolic completion=symb_done_v1 branch_condition=c
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+              edge data v0 -> v1
+              edge data v1 -> v2
+            }
+
+            region bb_true kind=basic parent=proc_dyn_branch_value_share {
+              node t0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+              node t1 = add a, b : i32 class=EWMS ii=1 delay=1 start=2 end=2
+              node t2 = add t1, k : i32 class=EWMS ii=1 delay=1 start=3 end=3
+              node t3 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+
+              edge data t0 -> t1
+              edge data t1 -> t2
+              edge data t2 -> t3
+            }
+
+            region bb_false kind=basic parent=proc_dyn_branch_value_share {
+              node f0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+              node f1 = add c, d : i32 class=EWMS ii=1 delay=1 start=2 end=2
+              node f2 = add f1, m : i32 class=EWMS ii=1 delay=1 start=3 end=3
+              node f3 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+
+              edge data f0 -> f1
+              edge data f1 -> f2
+              edge data f2 -> f3
+            }
+            """
+        )
+
+        bind_design = lower_sched_to_bind(sched_design, binder=CompatibilityBinder())
+        true_region = bind_design.get_region("bb_true")
+        false_region = bind_design.get_region("bb_false")
+        assert true_region is not None
+        assert false_region is not None
+
+        self.assertEqual([resource.id for resource in bind_design.resources if resource.kind == "reg"], ["r_i32_0"])
+        self.assertEqual([(binding.producer, binding.register) for binding in true_region.value_bindings], [("t1", "r_i32_0")])
+        self.assertEqual([(binding.producer, binding.register) for binding in false_region.value_bindings], [("f1", "r_i32_0")])
+        self.assertEqual(true_region.value_bindings[0].live_intervals, ((3, 3),))
+        self.assertEqual(false_region.value_bindings[0].live_intervals, ((3, 3),))
+
+    def test_format_bind_dump_marks_fu_only_binding_mode(self) -> None:
+        bind_design = lower_sched_to_bind(
+            parse_uhir(
+            """
+            design fu_only_mode
+            stage sched
+            schedule kind=control_steps
+
+            region proc_fu_only_mode kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add x, y : i32 class=FU_ADD ii=1 delay=1 start=0 end=0
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data v0 -> v1
+              edge data v1 -> v2
+            }
+            """
+            ),
+            binder=CompatibilityBinder(),
+        )
+        rendered = format_bind_dump(bind_design, ("conflict",))
+        self.assertIn("binding_mode fu_only", rendered)
+
+    def test_bind_dump_rejects_symbolic_compat_artifact(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design dyn_compat_dump
+            stage sched
+            schedule kind=hierarchical
+
+            region proc_dyn_compat_dump kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add x, y : i32 class=FU_ADD ii=1 delay=1 start=max(0, symb_delay_v4) end=max(0, symb_delay_v4) + 1 - 1
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+              edge data v0 -> v1
+              edge data v1 -> v2
+            }
+            """
+        )
+
+        bind_design = lower_sched_to_bind(sched_design, binder=CompatibilityBinder())
+        with self.assertRaisesRegex(ValueError, "requires concrete bind timing"):
+            format_bind_dump(bind_design, ("conflict",))
 
     def test_lower_sched_to_bind_extends_loop_carried_value_liveness_to_header_phi(self) -> None:
         sched_design = parse_uhir(
@@ -501,7 +719,7 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertTrue(last_time_line.startswith("  29 |") or last_time_line.startswith("29 |"))
 
     def test_flattened_binding_colors_register_values_per_occurrence(self) -> None:
-        sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
+        sched_design = self._static_dot4_relu_sched_design()
 
         bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
 
@@ -514,7 +732,7 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertGreater(len(sum_bindings[0].live_intervals), 1)
 
     def test_non_flattened_trp_unroll_keeps_iteration_specific_register_values(self) -> None:
-        sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
+        sched_design = self._static_dot4_relu_sched_design()
 
         bind_design = lower_sched_to_bind(sched_design)
 
@@ -525,7 +743,7 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertNotIn("sum_1[t=1]_b1", rendered)
 
     def test_non_flattened_dfgsb_unroll_renders_later_iterations_and_hidden_branch_flow(self) -> None:
-        sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
+        sched_design = self._static_dot4_relu_sched_design()
 
         bind_design = lower_sched_to_bind(sched_design)
 
@@ -536,7 +754,7 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertIn('"dfgsb_unroll_op_17_0" -> "dfgsb_unroll_op_17_1"', dot)
 
     def test_flattened_dfgsb_unroll_renders_final_loop_value_into_post_loop_consumer(self) -> None:
-        sched_design = parse_uhir_file(Path("dot4_relu.sched.uhir"))
+        sched_design = self._static_dot4_relu_sched_design()
 
         bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
 

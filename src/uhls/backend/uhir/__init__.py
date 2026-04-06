@@ -4,6 +4,11 @@ from typing import TYPE_CHECKING
 
 from .model import (
     UHIRConstant,
+    UHIRController,
+    UHIRControllerEmit,
+    UHIRControllerLink,
+    UHIRControllerState,
+    UHIRControllerTransition,
     UHIRDesign,
     UHIREdge,
     UHIRMux,
@@ -68,6 +73,13 @@ def lower_sched_to_bind(*args: object, **kwargs: object) -> object:
     return _impl(*args, **kwargs)
 
 
+def lower_bind_to_fsm(*args: object, **kwargs: object) -> object:
+    """Lower bind-stage µhIR to fsm-stage µhIR."""
+    from uhls.backend.hls.fsm import lower_bind_to_fsm as _impl
+
+    return _impl(*args, **kwargs)
+
+
 def dummy_executability_graph(*args: object, **kwargs: object) -> object:
     """Build one starter executability graph covering canonical µIR ops."""
     from uhls.backend.hls.alloc import dummy_executability_graph as _impl
@@ -93,6 +105,11 @@ __all__ = [
     "ExecutabilityGraph",
     "GOptPassSpec",
     "UHIRConstant",
+    "UHIRController",
+    "UHIRControllerEmit",
+    "UHIRControllerLink",
+    "UHIRControllerState",
+    "UHIRControllerTransition",
     "UHIRDesign",
     "UHIREdge",
     "UHIRMux",
@@ -119,6 +136,7 @@ __all__ = [
     "executability_graph_from_uhir",
     "format_uhir",
     "lower_alloc_to_sched",
+    "lower_bind_to_fsm",
     "lower_module_to_seq",
     "lower_sched_to_bind",
     "lower_seq_to_alloc",

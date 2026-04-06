@@ -13,7 +13,7 @@ from uhls.backend.uhir.model import (
     UHIRSchedule,
     UHIRSourceMap,
 )
-from uhls.backend.uhir.timing import TimingBinary, TimingCall, TimingExpr, TimingVar
+from uhls.backend.uhir.timing import TimingBinary, TimingCall, TimingExpr, TimingVar, simplify_timing_expr
 
 from .interfaces import SGUScheduleResult, SGUScheduler
 from .registry import create_builtin_scheduler
@@ -296,7 +296,10 @@ def _branch_total_latency(children: list[UHIRRegion]) -> int | TimingExpr:
             expr_args.append(latency)
         else:
             expr_args.append(TimingVar(f"child_{index}_lat"))
-    return TimingCall("max", tuple(expr_args))
+    simplified = simplify_timing_expr(TimingCall("max", tuple(expr_args)))
+    if isinstance(simplified, int):
+        return simplified
+    return simplified
 
 
 def _call_total_latency(call_node: UHIRNode, child_region: UHIRRegion) -> int | TimingExpr:
@@ -318,7 +321,10 @@ def _timing_add(left: int | TimingExpr, right: int | TimingExpr) -> int | Timing
         return right
     if isinstance(right, int) and right == 0:
         return left
-    return TimingBinary(left, "+", right)
+    simplified = simplify_timing_expr(TimingBinary(left, "+", right))
+    if isinstance(simplified, int):
+        return simplified
+    return simplified
 
 
 def _symbolic_delay_var(node: UHIRNode) -> TimingExpr:

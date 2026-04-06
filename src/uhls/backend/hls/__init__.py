@@ -3,6 +3,7 @@
 from .alloc import ExecutabilityGraph, dummy_executability_graph, executability_graph_from_uhir, lower_seq_to_alloc
 from .bind import (
     BIND_DUMP_KINDS,
+    CompatibilityBinder,
     LeftEdgeBinder,
     OperationBinder,
     OperationBinderBase,
@@ -15,6 +16,7 @@ from .bind import (
     lower_sched_to_bind,
     parse_bind_dump_spec,
 )
+from .fsm import FSM_ENCODINGS, fsm_to_dot, lower_bind_to_fsm
 from .sched import (
     ALAPScheduler,
     ASAPScheduler,
@@ -32,8 +34,10 @@ __all__ = [
     "ALAPScheduler",
     "ASAPScheduler",
     "BIND_DUMP_KINDS",
+    "CompatibilityBinder",
     "CallableSGUScheduler",
     "ExecutabilityGraph",
+    "FSM_ENCODINGS",
     "LeftEdgeBinder",
     "OperationBinder",
     "OperationBinderBase",
@@ -50,8 +54,10 @@ __all__ = [
     "create_builtin_scheduler",
     "dummy_executability_graph",
     "executability_graph_from_uhir",
+    "fsm_to_dot",
     "format_bind_dump",
     "lower_alloc_to_sched",
+    "lower_bind_to_fsm",
     "lower_module_to_seq",
     "lower_sched_to_bind",
     "lower_seq_to_alloc",

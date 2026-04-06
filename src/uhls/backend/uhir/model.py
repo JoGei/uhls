@@ -19,6 +19,54 @@ class UHIRPort:
     type: str
 
 
+@dataclass(slots=True)
+class UHIRController:
+    """One fsm-stage controller declaration."""
+
+    name: str
+    attributes: dict[str, AttributeValue] = field(default_factory=dict)
+    inputs: list[UHIRPort] = field(default_factory=list)
+    outputs: list[UHIRPort] = field(default_factory=list)
+    states: list["UHIRControllerState"] = field(default_factory=list)
+    transitions: list["UHIRControllerTransition"] = field(default_factory=list)
+    emits: list["UHIRControllerEmit"] = field(default_factory=list)
+    links: list["UHIRControllerLink"] = field(default_factory=list)
+
+
+@dataclass(slots=True, frozen=True)
+class UHIRControllerState:
+    """One fsm-stage controller state declaration."""
+
+    name: str
+    attributes: dict[str, AttributeValue] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class UHIRControllerTransition:
+    """One fsm-stage controller transition declaration."""
+
+    source: str
+    target: str
+    attributes: dict[str, AttributeValue] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class UHIRControllerEmit:
+    """One fsm-stage controller per-state output/action bundle."""
+
+    state: str
+    attributes: dict[str, AttributeValue] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class UHIRControllerLink:
+    """One explicit handshake link between two controllers."""
+
+    child: str
+    node: str
+    attributes: dict[str, AttributeValue] = field(default_factory=dict)
+
+
 @dataclass(slots=True, frozen=True)
 class UHIRConstant:
     """One top-level constant declaration."""
@@ -141,6 +189,7 @@ class UHIRDesign:
     constants: list[UHIRConstant] = field(default_factory=list)
     schedule: UHIRSchedule | None = None
     resources: list[UHIRResource] = field(default_factory=list)
+    controllers: list[UHIRController] = field(default_factory=list)
     regions: list[UHIRRegion] = field(default_factory=list)
 
     def get_region(self, region_id: str) -> UHIRRegion | None:

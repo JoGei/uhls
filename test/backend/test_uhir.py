@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from uhls.backend.uhir import UHIRParseError, parse_uhir, to_dot
+from uhls.backend.uhir import UHIRParseError, format_uhir, parse_timing_expr, parse_uhir, to_dot
 
 
 class UHIRParserTests(unittest.TestCase):
@@ -160,6 +160,95 @@ class UHIRParserTests(unittest.TestCase):
         self.assertEqual(str(design.regions[0].initiation_interval), "ii_loop")
         self.assertEqual(str(design.regions[0].nodes[0].attributes["delay"]), "T * ii + rd")
         self.assertEqual(str(design.regions[0].nodes[0].attributes["end"]), "T * ii + rd - 1")
+
+    def test_parse_fsm_uhir_with_controller_shell(self) -> None:
+        design = parse_uhir(
+            """
+            design add1
+            stage fsm
+            schedule kind=control_steps
+            resources {
+              fu ewms0 : EWMS
+              reg r_i32_0 : i32
+            }
+            controller C0 encoding=binary protocol=req_resp completion_order=in_order overlap=true {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=0
+              state T0 code=1
+              state DONE code=2
+              transition IDLE -> T0 when=req_valid&&req_ready
+              transition T0 -> DONE
+              transition DONE -> IDLE when=resp_valid&&resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[ewms0<-v1]
+              emit DONE resp_valid=true
+            }
+
+            region proc_add1 kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+              node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+
+              steps [0:1]
+              latency 2
+              value v1 -> r_i32_0 live=[1:1]
+            }
+            """
+        )
+
+        self.assertEqual(design.stage, "fsm")
+        self.assertEqual(len(design.controllers), 1)
+        controller = design.controllers[0]
+        self.assertEqual(controller.name, "C0")
+        self.assertEqual(controller.attributes["encoding"], "binary")
+        self.assertEqual([state.name for state in controller.states], ["IDLE", "T0", "DONE"])
+        self.assertEqual(controller.transitions[0].source, "IDLE")
+        self.assertEqual(controller.emits[1].attributes["issue"], ("ewms0<-v1",))
+        rendered = format_uhir(design)
+        self.assertIn("stage fsm", rendered)
+        self.assertIn("controller C0 encoding=binary protocol=req_resp completion_order=in_order overlap=true {", rendered)
+        self.assertIn("state IDLE code=0", rendered)
+        self.assertIn("emit T0 issue=[ewms0<-v1]", rendered)
+
+    def test_parse_bind_uhir_accepts_symbolic_fu_only_compat_timing(self) -> None:
+        design = parse_uhir(
+            """
+            design dyn_bind
+            stage bind
+            schedule kind=hierarchical
+            resources {
+              fu fu_add0 : FU_ADD
+            }
+
+            region proc_dyn_bind kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add x, y : i32 class=FU_ADD ii=1 delay=1 start=max(0, symb_delay_v4) end=max(0, symb_delay_v4) + 1 - 1 bind=fu_add0
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+              edge data v0 -> v1
+              edge data v1 -> v2
+              latency max(1, symb_delay_v4)
+            }
+            """
+        )
+
+        self.assertEqual(design.stage, "bind")
+        self.assertEqual(str(design.regions[0].nodes[1].attributes["start"]), "symb_delay_v4")
+
+    def test_parse_timing_expr_simplifies_safe_timing_identities(self) -> None:
+        self.assertEqual(str(parse_timing_expr("max(0, symb_delay_v4 - 1 + 1)")), "symb_delay_v4")
+        self.assertEqual(str(parse_timing_expr("max(0, max(0, symb_delay_v4) + 1 - 1)")), "symb_delay_v4")
+        self.assertEqual(
+            str(parse_timing_expr("max(symb_delay_v4, symb_delay_v4 + 1, symb_delay_v4 + 2)")),
+            "symb_delay_v4 + 2",
+        )
 
     def test_parse_alloc_uhir_requires_class_and_delay_without_schedule(self) -> None:
         design = parse_uhir(

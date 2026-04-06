@@ -991,11 +991,59 @@ The `bind` stage records implementation decisions after scheduling.
 It extends the `sched` form with:
 
 * functional unit bindings
-* register bindings
-* memory port bindings
+* optional register bindings
+* optional memory port bindings
 * optional mux declarations
 
 The `bind` stage is the canonical input to later datapath/control extraction and HW-MIR lowering.
+
+=== Binding modes
+
+Two binding styles are currently expected:
+
+* full operation+register binding
+  * concrete scheduled timing
+  * functional-unit bindings plus explicit `value ...` register bindings
+* FU-only compatibility binding
+  * symbolic or dynamic scheduled timing
+  * functional-unit bindings, plus optional conservative register bindings for
+    mutually exclusive dynamic branch-arm values
+  * loop/call-local dynamic register binding remains intentionally conservative
+
+The current built-in binders follow this split:
+
+* `left_edge`
+  * interval-based
+  * requires concrete integer `start` / `end`
+  * emits FU and register bindings
+* `compat`
+  * compatibility-based
+  * accepts symbolic scheduled timing
+  * emits FU bindings and may emit conservative branch-exclusive register bindings
+
+Dynamic register binding is only partially defined today. It depends on the
+later `fsm` / datapath contract, because symbolic live values may denote either:
+
+* explicitly bound datapath registers, or
+* hidden in-flight datapath state behind the ordered ready/done interface
+
+The current conservative notion is one value-storage domain:
+
+* `global`
+  * values not nested under a loop/call activation domain
+  * these may reuse registers across mutually exclusive dynamic branch arms
+
+Values under `loop` or `call` activation domains are still treated
+conservatively and are not dynamically register-bound yet.
+
+So a `bind` artifact with FU bindings but no register bindings is still
+well-formed, and a symbolic `compat` artifact may legally contain only the
+branch-exclusive subset of register bindings.
+
+Current bind analysis views (`conflict`, `compatibility`, `trp`, `dfgsb`, ...)
+still assume concrete scheduled/bound control steps. Symbolic `compat` artifacts
+are therefore valid `bind` output, but they are not yet valid input to those
+timing-based bind dumps.
 
 === Required elements
 
@@ -1088,6 +1136,9 @@ Well-formedness:
 * each interval must satisfy `s<=e`
 * one value binding may carry one interval or a comma-separated list of intervals
 
+`value ...` register binding lines are optional in FU-only compatibility-bound
+artifacts.
+
 === Mux declarations
 
 Optional syntax:
@@ -1150,6 +1201,197 @@ region R0 kind=procedure {
 }
 ----
 
+== Stage: `fsm`
+
+=== Purpose
+
+The `fsm` stage is the first explicit controller-oriented stage after binding.
+It is the FSMD stage: the finite-state machine with data specification.
+
+It preserves the bound datapath-oriented µHIR view and adds explicit controller
+structure that states:
+
+* the controller encoding
+* the external request/response handshake
+* the ordered-completion contract
+* that overlap is allowed but owned by the datapath
+
+Semantically, this stage is intended to capture:
+
+* the scheduled control flow of the datapath and module interface
+* assignment of datapath operations to controller states
+* one state-transition step per static scheduled control step
+* a valid unrolled state projection for dynamic/hierarchical control
+* transitions that may depend on datapath or interface status signals
+
+The currently implemented form already supports explicit controller states,
+transitions, and per-state action bundles for the static case, and a first
+coarse-grained controller for FU-only symbolic compatibility-bound designs.
+
+=== Required elements
+
+A valid `fsm` file must contain:
+
+* `design`
+* `stage fsm`
+* a schedule declaration
+* a `resources` block
+* at least one `controller` block
+* at least one `region`
+
+The region-level datapath content follows the same concrete-timing rules as
+`bind`.
+
+=== Controller block
+
+Syntax:
+
+[source,text]
+----
+controller <name> encoding=<binary|one_hot> protocol=req_resp completion_order=in_order overlap=true {
+  input  req_valid : i1
+  input  resp_ready : i1
+  output req_ready : i1
+  output resp_valid : i1
+  state <state-name> code=<int>
+  transition <src> -> <dst> [when=<expr>]
+  emit <state-name> [req_ready=true] [resp_valid=true] [issue=[<fu><-<node>, ...>]] [latch=[<reg>, ...]] [select=[<mux><-<sel-signal>, ...>]]
+  link <child-controller-name> via=<node-id> [act=[<parent-signal>, <child-signal>]] [ready=[<sched-attr>, <child-signal>]] [done=[<sched-attr>, <child-signal>]] [done_ready=[<parent-signal>, <child-signal>]]
+}
+----
+
+Current meaning:
+
+* `encoding`
+  * chosen controller state encoding
+* `protocol=req_resp`
+  * external module request/response handshake
+* `completion_order=in_order`
+  * completions must retire in the same order as accepted inputs
+* `overlap=true`
+  * overlapping in-flight executions are allowed, but tracked inside the datapath rather than by explicit FSM tags
+* `state`
+  * one named controller state with one concrete code
+* `transition`
+  * one state edge, optionally guarded by `when=...`
+* `emit`
+  * one per-state control/action bundle
+  * may include `select=[...]` mux-control outputs when bind-stage `mux ...`
+    declarations are available
+* `link`
+  * one explicit parent/child controller handshake mapping
+
+=== Recursive internal controllers
+
+The current syntax describes both the top-level request/response controllers and
+the internal recursive child controllers.
+
+Top-level controllers use:
+
+* `req_valid`
+* `resp_ready`
+* `req_ready`
+* `resp_valid`
+
+Recursive child controllers synthesized for dynamic child hierarchy regions use:
+
+* inputs:
+  * `act_valid`
+  * `done_ready`
+* outputs:
+  * `act_ready`
+  * `done_valid`
+
+Their intended meaning is:
+
+* admit one child activation on `act_valid && act_ready`
+* retire one completed child activation on `done_valid && done_ready`
+
+Parent/child wiring is made explicit through `link ... via=<node-id> ...`
+declarations on the parent controller.
+
+=== First Implemented Static Controller Model
+
+The first implemented `fsm` lowering currently synthesizes:
+
+* one `IDLE` state
+* one state `Tn` per global concrete control step
+* one `DONE` state
+* one straight-line transition chain through the control steps
+* `emit` actions for:
+  * `req_ready` in `IDLE`
+  * `resp_valid` in `DONE`
+  * FU issue at the start step of each bound operation
+  * register latch at the first live step of each bound value binding
+  * mux-select control at the latch step of an explicitly declared bound mux
+
+=== First Implemented Dynamic Recursive Hierarchy Model
+
+For symbolic top-level designs with supported dynamic hierarchy nodes, the current `fsm`
+lowering now synthesizes:
+
+* one top-level coarse controller over the root region
+* one child `protocol=act_done` controller per supported dynamic loop-header,
+  callee, or branch-arm controller region set
+* one explicit `link` from the parent controller to each synthesized child
+  controller
+
+The parent controller still owns coarse progress and post-child issue, while the
+child controller owns the local region sequencing. For loops, the child
+controller additionally owns the local loop-header/body/exit behavior. For
+branches, the child controller owns the true/false arm choice and the chosen
+arm-local sequencing.
+
+=== Example: first static controller
+
+[source,text]
+----
+design add1
+stage fsm
+schedule kind=control_steps
+
+resources {
+  fu ewms0 : EWMS
+  reg r_i32_0 : i32
+}
+
+controller C0 encoding=binary protocol=req_resp completion_order=in_order overlap=true {
+  input  req_valid : i1
+  input  resp_ready : i1
+  output req_ready : i1
+  output resp_valid : i1
+  state IDLE code=0
+  state T0 code=1
+  state T1 code=2
+  state T2 code=3
+  state DONE code=4
+  transition IDLE -> T0 when=req_valid && req_ready
+  transition T0 -> T1
+  transition T1 -> T2
+  transition T2 -> DONE
+  transition DONE -> IDLE when=resp_valid && resp_ready
+  emit IDLE req_ready=true
+  emit T0 issue=[ewms0<-v1]
+  emit T1 latch=[r_i32_0]
+  emit DONE resp_valid=true
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+
+  steps [0:1]
+  latency 2
+  value v1 -> r_i32_0 live=[1:1]
+}
+----
+
 == Region-local statements
 
 The following statements may appear inside a `region` block depending on stage.
@@ -1174,6 +1416,11 @@ Additionally:
 
 * `value ...`
 * `mux ...`
+
+=== `fsm`
+
+Additionally, top-level `controller ...` blocks may appear, while region-local
+statements remain the same as `bind`.
 
 == Well-formedness rules
 
@@ -1297,10 +1544,10 @@ This section is intentionally informal and implementation-oriented.
 [source,text]
 ----
 file        ::= design_decl stage_decl top_decl*
-top_decl    ::= global_decl | schedule_decl | resources_block | region_decl
+top_decl    ::= global_decl | schedule_decl | resources_block | controller_decl | region_decl
 
 design_decl ::= "design" IDENT
-stage_decl  ::= "stage" ("seq" | "alloc" | "sched" | "bind")
+stage_decl  ::= "stage" ("seq" | "alloc" | "sched" | "bind" | "fsm")
 
 global_decl ::= ("input" | "output") IDENT ":" TYPE
               | "const" IDENT "=" LITERAL ":" TYPE
@@ -1311,6 +1558,12 @@ resources_block ::= "resources" "{" resource_decl* "}"
 resource_decl   ::= "fu" IDENT ":" IDENT
                   | "reg" IDENT ":" TYPE
                   | "port" IDENT ":" IDENT [IDENT]
+
+controller_decl ::= "controller" IDENT attr_list? "{" controller_stmt* "}"
+controller_stmt ::= ("input" | "output") IDENT ":" TYPE
+                  | "state" IDENT attr_list?
+                  | "transition" IDENT "->" IDENT attr_list?
+                  | "emit" IDENT attr_list?
 
 region_decl ::= "region" IDENT attr_list? "{" region_stmt* "}"
 

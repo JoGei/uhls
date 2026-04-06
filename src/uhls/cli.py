@@ -17,13 +17,16 @@ import click
 from uhls.backend.hls import (
     BIND_DUMP_KINDS,
     CallableSGUScheduler,
+    FSM_ENCODINGS,
     bind_dump_to_dot,
     binding_to_dot,
     builtin_binder_names,
     builtin_scheduler_names,
     create_builtin_binder,
     create_builtin_scheduler,
+    fsm_to_dot,
     format_bind_dump,
+    lower_bind_to_fsm,
     parse_bind_dump_spec,
 )
 from uhls.backend.uhir import (
@@ -776,6 +779,12 @@ def sched_cmd(input_path: Path, algo: str | None, sgu_latency_max: str | None, o
     help=(
         "Bind sched-stage µhIR operations to concrete resource instances.\n"
         "\n"
+        "Built-in binders:\n"
+        "  left_edge  concrete interval-based FU+register binding for fully scheduled static designs\n"
+        "  compat     hierarchy/control compatibility-based FU-only binding for symbolic schedules\n"
+        "\n"
+        "Note: bind analysis dumps currently require concrete bind timing.\n"
+        "\n"
         "Examples:\n"
         "\n"
         "\b\n"
@@ -786,6 +795,9 @@ def sched_cmd(input_path: Path, algo: str | None, sgu_latency_max: str | None, o
         "\n"
         "\b\n"
         "  uhls bind input.sched.uhir --algo left_edge --flatten -o output.bind.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls bind input.sched.uhir --algo compat -o output.bind.uhir\n"
         "\n"
         "\b\n"
         "  uhls bind input.bind.uhir --dump conflict\n"
@@ -801,7 +813,14 @@ def sched_cmd(input_path: Path, algo: str | None, sgu_latency_max: str | None, o
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--algo", help="Operation binder name. Currently implemented: left_edge.")
+@click.option(
+    "--algo",
+    help=(
+        "Operation binder name. "
+        "Use 'left_edge' for concrete interval-based FU+register binding, "
+        "or 'compat' for symbolic-schedule FU-only binding."
+    ),
+)
 @click.option(
     "--flatten",
     is_flag=True,
@@ -830,6 +849,8 @@ def bind_cmd(
 ) -> None:
     """Bind sched-stage µhIR operations to concrete resources."""
     design = parse_uhir_file(input_path)
+    if flatten and algo is not None and algo.strip().lower().replace("-", "_") == "compat":
+        raise CLIError("'compat' does not support --flatten; use 'left_edge' for fully static flattened binding")
 
     dump_kinds: tuple[str, ...] = ()
     if dump_spec is not None:
@@ -858,6 +879,45 @@ def bind_cmd(
     bound = lower_sched_to_bind(design, binder=_lookup_operation_binder(algo, binder_kwargs={"flatten": flatten}))
     rendered = format_uhir(bound)
     _write_or_print_text(rendered, output)
+
+
+@cli.command(
+    "fsm",
+    help=(
+        "Lower bind-stage µhIR to the fsm/FSMD stage.\n"
+        "\n"
+        "Examples:\n"
+        "\n"
+        "\b\n"
+        "  uhls fsm input.bind.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls fsm input.bind.uhir --encoding=binary -o output.fsm.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls fsm input.bind.uhir --encoding=one_hot -o output.fsm.uhir\n"
+        "\n"
+        "\b\n"
+        "  uhls fsm input.bind.uhir --encoding=binary --dot -o output.dot\n"
+    ),
+)
+@click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--encoding",
+    type=click.Choice(FSM_ENCODINGS, case_sensitive=False),
+    default="binary",
+    show_default=True,
+    help="Controller-state encoding.",
+)
+@click.option("--dot", "emit_dot", is_flag=True, help="Render the synthesized controller as a Graphviz state diagram.")
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
+def fsm_cmd(input_path: Path, encoding: str, emit_dot: bool, output: Path | None) -> None:
+    """Lower bind-stage µhIR to the fsm/FSMD stage."""
+    design = parse_uhir_file(input_path)
+    if design.stage != "bind":
+        raise CLIError(f"'fsm' expects bind-stage µhIR input, got stage '{design.stage}'")
+    lowered = lower_bind_to_fsm(design, encoding=encoding)
+    _write_or_print_text(fsm_to_dot(lowered) if emit_dot else format_uhir(lowered), output)
 
 
 @cli.command("hls-emit")

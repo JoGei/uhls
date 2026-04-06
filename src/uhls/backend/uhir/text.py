@@ -10,6 +10,11 @@ from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 from .model import (
     AttributeValue,
     UHIRConstant,
+    UHIRController,
+    UHIRControllerEmit,
+    UHIRControllerLink,
+    UHIRControllerState,
+    UHIRControllerTransition,
     UHIRDesign,
     UHIREdge,
     UHIRMux,
@@ -26,8 +31,13 @@ from .timing import TimingExpr, parse_timing_expr
 
 _IDENT_RE = r"[A-Za-z_][\w$]*"
 _DESIGN_RE = re.compile(rf"^design\s+({_IDENT_RE})$")
-_STAGE_RE = re.compile(r"^stage\s+(seq|exg|alloc|sched|bind)$")
+_STAGE_RE = re.compile(r"^stage\s+(seq|exg|alloc|sched|bind|fsm)$")
 _PORT_RE = re.compile(rf"^(input|output)\s+({_IDENT_RE})\s*:\s*(.+)$")
+_CONTROLLER_START_RE = re.compile(rf"^controller\s+({_IDENT_RE})(?:\s+(.*?))?\{{$")
+_STATE_RE = re.compile(rf"^state\s+({_IDENT_RE})(?:\s+(.*))?$")
+_TRANSITION_RE = re.compile(rf"^transition\s+({_IDENT_RE})\s*->\s*({_IDENT_RE})(?:\s+(.*))?$")
+_EMIT_RE = re.compile(rf"^emit\s+({_IDENT_RE})(?:\s+(.*))?$")
+_LINK_RE = re.compile(rf"^link\s+({_IDENT_RE})(?:\s+(.*))?$")
 _CONST_RE = re.compile(rf"^const\s+({_IDENT_RE})\s*=\s*(.+?)\s*:\s*(.+)$")
 _SCHEDULE_RE = re.compile(rf"^schedule\s+kind=({_IDENT_RE})$")
 _REGION_START_RE = re.compile(rf"^region\s+({_IDENT_RE})\s+(.+)\{{$")
@@ -85,6 +95,10 @@ def parse_uhir(text: str) -> UHIRDesign:
                 raise UHIRParseError(f"duplicate schedule declaration at line {line_number}")
             design.schedule = schedule
             index += 1
+            continue
+        if line.startswith("controller "):
+            controller, index = _parse_controller(lines, index)
+            design.controllers.append(controller)
             continue
         if line == "resources {":
             if design.resources:
@@ -245,6 +259,76 @@ def _parse_region(lines: list[str], index: int) -> tuple[UHIRRegion, int]:
             raise UHIRParseError(f"unsupported region-local µhIR syntax at line {line_number}: {line!r}")
         index += 1
     raise UHIRParseError(f"unterminated region '{region_id}'")
+
+
+def _parse_controller(lines: list[str], index: int) -> tuple[UHIRController, int]:
+    line = lines[index]
+    line_number = index + 1
+    match = _CONTROLLER_START_RE.fullmatch(line)
+    if match is None:
+        raise UHIRParseError(f"invalid controller declaration at line {line_number}: {line!r}")
+    controller_name, attrs_text = match.groups()
+    controller = UHIRController(
+        name=controller_name,
+        attributes=_parse_attrs("" if attrs_text is None else attrs_text.strip()),
+    )
+    index += 1
+    while index < len(lines):
+        line = lines[index]
+        line_number = index + 1
+        if line == "}":
+            return controller, index + 1
+        if port := _try_parse_port(line):
+            if port.direction == "input":
+                controller.inputs.append(port)
+            else:
+                controller.outputs.append(port)
+            index += 1
+            continue
+        if match := _STATE_RE.fullmatch(line):
+            controller.states.append(
+                UHIRControllerState(
+                    name=match.group(1),
+                    attributes=_parse_attrs("" if match.group(2) is None else match.group(2).strip()),
+                )
+            )
+            index += 1
+            continue
+        if match := _TRANSITION_RE.fullmatch(line):
+            controller.transitions.append(
+                UHIRControllerTransition(
+                    source=match.group(1),
+                    target=match.group(2),
+                    attributes=_parse_attrs("" if match.group(3) is None else match.group(3).strip()),
+                )
+            )
+            index += 1
+            continue
+        if match := _EMIT_RE.fullmatch(line):
+            controller.emits.append(
+                UHIRControllerEmit(
+                    state=match.group(1),
+                    attributes=_parse_attrs("" if match.group(2) is None else match.group(2).strip()),
+                )
+            )
+            index += 1
+            continue
+        if match := _LINK_RE.fullmatch(line):
+            attrs = _parse_attrs("" if match.group(2) is None else match.group(2).strip())
+            node = attrs.pop("via", None)
+            if not isinstance(node, str) or not node:
+                raise UHIRParseError(f"controller link '{match.group(1)}' is missing via=<node-id> at line {line_number}")
+            controller.links.append(
+                UHIRControllerLink(
+                    child=match.group(1),
+                    node=node,
+                    attributes=attrs,
+                )
+            )
+            index += 1
+            continue
+        raise UHIRParseError(f"unsupported controller-local µhIR syntax at line {line_number}: {line!r}")
+    raise UHIRParseError(f"unterminated controller '{controller_name}'")
 
 
 def _parse_node(node_id: str, remainder: str, line_number: int) -> UHIRNode:
@@ -524,6 +608,23 @@ def _validate_design(design: UHIRDesign) -> None:
             raise UHIRParseError("bind µhIR must declare schedule kind=...")
         if not design.resources:
             raise UHIRParseError("bind µhIR must declare resources")
+        if design.controllers:
+            raise UHIRParseError("bind µhIR must not declare controllers")
+    elif design.stage == "fsm":
+        if design.schedule is None:
+            raise UHIRParseError("fsm µhIR must declare schedule kind=...")
+        if not design.resources:
+            raise UHIRParseError("fsm µhIR must declare resources")
+        if not design.controllers:
+            raise UHIRParseError("fsm µhIR must declare at least one controller")
+    elif design.controllers:
+        raise UHIRParseError(f"{design.stage} µhIR must not declare controllers")
+
+    controller_names = {controller.name for controller in design.controllers}
+    if len(controller_names) != len(design.controllers):
+        raise UHIRParseError("controller identifiers must be unique within one µhIR design")
+    for controller in design.controllers:
+        _validate_controller(controller, design.stage)
 
     region_ids = {region.id for region in design.regions}
     if len(region_ids) != len(design.regions):
@@ -575,14 +676,14 @@ def _validate_design(design: UHIRDesign) -> None:
                 operation = _canonical_operation_name(node.opcode)
                 if operation is not None:
                     used_canonical_operations.add(operation)
-            if design.stage == "bind":
+            if design.stage in {"bind", "fsm"}:
                 bind_target = node.attributes.get("bind")
                 class_name = node.attributes.get("class")
                 if class_name != "CTRL":
                     if not isinstance(bind_target, str) or bind_target not in resource_ids:
-                        raise UHIRParseError(f"bind-stage node '{node.id}' must reference a declared resource")
+                        raise UHIRParseError(f"{design.stage}-stage node '{node.id}' must reference a declared resource")
                 elif bind_target is not None and (not isinstance(bind_target, str) or bind_target not in resource_ids):
-                    raise UHIRParseError(f"bind-stage node '{node.id}' must reference a declared resource")
+                    raise UHIRParseError(f"{design.stage}-stage node '{node.id}' must reference a declared resource")
         if region_stage in {"seq", "alloc", "exg"}:
             if region.steps is not None or region.latency is not None or region.initiation_interval is not None:
                 raise UHIRParseError(f"{region_stage} µhIR region '{region.id}' must not contain schedule summaries")
@@ -602,14 +703,25 @@ def _validate_design(design: UHIRDesign) -> None:
         if region_stage == "bind":
             if region.steps is not None:
                 start, end = region.steps
-                if not isinstance(start, int) or not isinstance(end, int):
-                    raise UHIRParseError(f"bind µhIR region '{region.id}' must use integer steps summary")
-                if start > end:
+                if not isinstance(start, (int, TimingExpr)) or not isinstance(end, (int, TimingExpr)):
+                    raise UHIRParseError(f"bind µhIR region '{region.id}' has invalid steps summary")
+                if isinstance(start, int) and isinstance(end, int) and start > end:
                     raise UHIRParseError(f"bind µhIR region '{region.id}' has steps with start>end")
+            if region.latency is not None and not isinstance(region.latency, (int, TimingExpr)):
+                raise UHIRParseError(f"bind µhIR region '{region.id}' has invalid latency summary")
+            if region.initiation_interval is not None and not isinstance(region.initiation_interval, (int, TimingExpr)):
+                raise UHIRParseError(f"bind µhIR region '{region.id}' has invalid ii summary")
+        if region_stage == "fsm":
+            if region.steps is not None:
+                start, end = region.steps
+                if not isinstance(start, int) or not isinstance(end, int):
+                    raise UHIRParseError(f"fsm µhIR region '{region.id}' must use integer steps summary")
+                if start > end:
+                    raise UHIRParseError(f"fsm µhIR region '{region.id}' has steps with start>end")
             if region.latency is not None and not isinstance(region.latency, int):
-                raise UHIRParseError(f"bind µhIR region '{region.id}' must use integer latency")
+                raise UHIRParseError(f"fsm µhIR region '{region.id}' must use integer latency")
             if region.initiation_interval is not None and not isinstance(region.initiation_interval, int):
-                raise UHIRParseError(f"bind µhIR region '{region.id}' must use integer ii")
+                raise UHIRParseError(f"fsm µhIR region '{region.id}' must use integer ii")
         if region_stage == "exg" and region.mappings:
             raise UHIRParseError(f"exg µhIR region '{region.id}' must not contain source mappings")
         if design.stage == "sched" and (region.value_bindings or region.muxes):
@@ -741,29 +853,39 @@ def _validate_node_for_stage(node: UHIRNode, stage: str) -> None:
     class_name = node.attributes.get("class")
     initiation_interval = node.attributes.get("ii")
     delay = node.attributes.get("delay")
-    if stage == "sched":
+    if stage in {"sched", "bind"}:
         for name in ("ii", "delay", "start", "end", "iter_latency", "iter_initiation_interval", "iter_ramp_down"):
             value = node.attributes.get(name)
             if isinstance(value, str):
                 try:
                     node.attributes[name] = parse_timing_expr(value)
                 except ValueError as exc:
-                    raise UHIRParseError(f"sched-stage node '{node.id}' has invalid {name}=... timing expression") from exc
+                    raise UHIRParseError(f"{stage}-stage node '{node.id}' has invalid {name}=... timing expression") from exc
         initiation_interval = node.attributes.get("ii")
         delay = node.attributes.get("delay")
-    if stage in {"alloc", "sched", "bind"}:
+    if stage in {"alloc", "sched", "bind", "fsm"}:
         if not isinstance(class_name, str) or not class_name:
             raise UHIRParseError(f"node '{node.id}' is missing class=...")
     if stage == "alloc":
         if not isinstance(initiation_interval, int):
             raise UHIRParseError(f"node '{node.id}' is missing ii=...")
-    if stage in {"alloc", "bind"}:
+    if stage in {"alloc", "fsm"}:
         if not isinstance(delay, int):
             raise UHIRParseError(f"node '{node.id}' is missing delay=...")
+    if stage == "bind":
+        if not isinstance(delay, (int, TimingExpr)):
+            raise UHIRParseError(f"bind-stage node '{node.id}' is missing delay=...")
     if stage == "sched":
         if not isinstance(delay, (int, TimingExpr)):
             raise UHIRParseError(f"sched-stage node '{node.id}' is missing delay=...")
     if stage == "bind":
+        start = node.attributes.get("start")
+        end = node.attributes.get("end")
+        if not isinstance(start, (int, TimingExpr)) or not isinstance(end, (int, TimingExpr)):
+            raise UHIRParseError(f"bind-stage node '{node.id}' is missing start/end attributes")
+        if isinstance(start, int) and isinstance(end, int) and end < start:
+            raise UHIRParseError(f"bind-stage node '{node.id}' has end < start")
+    if stage == "fsm":
         start = node.attributes.get("start")
         end = node.attributes.get("end")
         if not isinstance(start, int) or not isinstance(end, int):
@@ -781,6 +903,51 @@ def _validate_node_for_stage(node: UHIRNode, stage: str) -> None:
         forbidden = [name for name in ("start", "end", "bind") if name in node.attributes]
         if forbidden:
             raise UHIRParseError(f"{stage}-stage node '{node.id}' contains forbidden attributes: {', '.join(forbidden)}")
+
+
+def _validate_controller(controller: UHIRController, stage: str) -> None:
+    if stage != "fsm":
+        raise UHIRParseError(f"{stage} µhIR must not declare controllers")
+    encoding = controller.attributes.get("encoding")
+    if encoding not in {"binary", "one_hot"}:
+        raise UHIRParseError(f"controller '{controller.name}' must declare encoding=binary|one_hot")
+    protocol = controller.attributes.get("protocol")
+    if protocol not in {"req_resp", "act_done"}:
+        raise UHIRParseError(f"controller '{controller.name}' must declare protocol=req_resp|act_done")
+    completion_order = controller.attributes.get("completion_order")
+    if completion_order != "in_order":
+        raise UHIRParseError(f"controller '{controller.name}' must declare completion_order=in_order")
+    overlap = controller.attributes.get("overlap")
+    if overlap is not True:
+        raise UHIRParseError(f"controller '{controller.name}' must declare overlap=true")
+    if protocol == "req_resp":
+        expected_inputs = [("req_valid", "i1"), ("resp_ready", "i1")]
+        expected_outputs = [("req_ready", "i1"), ("resp_valid", "i1")]
+        input_error = f"controller '{controller.name}' must declare inputs: req_valid:i1, resp_ready:i1"
+        output_error = f"controller '{controller.name}' must declare outputs: req_ready:i1, resp_valid:i1"
+    else:
+        expected_inputs = [("act_valid", "i1"), ("done_ready", "i1")]
+        expected_outputs = [("act_ready", "i1"), ("done_valid", "i1")]
+        input_error = f"controller '{controller.name}' must declare inputs: act_valid:i1, done_ready:i1"
+        output_error = f"controller '{controller.name}' must declare outputs: act_ready:i1, done_valid:i1"
+    if [(port.name, port.type) for port in controller.inputs] != expected_inputs:
+        raise UHIRParseError(input_error)
+    if [(port.name, port.type) for port in controller.outputs] != expected_outputs:
+        raise UHIRParseError(output_error)
+    state_names = {state.name for state in controller.states}
+    if len(state_names) != len(controller.states):
+        raise UHIRParseError(f"controller '{controller.name}' must use unique state names")
+    for transition in controller.transitions:
+        if transition.source not in state_names or transition.target not in state_names:
+            raise UHIRParseError(
+                f"controller '{controller.name}' transition '{transition.source} -> {transition.target}' references an unknown state"
+            )
+    for emit in controller.emits:
+        if emit.state not in state_names:
+            raise UHIRParseError(f"controller '{controller.name}' emit for '{emit.state}' references an unknown state")
+    link_children = {link.child for link in controller.links}
+    if len(link_children) != len(controller.links):
+        raise UHIRParseError(f"controller '{controller.name}' must use unique child-controller link targets")
 
 
 def _exg_vertex_name(node: UHIRNode) -> str:

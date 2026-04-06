@@ -1566,6 +1566,478 @@ region proc_mapped_values kind=procedure {
             self.assertIn("value t1_0 -> r_i32_0 live=[1:1]", bind_text)
             self.assertIn("value t2_0 -> r_i32_0 live=[2:2]", bind_text)
 
+    def test_bind_command_supports_compat_for_symbolic_sched(self) -> None:
+        sched = """design dyn_compat
+stage sched
+schedule kind=hierarchical
+
+region proc_dyn_compat kind=procedure {
+  region_ref proc_callee
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = call x child=proc_callee class=CTRL ii=II delay=symb_delay_v1 start=0 end=symb_delay_v1 - 1 timing=symbolic completion=symb_done_v1 ready=symb_ready_v1 handshake=ready_done
+  node v2 = add a, b : i32 class=FU_ADD ii=1 delay=1 start=max(0, symb_delay_v1) end=max(0, symb_delay_v1) + 1 - 1
+  node v3 = add v2, c : i32 class=FU_ADD ii=1 delay=1 start=max(0, max(0, symb_delay_v1) + 1) end=max(0, max(0, symb_delay_v1) + 1) + 1 - 1
+  node v4 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  edge data v3 -> v4
+}
+
+region proc_callee kind=procedure {
+  node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node c1 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+  edge data c0 -> c1
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "dyn_compat.sched.uhir"
+            bind_path = root / "dyn_compat.bind.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            self.assertEqual(main(["bind", str(sched_path), "--algo", "compat", "-o", str(bind_path)]), 0)
+
+            bind_text = bind_path.read_text(encoding="utf-8")
+            self.assertIn("stage bind", bind_text)
+            self.assertIn("fu fu_add0 : FU_ADD", bind_text)
+            self.assertNotIn("reg ", bind_text)
+            self.assertIn("node v2 = add a, b : i32 class=FU_ADD ii=1 delay=1 start=symb_delay_v1 end=symb_delay_v1 bind=fu_add0", bind_text)
+            self.assertIn("node v3 = add v2, c : i32 class=FU_ADD ii=1 delay=1 start=symb_delay_v1 + 1 end=symb_delay_v1 + 1 bind=fu_add0", bind_text)
+
+    def test_bind_command_rejects_flatten_with_compat(self) -> None:
+        sched = """design dyn_compat
+stage sched
+schedule kind=hierarchical
+
+region proc_dyn_compat kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add x, y : i32 class=FU_ADD ii=1 delay=1 start=max(0, symb_delay_v4) end=max(0, symb_delay_v4) + 1 - 1
+  node v2 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+  edge data v0 -> v1
+  edge data v1 -> v2
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "dyn_compat.sched.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["bind", str(sched_path), "--algo", "compat", "--flatten"]), 1)
+            self.assertIn("does not support --flatten", stderr.getvalue())
+
+    def test_fsm_command_lowers_bind_to_fsm(self) -> None:
+        bind = """design add1
+stage bind
+schedule kind=control_steps
+resources {
+  fu ewms0 : EWMS
+  reg r_i32_0 : i32
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+
+  steps [0:1]
+  latency 2
+  value v1 -> r_i32_0 live=[1:1]
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bind_path = root / "add1.bind.uhir"
+            fsm_path = root / "add1.fsm.uhir"
+            bind_path.write_text(bind, encoding="utf-8")
+
+            self.assertEqual(main(["fsm", str(bind_path), "--encoding", "one_hot", "-o", str(fsm_path)]), 0)
+
+            fsm_text = fsm_path.read_text(encoding="utf-8")
+            self.assertIn("stage fsm", fsm_text)
+            self.assertIn("controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {", fsm_text)
+            self.assertIn("input  req_valid : i1", fsm_text)
+            self.assertIn("output resp_valid : i1", fsm_text)
+            self.assertIn("state IDLE code=1", fsm_text)
+            self.assertIn("transition IDLE -> T0 when=req_valid && req_ready", fsm_text)
+            self.assertIn("emit T0 issue=[ewms0<-v1]", fsm_text)
+            self.assertIn("emit T1 latch=[r_i32_0]", fsm_text)
+
+    def test_fsm_command_supports_dot_output(self) -> None:
+        bind = """design add1
+stage bind
+schedule kind=control_steps
+resources {
+  fu ewms0 : EWMS
+  reg r_i32_0 : i32
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+
+  steps [0:1]
+  latency 2
+  value v1 -> r_i32_0 live=[1:1]
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bind_path = root / "add1.bind.uhir"
+            dot_path = root / "add1.fsm.dot"
+            bind_path.write_text(bind, encoding="utf-8")
+
+            self.assertEqual(main(["fsm", str(bind_path), "--encoding", "one_hot", "--dot", "-o", str(dot_path)]), 0)
+
+            dot_text = dot_path.read_text(encoding="utf-8")
+            self.assertIn('digraph "add1.fsm"', dot_text)
+            self.assertIn('"C0:IDLE"', dot_text)
+            self.assertIn('"C0:IDLE" -> "C0:T0"', dot_text)
+            self.assertIn('"C0:IDLE" [label="IDLE\ncode=1\nreq_ready=true"', dot_text)
+            self.assertIn('"C0:T0" [label="T0\ncode=2\nissue=[ewms0<-v1]"', dot_text)
+
+    def test_fsm_command_emits_mux_select_actions(self) -> None:
+        bind = """design acc
+stage bind
+schedule kind=control_steps
+resources {
+  fu ewms0 : EWMS
+  reg r_acc : i32
+}
+
+region proc_acc kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add acc, x : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+
+  steps [0:1]
+  latency 2
+  value v1 -> r_acc live=[1:1]
+  mux mx0 : input=[r_acc, r_next] output=r_acc sel=state
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bind_path = root / "acc.bind.uhir"
+            fsm_path = root / "acc.fsm.uhir"
+            bind_path.write_text(bind, encoding="utf-8")
+
+            self.assertEqual(main(["fsm", str(bind_path), "--encoding", "binary", "-o", str(fsm_path)]), 0)
+
+            fsm_text = fsm_path.read_text(encoding="utf-8")
+            self.assertIn("emit T1 latch=[r_acc] select=[mx0<-state]", fsm_text)
+
+    def test_fsm_command_lowers_fu_only_symbolic_bind_to_dynamic_controller(self) -> None:
+        bind = """design dyn
+stage bind
+schedule kind=hierarchical
+resources {
+  fu fu_add0 : FU_ADD
+}
+
+region proc_dyn kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = call child=callee class=CTRL ii=symb_ii_v1 delay=symb_delay_v1 start=0 end=symb_delay_v1 timing=symbolic completion=symb_done_v1 ready=symb_ready_v1 handshake=ready_done
+  node v2 = add x, y : i32 class=FU_ADD ii=1 delay=1 start=symb_delay_v1 end=symb_delay_v1 + 1 - 1 bind=fu_add0
+  node v3 = ret v2 class=CTRL ii=0 delay=0 start=symb_delay_v1 + 1 end=symb_delay_v1 + 1
+  node v4 = nop role=sink class=CTRL ii=0 delay=0 start=symb_delay_v1 + 1 end=symb_delay_v1 + 1
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  edge data v3 -> v4
+  edge seq v1 -> callee hierarchy=true
+  edge seq callee -> v1 hierarchy=true
+}
+
+region callee kind=procedure parent=proc_dyn {
+  node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node c1 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+  edge data c0 -> c1
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bind_path = root / "dyn.bind.uhir"
+            fsm_path = root / "dyn.fsm.uhir"
+            bind_path.write_text(bind, encoding="utf-8")
+
+            self.assertEqual(main(["fsm", str(bind_path), "--encoding", "binary", "-o", str(fsm_path)]), 0)
+
+            fsm_text = fsm_path.read_text(encoding="utf-8")
+            self.assertIn("stage fsm", fsm_text)
+            self.assertIn("state WAIT_v1 code=2", fsm_text)
+            self.assertIn("transition IDLE -> P0 when=req_valid && req_ready && symb_ready_v1", fsm_text)
+            self.assertIn("transition WAIT_v1 -> P1 when=symb_done_v1", fsm_text)
+            self.assertIn("emit P0 activate=[v1]", fsm_text)
+            self.assertIn("emit P1 issue=[fu_add0<-v2]", fsm_text)
+
+    def test_fsm_command_adds_recursive_loop_child_controller(self) -> None:
+        bind = """design dyn_loop
+stage bind
+schedule kind=hierarchical
+resources {
+  fu fu_hdr0 : FU_HDR
+  fu fu_body0 : FU_BODY
+  reg r_acc : i32
+}
+
+region proc_dyn_loop kind=procedure {
+  region_ref loop_hdr
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = loop child=loop_hdr class=CTRL ii=symb_ii_v1 delay=symb_delay_v1 start=0 end=symb_delay_v1 - 1 timing=symbolic completion=symb_done_v1 ready=symb_ready_v1 handshake=ready_done continue_condition=c iterate_when=c exit_when=!c
+  node v2 = nop role=sink class=CTRL ii=0 delay=0 start=symb_delay_v1 end=symb_delay_v1
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge seq v1 -> loop_hdr hierarchy=true
+  edge seq loop_hdr -> v1 hierarchy=true
+}
+
+region loop_hdr kind=loop parent=proc_dyn_loop {
+  region_ref loop_body
+  region_ref loop_exit
+  node h0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node h1 = add i, 1:i32 : i32 class=FU_HDR ii=1 delay=1 start=0 end=0 bind=fu_hdr0
+  node h2 = branch c true_child=loop_body false_child=loop_exit class=CTRL ii=0 delay=2 timing=static start=1 end=2
+  node h3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+  edge data h0 -> h1
+  edge data h1 -> h2
+  edge data h2 -> h3
+  steps [0:2]
+  latency 3
+}
+
+region loop_body kind=body parent=loop_hdr {
+  node b0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+  node b1 = mul x, y : i32 class=FU_BODY ii=1 delay=1 start=1 end=1 bind=fu_body0
+  node b2 = add b1, z : i32 class=FU_BODY ii=1 delay=1 start=2 end=2 bind=fu_body0
+  node b3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+  edge data b0 -> b1
+  edge data b1 -> b2
+  edge data b2 -> b3
+  steps [1:2]
+  latency 2
+  value b1 -> r_acc live=[2:2]
+  mux mx_body : input=[r_acc, r_next] output=r_acc sel=body_state
+}
+
+region loop_exit kind=empty parent=loop_hdr {
+  node e0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+  node e1 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+  edge data e0 -> e1
+  steps [1:1]
+  latency 0
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bind_path = root / "dyn_loop.bind.uhir"
+            fsm_path = root / "dyn_loop.fsm.uhir"
+            bind_path.write_text(bind, encoding="utf-8")
+
+            self.assertEqual(main(["fsm", str(bind_path), "--encoding", "binary", "-o", str(fsm_path)]), 0)
+
+            fsm_text = fsm_path.read_text(encoding="utf-8")
+            self.assertIn("controller C_loop_hdr encoding=binary protocol=act_done completion_order=in_order overlap=true region=loop_hdr parent_node=v1 {", fsm_text)
+            self.assertIn("link C_loop_hdr via=v1 act=[activate, act_valid] ready=[ready, act_ready] done=[completion, done_valid] done_ready=[resp_ready, done_ready]", fsm_text)
+            self.assertIn("input  act_valid : i1", fsm_text)
+            self.assertIn("output done_valid : i1", fsm_text)
+            self.assertIn("transition IDLE -> T0 when=act_valid && act_ready", fsm_text)
+            self.assertIn("transition T0 -> T1 when=c", fsm_text)
+            self.assertIn("transition T0 -> DONE when=!c", fsm_text)
+            self.assertIn("emit IDLE act_ready=true", fsm_text)
+            self.assertIn("emit DONE done_valid=true", fsm_text)
+            self.assertIn("emit T2 issue=[fu_body0<-b2] latch=[r_acc] select=[mx_body<-body_state]", fsm_text)
+
+    def test_fsm_command_adds_recursive_call_child_controller(self) -> None:
+        bind = """design dyn_call
+stage bind
+schedule kind=hierarchical
+resources {
+  fu fu_add0 : FU_ADD
+  reg r_acc : i32
+}
+
+region proc_dyn_call kind=procedure {
+  region_ref callee
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = call child=callee class=CTRL ii=symb_ii_v1 delay=symb_delay_v1 start=0 end=symb_delay_v1 timing=symbolic completion=symb_done_v1 ready=symb_ready_v1 handshake=ready_done
+  node v2 = nop role=sink class=CTRL ii=0 delay=0 start=symb_delay_v1 end=symb_delay_v1
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge seq v1 -> callee hierarchy=true
+  edge seq callee -> v1 hierarchy=true
+}
+
+region callee kind=procedure parent=proc_dyn_call {
+  node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node c1 = add x, y : i32 class=FU_ADD ii=1 delay=1 start=0 end=0 bind=fu_add0
+  node c2 = ret c1 class=CTRL ii=0 delay=0 start=1 end=1
+  node c3 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+  edge data c0 -> c1
+  edge data c1 -> c2
+  edge data c2 -> c3
+  steps [0:1]
+  latency 2
+  value c1 -> r_acc live=[1:1]
+  mux mx_call : input=[r_acc, r_next] output=r_acc sel=call_state
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bind_path = root / "dyn_call.bind.uhir"
+            fsm_path = root / "dyn_call.fsm.uhir"
+            bind_path.write_text(bind, encoding="utf-8")
+
+            self.assertEqual(main(["fsm", str(bind_path), "--encoding", "binary", "-o", str(fsm_path)]), 0)
+
+            fsm_text = fsm_path.read_text(encoding="utf-8")
+            self.assertIn("controller C_callee encoding=binary protocol=act_done completion_order=in_order overlap=true region=callee parent_node=v1 {", fsm_text)
+            self.assertIn("link C_callee via=v1 act=[activate, act_valid] ready=[ready, act_ready] done=[completion, done_valid] done_ready=[resp_ready, done_ready]", fsm_text)
+            self.assertIn("transition IDLE -> T0 when=act_valid && act_ready", fsm_text)
+            self.assertIn("transition T0 -> T1", fsm_text)
+            self.assertIn("transition T1 -> DONE", fsm_text)
+            self.assertIn("emit T0 issue=[fu_add0<-c1]", fsm_text)
+            self.assertIn("emit T1 latch=[r_acc] select=[mx_call<-call_state]", fsm_text)
+
+    def test_fsm_command_adds_recursive_branch_child_controller(self) -> None:
+        bind = """design dyn_branch
+stage bind
+schedule kind=hierarchical
+resources {
+  fu fu_true0 : FU_TRUE
+  fu fu_false0 : FU_FALSE
+}
+
+region proc_dyn_branch kind=procedure {
+  region_ref bb_true
+  region_ref bb_false
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = branch c true_child=bb_true false_child=bb_false class=CTRL ii=0 delay=symb_delay_v1 start=0 end=symb_delay_v1 timing=symbolic completion=symb_done_v1 branch_condition=c
+  node v2 = nop role=sink class=CTRL ii=0 delay=0 start=symb_delay_v1 end=symb_delay_v1
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge seq v1 -> bb_true hierarchy=true when=true
+  edge seq v1 -> bb_false hierarchy=true when=false
+  edge seq bb_true -> v1 hierarchy=true when=true
+  edge seq bb_false -> v1 hierarchy=true when=false
+}
+
+region bb_true kind=basic_block parent=proc_dyn_branch {
+  node t0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node t1 = add x, y : i32 class=FU_TRUE ii=1 delay=1 start=0 end=0 bind=fu_true0
+  node t2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+  edge data t0 -> t1
+  edge data t1 -> t2
+  steps [0:1]
+  latency 2
+}
+
+region bb_false kind=basic_block parent=proc_dyn_branch {
+  node f0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node f1 = mul a, b : i32 class=FU_FALSE ii=1 delay=1 start=0 end=0 bind=fu_false0
+  node f2 = nop role=sink class=CTRL ii=0 delay=0 start=0 end=0
+  edge data f0 -> f1
+  edge data f1 -> f2
+  steps [0:0]
+  latency 1
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bind_path = root / "dyn_branch.bind.uhir"
+            fsm_path = root / "dyn_branch.fsm.uhir"
+            bind_path.write_text(bind, encoding="utf-8")
+
+            self.assertEqual(main(["fsm", str(bind_path), "--encoding", "binary", "-o", str(fsm_path)]), 0)
+
+            fsm_text = fsm_path.read_text(encoding="utf-8")
+            self.assertIn("controller C_v1 encoding=binary protocol=act_done completion_order=in_order overlap=true region=bb_true false_region=bb_false parent_node=v1 branch_condition=c {", fsm_text)
+            self.assertIn("link C_v1 via=v1 act=[activate, act_valid] ready=[ready, act_ready] done=[completion, done_valid] done_ready=[resp_ready, done_ready]", fsm_text)
+            self.assertIn("transition IDLE -> TRUE_T0 when=act_valid && act_ready && c", fsm_text)
+            self.assertIn("transition IDLE -> FALSE_T0 when=act_valid && act_ready && !c", fsm_text)
+            self.assertIn("emit TRUE_T0 issue=[fu_true0<-t1]", fsm_text)
+            self.assertIn("emit FALSE_T0 issue=[fu_false0<-f1]", fsm_text)
+
+    def test_bind_then_fsm_preserves_dynamic_branch_register_latches(self) -> None:
+        sched = """design dyn_branch_e2e
+stage sched
+schedule kind=hierarchical
+
+region proc kind=procedure {
+  region_ref bb_true
+  region_ref bb_false
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = branch c true_child=bb_true false_child=bb_false class=CTRL ii=0 delay=symb_delay_v1 start=0 end=symb_delay_v1 timing=symbolic completion=symb_done_v1 branch_condition=c
+  node v2 = nop role=sink class=CTRL ii=0 delay=0 start=symb_delay_v1 end=symb_delay_v1
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge seq v1 -> bb_true hierarchy=true when=true
+  edge seq v1 -> bb_false hierarchy=true when=false
+  edge seq bb_true -> v1 hierarchy=true when=true
+  edge seq bb_false -> v1 hierarchy=true when=false
+}
+
+region bb_true kind=basic parent=proc {
+  node t0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node t1 = add a, b : i32 class=EWMS ii=1 delay=1 start=1 end=1
+  node t2 = add t1, k : i32 class=EWMS ii=1 delay=1 start=2 end=2
+  node t3 = nop role=sink class=CTRL ii=0 delay=0 start=3 end=3
+  edge data t0 -> t1
+  edge data t1 -> t2
+  edge data t2 -> t3
+  steps [0:3]
+  latency 4
+}
+
+region bb_false kind=basic parent=proc {
+  node f0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node f1 = add c, d : i32 class=EWMS ii=1 delay=1 start=1 end=1
+  node f2 = add f1, m : i32 class=EWMS ii=1 delay=1 start=2 end=2
+  node f3 = nop role=sink class=CTRL ii=0 delay=0 start=3 end=3
+  edge data f0 -> f1
+  edge data f1 -> f2
+  edge data f2 -> f3
+  steps [0:3]
+  latency 4
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "dyn_branch_e2e.sched.uhir"
+            bind_path = root / "dyn_branch_e2e.bind.uhir"
+            fsm_path = root / "dyn_branch_e2e.fsm.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            self.assertEqual(main(["bind", str(sched_path), "--algo", "compat", "-o", str(bind_path)]), 0)
+            self.assertEqual(main(["fsm", str(bind_path), "--encoding", "binary", "-o", str(fsm_path)]), 0)
+
+            bind_text = bind_path.read_text(encoding="utf-8")
+            self.assertIn("value t1 -> r_i32_0 live=[2:2]", bind_text)
+            self.assertIn("value f1 -> r_i32_0 live=[2:2]", bind_text)
+
+            fsm_text = fsm_path.read_text(encoding="utf-8")
+            self.assertIn("emit TRUE_T2 issue=[ewms0<-t2] latch=[r_i32_0]", fsm_text)
+            self.assertIn("emit FALSE_T2 issue=[ewms0<-f2] latch=[r_i32_0]", fsm_text)
+
     def test_bind_command_can_render_conflict_dot(self) -> None:
         sched = """design add_pair
 stage sched

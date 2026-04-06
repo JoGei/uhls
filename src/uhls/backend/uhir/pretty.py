@@ -8,6 +8,11 @@ from .model import (
     AttributeValue,
     TimingValue,
     UHIRConstant,
+    UHIRController,
+    UHIRControllerEmit,
+    UHIRControllerLink,
+    UHIRControllerState,
+    UHIRControllerTransition,
     UHIRDesign,
     UHIREdge,
     UHIRMux,
@@ -38,11 +43,60 @@ def format_uhir(design: UHIRDesign) -> str:
             lines.append(f"  {format_resource(resource)}")
         lines.append("}")
 
+    for controller in design.controllers:
+        lines.append("")
+        lines.extend(format_controller(controller))
+
     for region in design.regions:
         lines.append("")
         lines.extend(format_region(region))
 
     return "\n".join(lines)
+
+
+def format_controller(controller: UHIRController) -> list[str]:
+    """Render one fsm-stage controller block."""
+    head = f"controller {controller.name}"
+    if controller.attributes:
+        head = f"{head} {_format_attrs(controller.attributes)}"
+    lines = [f"{head} {{"]
+    for port in controller.inputs:
+        lines.append(f"  input  {port.name} : {port.type}")
+    for port in controller.outputs:
+        lines.append(f"  output {port.name} : {port.type}")
+    for state in controller.states:
+        lines.append(f"  {format_controller_state(state)}")
+    for transition in controller.transitions:
+        lines.append(f"  {format_controller_transition(transition)}")
+    for emit in controller.emits:
+        lines.append(f"  {format_controller_emit(emit)}")
+    for link in controller.links:
+        lines.append(f"  {format_controller_link(link)}")
+    lines.append("}")
+    return lines
+
+
+def format_controller_state(state: UHIRControllerState) -> str:
+    """Render one controller state declaration."""
+    return f"state {state.name}" if not state.attributes else f"state {state.name} {_format_attrs(state.attributes)}"
+
+
+def format_controller_transition(transition: UHIRControllerTransition) -> str:
+    """Render one controller transition declaration."""
+    head = f"transition {transition.source} -> {transition.target}"
+    return head if not transition.attributes else f"{head} {_format_attrs(transition.attributes)}"
+
+
+def format_controller_emit(emit: UHIRControllerEmit) -> str:
+    """Render one controller emit declaration."""
+    head = f"emit {emit.state}"
+    return head if not emit.attributes else f"{head} {_format_attrs(emit.attributes)}"
+
+
+def format_controller_link(link: UHIRControllerLink) -> str:
+    """Render one controller link declaration."""
+    head = f"link {link.child} via={link.node}"
+    return head if not link.attributes else f"{head} {_format_attrs(link.attributes)}"
 
 
 def format_region(region: UHIRRegion) -> list[str]:

@@ -933,16 +933,28 @@ def fsm_cmd(input_path: Path, encoding: str, emit_dot: bool, output: Path | None
         "\n"
         "\b\n"
         "  uhls uglir input.fsm.uhir -o output.uglir\n"
+        "\n"
+        "\b\n"
+        "  uhls uglir input.fsm.uhir --ressources ressources.json -o output.uglir\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--ressources",
+    "--resources",
+    "-res",
+    "resources_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Optional component-library JSON used to drive uglir instance-port attachment/signature handling.",
+)
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
-def uglir_cmd(input_path: Path, output: Path | None) -> None:
+def uglir_cmd(input_path: Path, resources_path: Path | None, output: Path | None) -> None:
     """Lower fsm-stage µhIR to uglir."""
     design = parse_uhir_file(input_path)
     if design.stage != "fsm":
         raise CLIError(f"'uglir' expects fsm-stage µhIR input, got stage '{design.stage}'")
-    lowered = lower_fsm_to_uglir(design)
+    component_library = _load_component_library(resources_path) if resources_path is not None else None
+    lowered = lower_fsm_to_uglir(design, component_library=component_library)
     _write_or_print_text(format_uhir(lowered), output)
 
 
@@ -1024,9 +1036,68 @@ def _load_executability_graph(path: Path) -> ExecutabilityGraph:
             raise CLIError(f"executability graph '{path}' must use an object for 'functional_units'/'fus' adjacency")
         return ExecutabilityGraph.from_mapping(adjacency)
 
+    if "components" in payload:
+        components = _load_component_library(path)
+
+        functional_units: list[str] = []
+        operation_order: dict[str, None] = {}
+        normalized_edges: list[tuple[str, str, int, int]] = []
+
+        for component_name, component_payload in components.items():
+            if not isinstance(component_payload, dict):
+                raise CLIError(
+                    f"executability graph '{path}' component '{component_name}' must be a JSON object"
+                )
+            supports = component_payload.get("supports")
+            if not isinstance(supports, dict):
+                raise CLIError(
+                    f"executability graph '{path}' component '{component_name}' must define object-valued 'supports'"
+                )
+
+            functional_units.append(str(component_name))
+            for operation, weight in supports.items():
+                operation_name = str(operation)
+                operation_order.setdefault(operation_name, None)
+                if not isinstance(weight, dict):
+                    raise CLIError(
+                        f"executability graph '{path}' component '{component_name}' support '{operation_name}' must be an object"
+                    )
+                ii = weight.get("ii")
+                delay = weight.get("d")
+                if not isinstance(ii, int) or not isinstance(delay, int):
+                    raise CLIError(
+                        f"executability graph '{path}' component '{component_name}' support '{operation_name}' must define integer ii/d"
+                    )
+                normalized_edges.append((str(component_name), operation_name, ii, delay))
+
+        return ExecutabilityGraph(
+            functional_units=tuple(functional_units),
+            operations=tuple(operation_order),
+            edges=tuple(normalized_edges),
+        )
+
     raise CLIError(
-        f"executability graph '{path}' must define either explicit vertices+edges or a FU adjacency object"
+        f"executability graph '{path}' must define either explicit vertices+edges, a FU adjacency object, or a component library"
     )
+
+
+def _load_component_library(path: Path) -> dict[str, dict[str, object]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CLIError(f"failed to load component library '{path}': {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise CLIError(f"component library '{path}' must be a JSON object")
+    components = payload.get("components")
+    if not isinstance(components, dict):
+        raise CLIError(f"component library '{path}' must define object-valued 'components'")
+    normalized: dict[str, dict[str, object]] = {}
+    for component_name, component_payload in components.items():
+        if not isinstance(component_payload, dict):
+            raise CLIError(f"component library '{path}' component '{component_name}' must be a JSON object")
+        normalized[str(component_name)] = component_payload
+    return normalized
 
 
 def _format_executability_graph_json(graph: ExecutabilityGraph) -> str:

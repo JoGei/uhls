@@ -261,10 +261,12 @@ class SchedulingLoweringTests(unittest.TestCase):
         self.assertIsNotNone(loop_region.latency)
         self.assertIsNotNone(body_region.latency)
         self.assertEqual(loop_branch.attributes["delay"], max(body_region.latency or 0, 0))
-        self.assertEqual(loop_compare.attributes["start"], 2)
-        self.assertEqual(loop_branch.attributes["start"], 3)
-        self.assertEqual(body_mul.attributes["start"], 4)
-        self.assertEqual(body_mul.attributes["end"], 4)
+        self.assertEqual(loop_compare.attributes["start"], 0)
+        self.assertEqual(loop_compare.attributes["end"], 0)
+        self.assertEqual(loop_branch.attributes["start"], 1)
+        self.assertEqual(loop_branch.attributes["end"], loop_region.latency - 1)
+        self.assertEqual(body_mul.attributes["start"], 2)
+        self.assertEqual(body_mul.attributes["end"], 2)
         iter_latency = loop_node.attributes["iter_latency"]
         iter_initiation_interval = loop_node.attributes["iter_initiation_interval"]
         iter_ramp_down = loop_node.attributes["iter_ramp_down"]

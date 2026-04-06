@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -505,6 +506,106 @@ region proc_add1 kind=procedure {
             self.assertIn("class=FU_FAST_II", alloc_text)
             self.assertIn("ii=1", alloc_text)
             self.assertIn("delay=3", alloc_text)
+
+    def test_alloc_command_accepts_component_library_json(self) -> None:
+        seq = """design add1
+stage seq
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        library = """
+{
+  "components": {
+    "ALU": {
+      "kind": "combinational",
+      "ports": {
+        "a": { "dir": "input", "type": "i32" },
+        "b": { "dir": "input", "type": "i32" },
+        "op": { "dir": "input", "type": "u4" },
+        "y": { "dir": "output", "type": "i32" }
+      },
+      "supports": {
+        "add": { "ii": 1, "d": 1, "opcode": 0 },
+        "and": { "ii": 1, "d": 1, "opcode": 1 },
+        "eq": { "ii": 1, "d": 1, "opcode": 2 },
+        "ge": { "ii": 1, "d": 1, "opcode": 3 },
+        "gt": { "ii": 1, "d": 1, "opcode": 4 },
+        "le": { "ii": 1, "d": 1, "opcode": 5 },
+        "lt": { "ii": 1, "d": 1, "opcode": 6 },
+        "mov": { "ii": 1, "d": 1, "opcode": 7 },
+        "ne": { "ii": 1, "d": 1, "opcode": 8 },
+        "neg": { "ii": 1, "d": 1, "opcode": 9 },
+        "not": { "ii": 1, "d": 1, "opcode": 10 },
+        "or": { "ii": 1, "d": 1, "opcode": 11 },
+        "shl": { "ii": 1, "d": 1, "opcode": 12 },
+        "shr": { "ii": 1, "d": 1, "opcode": 13 },
+        "sub": { "ii": 1, "d": 1, "opcode": 14 },
+        "xor": { "ii": 1, "d": 1, "opcode": 15 }
+      }
+    },
+    "MUL": {
+      "kind": "combinational",
+      "ports": {
+        "a": { "dir": "input", "type": "i32" },
+        "b": { "dir": "input", "type": "i32" },
+        "y": { "dir": "output", "type": "i32" }
+      },
+      "supports": {
+        "mul": { "ii": 1, "d": 2 }
+      }
+    },
+    "DIV": {
+      "kind": "combinational",
+      "ports": {
+        "a": { "dir": "input", "type": "i32" },
+        "b": { "dir": "input", "type": "i32" },
+        "op": { "dir": "input", "type": "u1" },
+        "y": { "dir": "output", "type": "i32" }
+      },
+      "supports": {
+        "div": { "ii": 1, "d": 3, "opcode": 0 },
+        "mod": { "ii": 1, "d": 3, "opcode": 1 }
+      }
+    },
+    "MEM": {
+      "kind": "memory",
+      "ports": {
+        "addr": { "dir": "input", "type": "i32" },
+        "wdata": { "dir": "input", "type": "i32" },
+        "we": { "dir": "input", "type": "i1" },
+        "rdata": { "dir": "output", "type": "i32" }
+      },
+      "supports": {
+        "load": { "ii": 1, "d": 1, "mode": "read" },
+        "store": { "ii": 1, "d": 1, "mode": "write" }
+      }
+    }
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seq_path = root / "add1.seq.uhir"
+            library_path = root / "ressources.json"
+            alloc_path = root / "add1.alloc.uhir"
+            seq_path.write_text(seq, encoding="utf-8")
+            library_path.write_text(library, encoding="utf-8")
+
+            self.assertEqual(main(["alloc", str(seq_path), "-exg", str(library_path), "-o", str(alloc_path)]), 0)
+
+            alloc_text = alloc_path.read_text(encoding="utf-8")
+            self.assertIn("stage alloc", alloc_text)
+            self.assertIn("node v1 = add x, 1 : i32 class=ALU ii=1 delay=1", alloc_text)
+            self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0", alloc_text)
 
     def test_sched_command_lowers_alloc_to_sched_with_builtin_asap(self) -> None:
         alloc = """design add1
@@ -2037,6 +2138,152 @@ region bb_false kind=basic parent=proc {
             fsm_text = fsm_path.read_text(encoding="utf-8")
             self.assertIn("emit TRUE_T2 issue=[ewms0<-t2] latch=[r_i32_0]", fsm_text)
             self.assertIn("emit FALSE_T2 issue=[ewms0<-f2] latch=[r_i32_0]", fsm_text)
+
+    def test_uglir_command_lowers_static_fsm(self) -> None:
+        fsm = """design add1
+stage fsm
+schedule kind=control_steps
+input  x : i32
+output result : i32
+resources {
+  fu ewms0 : EWMS
+  reg r_i32_0 : i32
+}
+controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+  input  req_valid : i1
+  input  resp_ready : i1
+  output req_ready : i1
+  output resp_valid : i1
+  state IDLE code=1
+  state T0 code=2
+  state T1 code=4
+  state T2 code=8
+  state DONE code=16
+  transition IDLE -> T0 when=req_valid && req_ready
+  transition T0 -> T1
+  transition T1 -> T2
+  transition T2 -> DONE
+  transition DONE -> IDLE when=resp_valid && resp_ready
+  emit IDLE req_ready=true
+  emit T0 issue=[ewms0<-v1]
+  emit T1 latch=[r_i32_0]
+  emit DONE resp_valid=true
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  steps [0:1]
+  latency 2
+  value v1 -> r_i32_0 live=[1:1]
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fsm_path = root / "add1.fsm.uhir"
+            uglir_path = root / "add1.uglir"
+            fsm_path.write_text(fsm, encoding="utf-8")
+
+            self.assertEqual(main(["uglir", str(fsm_path), "-o", str(uglir_path)]), 0)
+
+            uglir_text = uglir_path.read_text(encoding="utf-8")
+            self.assertIn("stage uglir", uglir_text)
+            self.assertIn("input  clk : clock", uglir_text)
+            self.assertIn("input  req_valid : i1", uglir_text)
+            self.assertIn("output req_ready : i1", uglir_text)
+            self.assertIn("inst ewms0 : EWMS", uglir_text)
+            self.assertIn("assign req_ready = state == 1", uglir_text)
+            self.assertIn("ewms0.go(ewms0_go)", uglir_text)
+            self.assertIn("mux mx_r_i32_0 : i32 sel=sel_r_i32_0 {", uglir_text)
+            self.assertIn("seq clk {", uglir_text)
+
+    def test_uglir_command_accepts_component_library_json(self) -> None:
+        fsm = """design add1
+stage fsm
+schedule kind=control_steps
+input  x : i32
+output result : i32
+resources {
+  fu ewms0 : ALU
+  reg r_i32_0 : i32
+}
+controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+  input  req_valid : i1
+  input  resp_ready : i1
+  output req_ready : i1
+  output resp_valid : i1
+  state IDLE code=1
+  state T0 code=2
+  state T1 code=4
+  state T2 code=8
+  state DONE code=16
+  transition IDLE -> T0 when=req_valid && req_ready
+  transition T0 -> T1
+  transition T1 -> T2
+  transition T2 -> DONE
+  transition DONE -> IDLE when=resp_valid && resp_ready
+  emit IDLE req_ready=true
+  emit T0 issue=[ewms0<-v1]
+  emit T1 latch=[r_i32_0]
+  emit DONE resp_valid=true
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  steps [0:1]
+  latency 2
+  value v1 -> r_i32_0 live=[1:1]
+}
+"""
+        component_library = {
+            "components": {
+                "ALU": {
+                    "kind": "combinational",
+                    "ports": {
+                        "a": {"dir": "input", "type": "i32"},
+                        "b": {"dir": "input", "type": "i32"},
+                        "op": {"dir": "input", "type": "u5"},
+                        "y": {"dir": "output", "type": "i32"},
+                    },
+                    "supports": {
+                        "add": {
+                            "ii": 1,
+                            "d": 1,
+                            "opcode": 0,
+                            "bind": {"a": "operand0", "b": "operand1", "y": "result"},
+                        },
+                    },
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fsm_path = root / "add1.fsm.uhir"
+            library_path = root / "ressources.json"
+            uglir_path = root / "add1.uglir"
+            fsm_path.write_text(fsm, encoding="utf-8")
+            library_path.write_text(json.dumps(component_library), encoding="utf-8")
+
+            self.assertEqual(main(["uglir", str(fsm_path), "--ressources", str(library_path), "-o", str(uglir_path)]), 0)
+
+            uglir_text = uglir_path.read_text(encoding="utf-8")
+            self.assertIn("ewms0.a(ewms0_a)", uglir_text)
+            self.assertIn("assign ewms0_a = x", uglir_text)
+            self.assertIn("assign ewms0_b = 1:i32", uglir_text)
+            self.assertIn("ewms0.op(ewms0_op)", uglir_text)
+            self.assertIn("assign ewms0_op = 0", uglir_text)
+            self.assertNotIn("ewms0.go(", uglir_text)
 
     def test_bind_command_can_render_conflict_dot(self) -> None:
         sched = """design add_pair

@@ -40,6 +40,7 @@ def lower_sched_to_bind(
     bound.constants = [_clone_constant(constant) for constant in design.constants]
     bound.schedule = None if design.schedule is None else UHIRSchedule(design.schedule.kind)
     bound.resources = [UHIRResource(resource.kind, resource.id, resource.value, resource.target) for resource in binding.resources]
+    bound.resources.extend(_infer_memory_port_resources(design, binding.resources, binding.node_bindings))
     bound.regions = [_clone_bind_region(region, binding.node_bindings, binding.value_bindings) for region in design.regions]
     return bound
 
@@ -90,3 +91,55 @@ def _clone_port(port: UHIRPort) -> UHIRPort:
 
 def _clone_constant(constant: UHIRConstant) -> UHIRConstant:
     return UHIRConstant(constant.name, constant.value, constant.type)
+
+
+def _infer_memory_port_resources(
+    design: UHIRDesign,
+    binding_resources: tuple[UHIRResource, ...],
+    node_bindings: dict[str, str],
+) -> list[UHIRResource]:
+    memref_names = {
+        port.name
+        for port in [*design.inputs, *design.outputs]
+        if port.type.startswith("memref<")
+    }
+    if not memref_names:
+        return []
+
+    resource_type_by_id = {
+        resource.id: resource.value
+        for resource in binding_resources
+        if resource.kind == "fu"
+    }
+    inferred: dict[str, str] = {}
+    for region in design.regions:
+        for node in region.nodes:
+            if node.opcode not in {"load", "store"} or not node.operands:
+                continue
+            memory_name = node.operands[0]
+            if memory_name not in memref_names:
+                continue
+            resource_id = node_bindings.get(node.id)
+            if resource_id is None:
+                continue
+            component_name = resource_type_by_id.get(resource_id)
+            if component_name is None:
+                continue
+            existing = inferred.get(memory_name)
+            if existing is not None and existing != component_name:
+                raise ValueError(
+                    f"bind lowering inferred inconsistent memory port component types for '{memory_name}': "
+                    f"'{existing}' vs '{component_name}'"
+                )
+            inferred[memory_name] = component_name
+
+    existing_ports = {
+        resource.id
+        for resource in binding_resources
+        if resource.kind == "port"
+    }
+    return [
+        UHIRResource("port", memory_name, component_name, memory_name)
+        for memory_name, component_name in sorted(inferred.items())
+        if memory_name not in existing_ports
+    ]

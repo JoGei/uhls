@@ -777,20 +777,20 @@ def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
 
 
 @cli.command(
-    "uglir",
+    "glue",
     help=(
-        "Lower fsm-stage µhIR to the uglir hardware-glue stage.\n"
+        "Lower fsm-stage µhIR to the µglIR hardware-glue stage.\n"
         "\n"
         "Examples:\n"
         "\n"
         "\b\n"
-        "  uhls uglir input.fsm.uhir\n"
+        "  uhls glue input.fsm.uhir\n"
         "\n"
         "\b\n"
-        "  uhls uglir input.fsm.uhir -o output.uglir\n"
+        "  uhls glue input.fsm.uhir -o output.uglir\n"
         "\n"
         "\b\n"
-        "  uhls uglir input.fsm.uhir --resources ressources.json -o output.uglir\n"
+        "  uhls glue input.fsm.uhir --resources ressources.json -o output.uglir\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -800,14 +800,14 @@ def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
     "-res",
     "resources_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Optional component-library JSON used to drive uglir instance-port attachment/signature handling.",
+    help="Optional component-library JSON used to drive µglIR instance-port attachment/signature handling.",
 )
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
-def uglir_cmd(input_path: Path, resources_path: Path | None, output: Path | None) -> None:
-    """Lower fsm-stage µhIR to uglir-stage µhIR."""
+def glue_cmd(input_path: Path, resources_path: Path | None, output: Path | None) -> None:
+    """Lower fsm-stage µhIR to µglIR."""
     design = parse_uhir_file(input_path)
     if design.stage != "fsm":
-        raise CLIError(f"'uglir' expects fsm-stage µhIR input, got stage '{design.stage}'")
+        raise CLIError(f"'glue' expects fsm-stage µhIR input, got stage '{design.stage}'")
     component_library = _load_component_library(resources_path) if resources_path is not None else None
     lowered = lower_fsm_to_uglir(design, component_library=component_library)
     _write_or_print_text(format_uhir(lowered), output)
@@ -816,7 +816,7 @@ def uglir_cmd(input_path: Path, resources_path: Path | None, output: Path | None
 @cli.command(
     "rtl",
     help=(
-        "Lower uglir-stage µhIR to one concrete RTL language.\n"
+        "Lower µglIR to one concrete RTL language.\n"
         "\n"
         "Examples:\n"
         "\n"
@@ -852,10 +852,10 @@ def uglir_cmd(input_path: Path, resources_path: Path | None, output: Path | None
 )
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def rtl_cmd(input_path: Path, hdl: str, wrap: str | None, protocol: str | None, output: Path | None) -> None:
-    """Lower uglir-stage µhIR to one textual RTL artifact."""
+    """Lower µglIR to one textual RTL artifact."""
     design = parse_uhir_file(input_path)
     if design.stage != "uglir":
-        raise CLIError(f"'rtl' expects uglir input, got stage '{design.stage}'")
+        raise CLIError(f"'rtl' expects µglIR input, got stage '{design.stage}'")
     try:
         lowered = lower_uglir_to_rtl(design, hdl=hdl, wrap=wrap, protocol=protocol)
     except (NotImplementedError, ValueError) as exc:
@@ -989,9 +989,9 @@ def _render_uhir_view(
         return format_uhir(design)
     if stage == "uglir":
         supported = ("uglir",)
-        view_name = _select_view_name("uglir µhIR", backend, what_name, supported, default_pretty="uglir")
+        view_name = _select_view_name("µglIR", backend, what_name, supported, default_pretty="uglir")
         if backend != "pretty":
-            raise _unsupported_view_backend("uglir µhIR", view_name, backend, ("pretty",))
+            raise _unsupported_view_backend("µglIR", view_name, backend, ("pretty",))
         return format_uhir(design)
     if stage == "exg":
         supported = ("exg",)

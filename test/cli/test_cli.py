@@ -2367,7 +2367,7 @@ region proc_add1 kind=procedure {
             uglir_path = root / "add1.uglir"
             fsm_path.write_text(fsm, encoding="utf-8")
 
-            self.assertEqual(main(["uglir", str(fsm_path), "-o", str(uglir_path)]), 0)
+            self.assertEqual(main(["glue", str(fsm_path), "-o", str(uglir_path)]), 0)
 
             uglir_text = uglir_path.read_text(encoding="utf-8")
             self.assertIn("stage uglir", uglir_text)
@@ -2453,7 +2453,7 @@ region proc_add1 kind=procedure {
             fsm_path.write_text(fsm, encoding="utf-8")
             library_path.write_text(json.dumps(component_library), encoding="utf-8")
 
-            self.assertEqual(main(["uglir", str(fsm_path), "--ressources", str(library_path), "-o", str(uglir_path)]), 0)
+            self.assertEqual(main(["glue", str(fsm_path), "--ressources", str(library_path), "-o", str(uglir_path)]), 0)
 
             uglir_text = uglir_path.read_text(encoding="utf-8")
             self.assertIn("ewms0.a(ewms0_a_n)", uglir_text)

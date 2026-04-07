@@ -36,7 +36,7 @@ from uhls.backend.hls import (
     validate_uglir_for_rtl,
     wrap_uglir_design,
 )
-from uhls.backend.hls.component_library import validate_component_library
+from uhls.backend.hls.lib import import_verilog_component_stub, validate_component_library
 from uhls.backend.hls.uhir import (
     ExecutabilityGraph,
     GOptPassSpec,
@@ -353,6 +353,75 @@ def lint_cmd(input_path: Path) -> None:
     """Lint µIR, µhIR, µglIR, and res.json exchange artifacts."""
     _lint_exchange_file(input_path)
     click.echo("ok")
+
+
+@cli.command(
+    "lib",
+    help=(
+        "Import one foreign HDL module interface into one component-library JSON stub.\n"
+        "\n"
+        "Examples:\n"
+        "\n"
+        "\b\n"
+        "  uhls lib ressources.json --import fu.v --module ALU\n"
+        "\n"
+        "\b\n"
+        "  uhls lib ressources.json --import fu.v --module ALU --ops add,sub,lt -o updated.json\n"
+    ),
+)
+@click.argument("input_path", metavar="input.json", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--import",
+    "import_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Foreign HDL source file to inspect.",
+)
+@click.option(
+    "--module",
+    "module_name",
+    required=True,
+    help="Verilog module name to import from the HDL source.",
+)
+@click.option(
+    "--ops",
+    default="",
+    help="Optional comma-separated list of canonical µIR ops to pre-seed in the supports table.",
+)
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
+def lib_cmd(input_path: Path, import_path: Path, module_name: str, ops: str, output: Path | None) -> None:
+    """Extend one component-library JSON with one imported HDL module stub."""
+    try:
+        payload = json.loads(input_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CLIError(f"failed to load component library '{input_path}': {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CLIError(f"component library '{input_path}' must be a JSON object")
+    components = payload.get("components")
+    if components is None:
+        components = {}
+        payload["components"] = components
+    if not isinstance(components, dict):
+        raise CLIError(f"component library '{input_path}' must define object-valued 'components'")
+    if module_name in components:
+        raise CLIError(f"component library '{input_path}' already defines component '{module_name}'")
+    try:
+        source_text = import_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CLIError(f"failed to read HDL source '{import_path}': {exc}") from exc
+    requested_ops = tuple(op.strip() for op in ops.split(",") if op.strip())
+    try:
+        imported = import_verilog_component_stub(
+            verilog_text=source_text,
+            module_name=module_name,
+            source_path=import_path,
+            ops=requested_ops,
+        )
+        components[module_name] = imported
+        payload["components"] = validate_component_library(components)
+    except ValueError as exc:
+        raise CLIError(str(exc)) from exc
+    _write_or_print_text(json.dumps(payload, indent=2), output)
 
 
 @cli.command("view")

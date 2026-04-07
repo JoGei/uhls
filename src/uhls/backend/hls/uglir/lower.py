@@ -6,7 +6,7 @@ from math import ceil, log2
 import re
 from typing import Any
 
-from uhls.backend.hls.component_library import (
+from uhls.backend.hls.lib import (
     format_component_spec,
     parse_component_spec,
     resolve_component_definition,

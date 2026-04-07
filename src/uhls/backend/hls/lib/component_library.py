@@ -54,6 +54,26 @@ def validate_component_library(components: dict[str, object]) -> dict[str, dict[
     for component_name, component_payload in components.items():
         if not isinstance(component_payload, dict):
             raise ValueError(f"component '{component_name}' must be a JSON object")
+        kind = component_payload.get("kind")
+        if kind is not None and kind not in {"combinational", "sequential", "pipelined", "memory", "fifo", "stream"}:
+            raise ValueError(
+                f"component '{component_name}' kind must be one of: combinational, sequential, pipelined, memory, fifo, stream"
+            )
+        hdl = component_payload.get("hdl")
+        if hdl is not None:
+            if not isinstance(hdl, dict):
+                raise ValueError(f"component '{component_name}' must define object-valued 'hdl'")
+            language = hdl.get("language")
+            if language not in {"verilog", "vhdl", "systemc"}:
+                raise ValueError(
+                    f"component '{component_name}' hdl.language must be one of: verilog, vhdl, systemc"
+                )
+            module_name = hdl.get("module")
+            if not isinstance(module_name, str) or not module_name.strip():
+                raise ValueError(f"component '{component_name}' hdl.module must be one non-empty string")
+            source = hdl.get("source")
+            if source is not None and (not isinstance(source, str) or not source.strip()):
+                raise ValueError(f"component '{component_name}' hdl.source must be one non-empty string")
         parameters = component_payload.get("parameters")
         if parameters is not None:
             if not isinstance(parameters, dict):
@@ -73,8 +93,42 @@ def validate_component_library(components: dict[str, object]) -> dict[str, dict[
                     raise ValueError(
                         f"component '{component_name}' parameter '{parameter_name}' must use boolean 'required'"
                     )
+        supports = component_payload.get("supports")
+        if supports is not None:
+            if not isinstance(supports, dict):
+                raise ValueError(f"component '{component_name}' must define object-valued 'supports'")
+            for operation_name, support_payload in supports.items():
+                if not isinstance(support_payload, dict):
+                    raise ValueError(
+                        f"component '{component_name}' support '{operation_name}' must be a JSON object"
+                    )
+                _validate_component_support(component_name, str(kind) if kind is not None else None, operation_name, support_payload)
         normalized[str(component_name)] = component_payload
     return normalized
+
+
+def _validate_component_support(
+    component_name: str,
+    kind: str | None,
+    operation_name: str,
+    support_payload: dict[str, Any],
+) -> None:
+    ii = support_payload.get("ii")
+    delay = support_payload.get("d")
+    if not isinstance(ii, int) or not isinstance(delay, int):
+        return
+    if ii < 1 or delay < 1:
+        raise ValueError(
+            f"component '{component_name}' support '{operation_name}' must define positive integer ii/d"
+        )
+    if kind == "combinational" and (ii != 1 or delay != 1):
+        raise ValueError(
+            f"component '{component_name}' is kind=combinational but support '{operation_name}' uses ii={ii}, d={delay}"
+        )
+    if kind == "sequential" and ii < delay:
+        raise ValueError(
+            f"component '{component_name}' is kind=sequential but support '{operation_name}' uses ii={ii} < d={delay}"
+        )
 
 
 def _validate_component_spec_params(base_name: str, params: dict[str, str], component: dict[str, Any]) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from uhls.backend.hls.component_library import parse_component_spec as _shared_parse_component_spec
+from uhls.backend.hls.lib import parse_component_spec as _shared_parse_component_spec
 from uhls.backend.hls.uhir.model import UHIRDesign, UHIRPort
 
 

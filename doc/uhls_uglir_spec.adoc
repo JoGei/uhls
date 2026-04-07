@@ -132,6 +132,49 @@ Lowering should validate concrete resource specs such as
 `MEM<word_t=i32,word_len=4>` against that declaration instead of treating the
 parameter list as an opaque string.
 
+The shared component library may also carry foreign HDL linkage metadata for
+components that are implemented externally and should not be lowered into
+`µglIR` internals. A typical imported entry may include:
+
+[source,json]
+----
+"ALU": {
+  "hdl": {
+    "language": "verilog",
+    "module": "ALU",
+    "source": "rtl/alu.v"
+  }
+}
+----
+
+This linkage metadata identifies:
+
+* the HDL family
+* the external module/entity name
+* the source file path recorded in the library collateral
+
+`µglIR` should use that information only as component linkage metadata. It
+should not import or rewrite the foreign HDL implementation itself.
+
+When the shared component library classifies components by `kind`, that kind
+should reflect the execution contract rather than only the implementation
+language:
+
+* `combinational`
+  * intended for single-cycle, non-handshaked components
+  * concrete supports should therefore use `ii=1` and `d=1`
+* `sequential`
+  * intended for non-overlapped multi-cycle components
+  * concrete supports should therefore satisfy `ii >= d`
+* `pipelined`
+  * intended for overlapped multi-cycle components
+  * concrete supports may use `ii < d`
+* `memory`
+  * addressed memory-interface component
+
+So, for example, a divider with `ii=1` and `d=3` should not be classified as
+`combinational`; it should be modeled as `pipelined`.
+
 Current assumption:
 
 * one visible memory-interface bundle per top-level memory name

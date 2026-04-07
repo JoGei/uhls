@@ -14,6 +14,60 @@ from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 class CLITests(unittest.TestCase):
     """End-to-end coverage for the µhLS CLI surface."""
 
+    def test_lib_command_imports_verilog_component_stub(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            library_path = root / "ressources.json"
+            verilog_path = root / "fu.v"
+            output_path = root / "updated.json"
+            library_path.write_text('{"components": {}}', encoding="utf-8")
+            verilog_path.write_text(
+                """
+                module ALU #(
+                  parameter WIDTH = 32,
+                  parameter string STYLE = "signed"
+                ) (
+                  input clk,
+                  input signed [WIDTH-1:0] a,
+                  input [31:0] b,
+                  output [31:0] y
+                );
+                endmodule
+                """,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "lib",
+                        str(library_path),
+                        "--import",
+                        str(verilog_path),
+                        "--module",
+                        "ALU",
+                        "--ops",
+                        "add,sub",
+                        "-o",
+                        str(output_path),
+                    ]
+                ),
+                0,
+            )
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            component = payload["components"]["ALU"]
+            self.assertEqual(component["hdl"]["language"], "verilog")
+            self.assertEqual(component["hdl"]["module"], "ALU")
+            self.assertEqual(component["hdl"]["source"], str(verilog_path))
+            self.assertEqual(component["parameters"]["WIDTH"]["kind"], "int")
+            self.assertEqual(component["parameters"]["STYLE"]["kind"], "string")
+            self.assertEqual(component["ports"]["clk"], {"dir": "input", "type": "i1"})
+            self.assertEqual(component["ports"]["a"], {"dir": "input", "type": "TODO"})
+            self.assertEqual(component["ports"]["b"], {"dir": "input", "type": "u32"})
+            self.assertEqual(component["supports"]["add"]["ii"], "TODO")
+            self.assertEqual(component["supports"]["sub"]["bind"], "TODO")
+
     def test_parse_lint_and_view_cfg_dfg_cdfg_round_trip(self) -> None:
         source = """
         int32_t add1(int32_t x) {
@@ -551,7 +605,7 @@ region proc_add1 kind=procedure {
       }
     },
     "MUL": {
-      "kind": "combinational",
+      "kind": "pipelined",
       "ports": {
         "a": { "dir": "input", "type": "i32" },
         "b": { "dir": "input", "type": "i32" },
@@ -562,7 +616,7 @@ region proc_add1 kind=procedure {
       }
     },
     "DIV": {
-      "kind": "combinational",
+      "kind": "pipelined",
       "ports": {
         "a": { "dir": "input", "type": "i32" },
         "b": { "dir": "input", "type": "i32" },

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from uhls.backend.uhir.model import (
+from uhls.backend.hls.uhir.model import (
     UHIRConstant,
     UHIRDesign,
     UHIREdge,
@@ -13,7 +13,7 @@ from uhls.backend.uhir.model import (
     UHIRSchedule,
     UHIRSourceMap,
 )
-from uhls.backend.uhir.timing import TimingBinary, TimingCall, TimingExpr, TimingVar, simplify_timing_expr
+from uhls.backend.hls.uhir.timing import TimingBinary, TimingCall, TimingExpr, TimingVar, simplify_timing_expr
 
 from .interfaces import SGUScheduleResult, SGUScheduler
 from .registry import create_builtin_scheduler

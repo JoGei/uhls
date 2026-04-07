@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from uhls.backend.uhir import (
+from uhls.backend.hls.uhir import (
     ExecutabilityGraph,
     dummy_executability_graph,
     executability_graph_from_uhir,

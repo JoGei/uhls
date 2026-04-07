@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from uhls.backend.hls import CompatibilityBinder, fsm_to_dot, lower_bind_to_fsm, lower_sched_to_bind
-from uhls.backend.uhir import parse_uhir
+from uhls.backend.hls.uhir import parse_uhir
 
 
 class FSMLoweringTests(unittest.TestCase):

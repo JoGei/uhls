@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from uhls.backend.uhir.model import UHIRDesign
+from uhls.backend.hls.uhir.model import UHIRDesign
 
 from .analysis import bind_dump_to_dot
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uhls.utils.dot import escape_dot_label as _escape
 
-from uhls.backend.uhir.model import UHIRController, UHIRDesign
+from uhls.backend.hls.uhir.model import UHIRController, UHIRDesign
 
 
 def fsm_to_dot(design: UHIRDesign) -> str:

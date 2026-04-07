@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from uhls.backend.uhir.model import UHIRDesign, UHIRNode, UHIRRegion
+from uhls.backend.hls.uhir.model import UHIRDesign, UHIRNode, UHIRRegion
 
 
 class InferStaticPass:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from uhls.backend.uhir.gopt.builtin import LoopDialectPass
-from uhls.backend.uhir import create_builtin_gopt_pass, lower_module_to_seq, parse_uhir, project_to_seq_design, run_gopt_passes
+from uhls.backend.hls.uhir.gopt.builtin import LoopDialectPass
+from uhls.backend.hls.uhir import create_builtin_gopt_pass, lower_module_to_seq, parse_uhir, project_to_seq_design, run_gopt_passes
 from uhls.frontend import lower_source_to_uir
 from uhls.middleend.uir import parse_module
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import combinations
 
-from uhls.backend.uhir.model import UHIRDesign, UHIRNode, UHIRRegion, UHIRValueBinding
-from uhls.backend.uhir.timing import TimingExpr
+from uhls.backend.hls.uhir.model import UHIRDesign, UHIRNode, UHIRRegion, UHIRValueBinding
+from uhls.backend.hls.uhir.timing import TimingExpr
 from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 from uhls.utils.graph import interval_conflicts
 

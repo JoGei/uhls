@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from uhls.backend.uhir.model import TimingValue, UHIRNode, UHIRRegion
-from uhls.backend.uhir.timing import TimingBinary, TimingCall, TimingExpr, simplify_timing_expr
+from uhls.backend.hls.uhir.model import TimingValue, UHIRNode, UHIRRegion
+from uhls.backend.hls.uhir.timing import TimingBinary, TimingCall, TimingExpr, simplify_timing_expr
 from uhls.utils.graph import topological_sort
 
 from ..interfaces import SGUScheduleResult, SGUSchedulerBase

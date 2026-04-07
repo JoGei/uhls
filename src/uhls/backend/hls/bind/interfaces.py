@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Protocol
 
-from uhls.backend.uhir.model import UHIREdge, UHIRDesign, UHIRNode, UHIRRegion, UHIRResource, UHIRValueBinding
-from uhls.backend.uhir.timing import TimingExpr
+from uhls.backend.hls.uhir.model import UHIREdge, UHIRDesign, UHIRNode, UHIRRegion, UHIRResource, UHIRValueBinding
+from uhls.backend.hls.uhir.timing import TimingExpr
 from uhls.utils.graph import intervals_overlap
 
 

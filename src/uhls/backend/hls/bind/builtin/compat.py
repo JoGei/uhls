@@ -29,8 +29,8 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from uhls.backend.uhir.model import UHIRDesign, UHIRNode, UHIRRegion, UHIRResource, UHIRValueBinding
-from uhls.backend.uhir.timing import TimingExpr
+from uhls.backend.hls.uhir.model import UHIRDesign, UHIRNode, UHIRRegion, UHIRResource, UHIRValueBinding
+from uhls.backend.hls.uhir.timing import TimingExpr
 from uhls.utils.graph import greedy_color_graph, intervals_overlap
 
 from ..interfaces import BindingOccurrence, OperationBinderBase, OperationBindingResult

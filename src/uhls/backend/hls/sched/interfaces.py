@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from collections.abc import Iterator
 from typing import Callable, Protocol
 
-from uhls.backend.uhir.model import TimingValue, UHIREdge, UHIRRegion
+from uhls.backend.hls.uhir.model import TimingValue, UHIREdge, UHIRRegion
 
 
 ScheduleInterval = tuple[TimingValue, TimingValue]

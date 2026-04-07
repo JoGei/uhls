@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 
-from uhls.backend.uhir.model import UHIREdge, UHIRDesign, UHIRNode, UHIRRegion, UHIRRegionRef
+from uhls.backend.hls.uhir.model import UHIREdge, UHIRDesign, UHIRNode, UHIRRegion, UHIRRegionRef
 
 
 @dataclass(frozen=True)

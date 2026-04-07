@@ -5,7 +5,7 @@ from pathlib import Path
 
 from uhls.backend.hls import bind_dump_to_dot, binding_to_dot, format_bind_dump, lower_alloc_to_sched, lower_sched_to_bind, parse_bind_dump_spec
 from uhls.backend.hls.bind.builtin import CompatibilityBinder, LeftEdgeBinder
-from uhls.backend.uhir import (
+from uhls.backend.hls.uhir import (
     ExecutabilityGraph,
     create_builtin_gopt_pass,
     lower_module_to_seq,

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from uhls.backend.uhir.model import UHIRDesign, UHIREdge, UHIRNode, UHIRRegion
-from uhls.backend.uhir.gopt.loops import collect_explicit_loops, collect_loop_candidates
+from uhls.backend.hls.uhir.model import UHIRDesign, UHIREdge, UHIRNode, UHIRRegion
+from uhls.backend.hls.uhir.gopt.loops import collect_explicit_loops, collect_loop_candidates
 
 
 class InferLoopsPass:

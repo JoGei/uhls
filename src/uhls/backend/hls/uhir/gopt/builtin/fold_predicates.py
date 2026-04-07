@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from uhls.backend.uhir.model import UHIREdge, UHIRDesign, UHIRNode
+from uhls.backend.hls.uhir.model import UHIREdge, UHIRDesign, UHIRNode
 
 
 class FoldPredicatesPass:

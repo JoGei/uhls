@@ -6,7 +6,7 @@ from math import ceil, log2
 import re
 from typing import Any
 
-from uhls.backend.uhir.model import (
+from uhls.backend.hls.uhir.model import (
     UHIRAssign,
     UHIRAttach,
     UHIRDesign,
@@ -31,6 +31,7 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         for controller in design.controllers
     }
     lowered = UHIRDesign(name=design.name, stage="uglir")
+    helper_signal_ids: dict[tuple[str, str], str] = {}
     memory_interfaces = _memory_interfaces(design, component_library)
     _validate_memory_interface_schedule(top_controller, memory_interfaces)
     lowered.inputs = [
@@ -68,7 +69,9 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
 
     for resource in design.resources:
         if resource.kind == "fu":
-            lowered.resources.append(UHIRResource("inst", resource.id, resource.value))
+            component_kind = None if component_library is None else _component_kind(component_library, resource.value)
+            if component_kind != "memory":
+                lowered.resources.append(UHIRResource("inst", resource.id, resource.value))
             if component_library is None:
                 lowered.resources.append(UHIRResource("net", f"{resource.id}_go", "i1"))
                 result_type = _instance_result_type(design, resource.id)
@@ -126,6 +129,24 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                 lowered.attachments.append(UHIRAttach(resource.id, "y", f"{resource.id}_y"))
             continue
 
+        if _component_kind(component_library, resource.value) == "memory":
+            for port_name, port_type in _instance_input_ports(component_library, resource.value):
+                if port_name == "op" or port_name in _component_issue_bindings(component_library, resource.value):
+                    continue
+                _lower_explicit_input_mux(
+                    lowered,
+                    design,
+                    top_controller,
+                    controller_codes,
+                    component_library,
+                    helper_signal_ids,
+                    resource.id,
+                    resource.value,
+                    port_name,
+                    port_type,
+                )
+            continue
+
         port_names = _instance_port_names(component_library, resource.value)
         issue_bindings = _component_issue_bindings(component_library, resource.value)
         for port_name, binding_key in issue_bindings.items():
@@ -156,21 +177,17 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         for port_name, port_type in _instance_input_ports(component_library, resource.value):
             if port_name == "op" or port_name in issue_bindings:
                 continue
-            lowered.assigns.append(
-                UHIRAssign(
-                    f"{resource.id}_{port_name}",
-                    _operand_port_expr(
-                        design,
-                        design.controllers,
-                        top_controller,
-                        resource.id,
-                        resource.value,
-                        port_name,
-                        port_type,
-                        controller_codes,
-                        component_library,
-                    ),
-                )
+            _lower_explicit_input_mux(
+                lowered,
+                design,
+                top_controller,
+                controller_codes,
+                component_library,
+                helper_signal_ids,
+                resource.id,
+                resource.value,
+                port_name,
+                port_type,
             )
         for port_name in port_names:
             lowered.attachments.append(UHIRAttach(resource.id, port_name, f"{resource.id}_{port_name}"))
@@ -266,11 +283,42 @@ def _next_state_expr(controller, state_code: dict[str, int], top_controller) -> 
     branches: list[str] = []
     for transition in controller.transitions:
         condition = transition.attributes.get("when")
-        transition_condition = "true" if not isinstance(condition, str) or not condition else _rewrite_controller_expr(condition, controller, top_controller)
-        branches.append(
-            f"({ _state_eq_expr(state_signal, state_code[transition.source]) } && ({transition_condition})) ? {state_code[transition.target]}"
-        )
+        state_guard = _state_eq_expr(state_signal, state_code[transition.source])
+        transition_condition = _normalized_transition_condition(condition, controller, top_controller)
+        if transition_condition is None:
+            branches.append(f"{state_guard} ? {state_code[transition.target]}")
+        else:
+            branches.append(f"({state_guard} && {transition_condition}) ? {state_code[transition.target]}")
     return " : ".join(branches) + f" : {state_code['IDLE']}"
+
+
+def _normalized_transition_condition(condition: object, controller, top_controller) -> str | None:
+    if not isinstance(condition, str) or not condition:
+        return None
+    rewritten = _rewrite_controller_expr(condition, controller, top_controller).strip()
+    if rewritten in {"true", "(true)"}:
+        return None
+    normalized = _strip_one_outer_paren_pair(rewritten)
+    if controller.name == top_controller.name:
+        if normalized == "req_valid && req_ready":
+            return "req_fire"
+        if normalized == "resp_valid && resp_ready":
+            return "resp_fire"
+    return normalized
+
+
+def _strip_one_outer_paren_pair(expr: str) -> str:
+    if not (expr.startswith("(") and expr.endswith(")")):
+        return expr
+    depth = 0
+    for index, char in enumerate(expr):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0 and index != len(expr) - 1:
+                return expr
+    return expr[1:-1].strip()
 
 
 def _issue_expr(controllers, top_controller, resource_id: str, controller_codes: dict[str, dict[str, int]]) -> str:
@@ -324,10 +372,11 @@ def _select_expr(
     component_library: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     choices = _register_state_sources(design, controllers, top_controller, register, controller_codes, component_library)
+    labels = _register_mux_case_labels(register, [source for _, source in choices])
     if not choices:
-        return "hold"
-    branches = [f"{condition} ? {source}" for condition, source in choices]
-    return " : ".join(branches) + " : hold"
+        return "HOLD"
+    branches = [f"{condition} ? {labels[source]}" for condition, source in choices]
+    return " : ".join(branches) + " : HOLD"
 
 
 def _build_register_mux(
@@ -337,12 +386,14 @@ def _build_register_mux(
 ) -> UHIRGlueMux:
     register_type = _resource_value(design, register)
     glue_mux = UHIRGlueMux(name=f"mx_{register}", type=register_type, select=f"sel_{register}")
-    glue_mux.cases.append(UHIRGlueMuxCase("hold", register))
+    sources = [register, *_register_possible_sources(design, register, component_library)]
+    labels = _register_mux_case_labels(register, sources)
+    glue_mux.cases.append(UHIRGlueMuxCase("HOLD", register))
     seen_sources = {register}
     for source in _register_possible_sources(design, register, component_library):
         if source in seen_sources:
             continue
-        glue_mux.cases.append(UHIRGlueMuxCase(source, source))
+        glue_mux.cases.append(UHIRGlueMuxCase(labels[source], source))
         seen_sources.add(source)
     return glue_mux
 
@@ -755,7 +806,7 @@ def _validate_memory_interface_schedule(controller, memory_interfaces: dict[str,
             memory_name = instance_to_memory.get(instance_id)
             if memory_name is None:
                 continue
-            memory_issues.setdefault(memory_name, []).append(node_id or issue)
+            memory_issues.setdefault(memory_name, []).append(_issued_node_base_id(node_id or issue))
         for memory_name, node_ids in memory_issues.items():
             distinct_node_ids = sorted(set(node_ids))
             if len(distinct_node_ids) > 1:
@@ -785,7 +836,7 @@ def _operand_port_expr(
                 instance, _, node_id = issue.partition("<-")
                 if instance != resource_id or not node_id:
                     continue
-                node = node_by_id.get(node_id)
+                node = node_by_id.get(_issued_node_base_id(node_id))
                 if node is None:
                     continue
                 binding_key = _component_port_binding(component_library, component_name, node.opcode, port_name)
@@ -802,6 +853,209 @@ def _operand_port_expr(
         return next(iter(unique_exprs))
     parts = [f"{condition} ? {expr}" for condition, expr in branches]
     return " : ".join(parts) + f" : {_default_net_expr(port_type)}"
+
+
+def _operand_port_choices(
+    design: UHIRDesign,
+    controllers,
+    top_controller,
+    resource_id: str,
+    component_name: str,
+    port_name: str,
+    controller_codes: dict[str, dict[str, int]],
+    component_library: dict[str, dict[str, Any]],
+) -> list[tuple[str, str]]:
+    node_by_id = {node.id: node for region in design.regions for node in region.nodes}
+    choices: list[tuple[str, str]] = []
+    for controller in controllers:
+        for emit in controller.emits:
+            for issue in _iter_issue_actions(emit.attributes):
+                instance, _, node_id = issue.partition("<-")
+                if instance != resource_id or not node_id:
+                    continue
+                node = node_by_id.get(_issued_node_base_id(node_id))
+                if node is None:
+                    continue
+                binding_key = _component_port_binding(component_library, component_name, node.opcode, port_name)
+                if binding_key is None:
+                    continue
+                source_expr = _binding_key_expr(design, node, binding_key, component_library)
+                condition = _state_eq_expr(
+                    _controller_state_id(controller, top_controller),
+                    controller_codes[controller.name][emit.state],
+                )
+                choices.append((condition, source_expr))
+    return choices
+
+
+def _lower_explicit_input_mux(
+    lowered: UHIRDesign,
+    design: UHIRDesign,
+    top_controller,
+    controller_codes: dict[str, dict[str, int]],
+    component_library: dict[str, dict[str, Any]],
+    helper_signal_ids: dict[tuple[str, str], str],
+    resource_id: str,
+    component_name: str,
+    port_name: str,
+    port_type: str,
+) -> None:
+    target_signal = f"{resource_id}_{port_name}"
+    select_signal = f"sel_{resource_id}_{port_name}"
+    mux_name = f"mx_{resource_id}_{port_name}"
+
+    lowered.resources.append(UHIRResource("net", select_signal, "ctrl"))
+    lowered.resources.append(UHIRResource("mux", mux_name, port_type))
+
+    default_signal = _materialize_glue_source_signal(
+        lowered,
+        _default_net_expr(port_type),
+        port_type,
+        helper_signal_ids,
+    )
+    operand_choices = _operand_port_choices(
+        design,
+        design.controllers,
+        top_controller,
+        resource_id,
+        component_name,
+        port_name,
+        controller_codes,
+        component_library,
+    )
+    choices = [
+        (
+            condition,
+            source_expr,
+            _materialize_glue_source_signal(lowered, source_expr, port_type, helper_signal_ids),
+        )
+        for condition, source_expr in operand_choices
+    ]
+    labels = _input_mux_case_labels(_default_net_expr(port_type), default_signal, choices)
+
+    if choices:
+        select_expr = " : ".join(f"{condition} ? {labels[source_signal]}" for condition, _source_expr, source_signal in choices)
+        select_expr = f"{select_expr} : {labels[default_signal]}"
+    else:
+        select_expr = labels[default_signal]
+    lowered.assigns.append(UHIRAssign(select_signal, select_expr))
+    lowered.assigns.append(UHIRAssign(target_signal, mux_name))
+
+    glue_mux = UHIRGlueMux(name=mux_name, type=port_type, select=select_signal)
+    seen_sources: set[str] = set()
+    for source_signal in [default_signal, *(source for _, _expr, source in choices)]:
+        if source_signal in seen_sources:
+            continue
+        seen_sources.add(source_signal)
+        glue_mux.cases.append(UHIRGlueMuxCase(labels[source_signal], source_signal))
+    lowered.glue_muxes.append(glue_mux)
+
+
+def _materialize_glue_source_signal(
+    lowered: UHIRDesign,
+    source_expr: str,
+    port_type: str,
+    helper_signal_ids: dict[tuple[str, str], str],
+) -> str:
+    if _is_known_uglir_signal(lowered, source_expr):
+        return source_expr
+    key = (source_expr, port_type)
+    existing = helper_signal_ids.get(key)
+    if existing is not None:
+        return existing
+    signal_id = _fresh_helper_signal_id(lowered, source_expr, port_type)
+    lowered.resources.append(UHIRResource("net", signal_id, port_type))
+    lowered.assigns.append(UHIRAssign(signal_id, source_expr))
+    helper_signal_ids[key] = signal_id
+    return signal_id
+
+
+def _is_known_uglir_signal(lowered: UHIRDesign, signal_name: str) -> bool:
+    if signal_name in {port.name for port in [*lowered.inputs, *lowered.outputs]}:
+        return True
+    return any(resource.id == signal_name for resource in lowered.resources if resource.kind in {"reg", "net", "mux"})
+
+
+def _fresh_helper_signal_id(lowered: UHIRDesign, source_expr: str, port_type: str) -> str:
+    prefix = "const" if _looks_like_constant_expr(source_expr) else "src"
+    base = f"{prefix}_{port_type.replace('<', '_').replace('>', '_').replace('[', '_').replace(']', '_').replace(':', '_')}"
+    existing = {resource.id for resource in lowered.resources}
+    index = 0
+    while True:
+        candidate = f"{base}_{index}"
+        if candidate not in existing:
+            return candidate
+        index += 1
+
+
+def _looks_like_constant_expr(expr: str) -> bool:
+    if expr in {"true", "false"}:
+        return True
+    return _looks_like_literal(expr)
+
+
+def _register_mux_case_labels(register: str, sources: list[str]) -> dict[str, str]:
+    labels = {register: "HOLD"}
+    other_sources = [source for source in sources if source != register]
+    labels.update(_stable_source_labels(other_sources))
+    return labels
+
+
+def _input_mux_case_labels(
+    default_expr: str,
+    default_signal: str,
+    choices: list[tuple[str, str, str]],
+) -> dict[str, str]:
+    ordered_sources = [default_signal, *(source for _condition, _expr, source in choices)]
+    seeds: dict[str, str] = {default_signal: _source_label_seed(default_expr)}
+    for _condition, source_expr, source_signal in choices:
+        seeds.setdefault(source_signal, _source_label_seed(source_expr))
+    return _stable_source_labels(ordered_sources, preferred=seeds)
+
+
+def _stable_source_labels(sources: list[str], preferred: dict[str, str] | None = None) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    used: dict[str, int] = {}
+    for source in sources:
+        if source in labels:
+            continue
+        base = _sanitize_mux_label((preferred or {}).get(source, _source_label_seed(source)))
+        count = used.get(base, 0)
+        label = base if count == 0 else f"{base}_{count}"
+        used[base] = count + 1
+        labels[source] = label
+    return labels
+
+
+def _source_label_seed(source: str) -> str:
+    if source in {"false", "0:i1"}:
+        return "FALSE"
+    if source == "true":
+        return "TRUE"
+    if source.startswith("0:"):
+        return "ZERO"
+    if ":" in source and _looks_like_literal(source):
+        return f"CONST_{source}"
+    return f"SRC_{source}"
+
+
+def _looks_like_literal(text: str) -> bool:
+    head, _, _tail = text.partition(":")
+    if not head:
+        return False
+    if head[0] == "-":
+        head = head[1:]
+    return bool(head) and head.isdigit()
+
+
+def _sanitize_mux_label(text: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_]+", "_", text).strip("_")
+    sanitized = re.sub(r"_+", "_", sanitized)
+    if not sanitized:
+        sanitized = "SRC"
+    if sanitized[0].isdigit():
+        sanitized = f"SRC_{sanitized}"
+    return sanitized.upper()
 
 
 def _instance_port_names(component_library: dict[str, dict[str, Any]], component_name: str) -> tuple[str, ...]:
@@ -1062,7 +1316,7 @@ def _opcode_expr(
                 instance, _, node_id = issue.partition("<-")
                 if instance != resource_id or not node_id:
                     continue
-                opcode_name = node_opcode.get(node_id)
+                opcode_name = node_opcode.get(_issued_node_base_id(node_id))
                 if opcode_name is None:
                     continue
                 support = supports.get(opcode_name)
@@ -1094,3 +1348,7 @@ def _iter_issue_actions(attributes: dict[str, Any]) -> tuple[str, ...]:
             if issue:
                 normalized.append(issue)
     return tuple(normalized)
+
+
+def _issued_node_base_id(node_id: str) -> str:
+    return node_id.split("@", 1)[0]

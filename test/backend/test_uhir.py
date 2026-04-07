@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from uhls.backend.uhir import UHIRParseError, format_uhir, parse_timing_expr, parse_uhir, to_dot
+from uhls.backend.hls.uhir import UHIRParseError, format_uhir, parse_timing_expr, parse_uhir, to_dot
 
 
 class UHIRParserTests(unittest.TestCase):

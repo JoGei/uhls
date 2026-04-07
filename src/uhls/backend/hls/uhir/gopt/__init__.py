@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from uhls.backend.uhir.model import UHIRDesign
+from uhls.backend.hls.uhir.model import UHIRDesign
 from uhls.middleend.passes.util import PassContext, PassManager
 
 from .registry import (

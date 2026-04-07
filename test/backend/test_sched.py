@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from uhls.backend.hls import SGUScheduleResult, lower_alloc_to_sched
-from uhls.backend.uhir import (
+from uhls.backend.hls.uhir import (
     ExecutabilityGraph,
     create_builtin_gopt_pass,
     lower_module_to_seq,
@@ -11,7 +11,7 @@ from uhls.backend.uhir import (
     parse_uhir,
     run_gopt_passes,
 )
-from uhls.backend.uhir.timing import parse_timing_expr
+from uhls.backend.hls.uhir.timing import parse_timing_expr
 from uhls.frontend import lower_source_to_uir
 from uhls.middleend.uir import BinaryOp, Block, CallOp, CompareOp, CondBranchOp, Function, Module, Parameter, ReturnOp
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from uhls.backend.uhir.model import UHIRDesign, UHIRResource, UHIRValueBinding
+from uhls.backend.hls.uhir.model import UHIRDesign, UHIRResource, UHIRValueBinding
 from uhls.utils.graph import greedy_color_graph
 
 from ..interfaces import BindingOccurrence, OperationBinderBase, OperationBindingResult

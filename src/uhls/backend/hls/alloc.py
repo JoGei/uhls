@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from uhls.backend.uhir.model import (
+from uhls.backend.hls.uhir.model import (
     UHIRConstant,
     UHIRDesign,
     UHIREdge,

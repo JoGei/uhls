@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 
 from uhls.utils.graph import topological_sort
-from uhls.backend.uhir.timing import TimingExpr
-from uhls.backend.uhir.model import (
+from uhls.backend.hls.uhir.timing import TimingExpr
+from uhls.backend.hls.uhir.model import (
     UHIRConstant,
     UHIRController,
     UHIRControllerEmit,

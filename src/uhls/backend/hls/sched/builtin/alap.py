@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from uhls.backend.uhir.model import UHIRNode, UHIRRegion
+from uhls.backend.hls.uhir.model import UHIRNode, UHIRRegion
 from uhls.utils.graph import topological_sort
 
 from ..interfaces import SGUScheduleResult, SGUSchedulerBase

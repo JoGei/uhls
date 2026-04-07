@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from uhls.backend.uhir.model import (
+from uhls.backend.hls.uhir.model import (
     UHIRConstant,
     UHIRDesign,
     UHIREdge,

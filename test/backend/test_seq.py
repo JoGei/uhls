@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from uhls.backend.uhir import build_sequencing_graph, format_uhir, lower_module_to_seq, parse_uhir, to_dot
+from uhls.backend.hls.uhir import build_sequencing_graph, format_uhir, lower_module_to_seq, parse_uhir, to_dot
 from uhls.frontend import lower_source_to_uir
 from uhls.middleend.uir import BinaryOp, Block, CallOp, Function, Module, Parameter, ReturnOp, parse_module
 

@@ -7,6 +7,8 @@ from uhls.utils.graph import topological_sort
 from .model import (
     AttributeValue,
     TimingValue,
+    UHIRAddressMap,
+    UHIRAddressMapEntry,
     UHIRAssign,
     UHIRAttach,
     UHIRConstant,
@@ -39,6 +41,9 @@ def format_uhir(design: UHIRDesign) -> str:
         lines.append(f"output {port.name} : {port.type}")
     for const_decl in design.constants:
         lines.append(f"const  {const_decl.name} = {const_decl.value} : {const_decl.type}")
+    for address_map in design.address_maps:
+        lines.append("")
+        lines.extend(format_address_map(address_map))
 
     if design.schedule is not None:
         lines.append(f"schedule kind={design.schedule.kind}")
@@ -123,6 +128,21 @@ def format_controller_link(link: UHIRControllerLink) -> str:
 def format_assign(assign: UHIRAssign) -> str:
     """Render one uglir combinational assignment."""
     return f"assign {assign.target} = {assign.expr}"
+
+
+def format_address_map(address_map: UHIRAddressMap) -> list[str]:
+    """Render one top-level address map declaration."""
+    lines = [f"address_map {address_map.name} {{"]
+    for entry in address_map.entries:
+        lines.append(f"  {format_address_map_entry(entry)}")
+    lines.append("}")
+    return lines
+
+
+def format_address_map_entry(entry: UHIRAddressMapEntry) -> str:
+    """Render one address-map entry."""
+    head = f"{entry.kind} {entry.name}"
+    return head if not entry.attributes else f"{head} {_format_attrs(entry.attributes)}"
 
 
 def format_attach(attachment: UHIRAttach) -> str:
@@ -267,6 +287,8 @@ def format_resource(resource: UHIRResource) -> str:
         return f"reg {resource.id} : {resource.value}"
     if resource.kind == "net":
         return f"net {resource.id} : {resource.value}"
+    if resource.kind == "mem":
+        return f"mem {resource.id} : {resource.value}"
     if resource.kind == "inst":
         return f"inst {resource.id} : {resource.value}"
     if resource.kind == "mux":

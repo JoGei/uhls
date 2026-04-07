@@ -206,6 +206,46 @@ storage instance in the emitted bare-core RTL.
 It should also serve as the main validation point for hardware structure before
 RTL printing.
 
+== Address Maps
+
+Wrapped `µglIR` designs may carry explicit software-visible address maps.
+
+The first use is wrapper/protocol composition, where `glue` generates an
+address map from the protocol plan so the wrapper register and memory layout is
+visible in the exchange artifact itself instead of being only implicit in the
+RTL emitter.
+
+Example:
+
+[source,text]
+----
+address_map wishbone {
+  register control_status offset=32'h0000_0000 access=rw symbol=WB_REG_CONTROL_STATUS
+  register x offset=32'h0000_0100 access=rw symbol=WB_REG_IN_X type=i32
+  register result offset=32'h0000_0200 access=ro symbol=WB_REG_OUT_RESULT type=i32
+  memory A offset=32'h0000_1000 span=32'h0000_0010 access=rw symbol=WB_MEM_A_BASE word_t=i32 depth=4
+}
+----
+
+Intended meaning:
+
+* `register`
+  * one scalar software-visible register location
+* `memory`
+  * one software-visible memory window
+* `offset`
+  * protocol-relative base offset
+* `span`
+  * byte span for one memory window
+* `access`
+  * software-visible access policy such as `rw`, `ro`, `rw_err`, `ro_err`
+* `symbol`
+  * corresponding generated symbolic constant name
+
+The current `rtl` backends do not infer behavior from the `address_map` block
+alone; it is generated metadata for software/integration tooling and for
+keeping wrapper layout explicit in the `µglIR` exchange artifact.
+
 == Generated Signal Naming Convention
 
 The generated µglIR emitted by µhLS uses a simple storage-versus-combinational

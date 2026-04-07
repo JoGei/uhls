@@ -131,6 +131,23 @@ class UHIRConstant:
 
 
 @dataclass(slots=True, frozen=True)
+class UHIRAddressMapEntry:
+    """One software-visible address-map entry."""
+
+    kind: str
+    name: str
+    attributes: dict[str, AttributeValue] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class UHIRAddressMap:
+    """One top-level address map declaration."""
+
+    name: str
+    entries: list["UHIRAddressMapEntry"] = field(default_factory=list)
+
+
+@dataclass(slots=True, frozen=True)
 class UHIRSchedule:
     """One schedule declaration."""
 
@@ -241,6 +258,7 @@ class UHIRDesign:
     inputs: list[UHIRPort] = field(default_factory=list)
     outputs: list[UHIRPort] = field(default_factory=list)
     constants: list[UHIRConstant] = field(default_factory=list)
+    address_maps: list[UHIRAddressMap] = field(default_factory=list)
     schedule: UHIRSchedule | None = None
     resources: list[UHIRResource] = field(default_factory=list)
     controllers: list[UHIRController] = field(default_factory=list)

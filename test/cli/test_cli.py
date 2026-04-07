@@ -2694,6 +2694,8 @@ region proc_add1 kind=procedure {
             )
 
             uglir_text = uglir_path.read_text(encoding="utf-8")
+            self.assertIn("address_map wishbone {", uglir_text)
+            self.assertIn("register control_status offset=32'h0000_0000 access=rw symbol=WB_REG_CONTROL_STATUS", uglir_text)
             self.assertIn("input  wb_adr_i : u32", uglir_text)
             self.assertIn("output wb_dat_o : u32", uglir_text)
             self.assertIn("WB_REG_CONTROL_STATUS =", uglir_text)
@@ -2756,6 +2758,7 @@ region proc_add1 kind=procedure {
             )
 
             uglir_text = uglir_path.read_text(encoding="utf-8")
+            self.assertIn("address_map wishbone {", uglir_text)
             self.assertIn("output wb_err_o : i1", uglir_text)
             self.assertIn("net wb_hit_n : i1", uglir_text)
             self.assertIn("assign wb_ack_o = wb_req_n & wb_hit_n", uglir_text)

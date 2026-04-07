@@ -3,6 +3,8 @@
 from typing import TYPE_CHECKING
 
 from .model import (
+    UHIRAddressMap,
+    UHIRAddressMapEntry,
     UHIRAssign,
     UHIRAttach,
     UHIRConstant,
@@ -117,6 +119,8 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "ExecutabilityGraph",
     "GOptPassSpec",
+    "UHIRAddressMap",
+    "UHIRAddressMapEntry",
     "UHIRAssign",
     "UHIRAttach",
     "UHIRConstant",

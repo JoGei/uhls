@@ -118,6 +118,11 @@ class RTLLoweringTests(unittest.TestCase):
         wrapped_uglir = wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone")
         verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
 
+        self.assertEqual(len(wrapped_uglir.address_maps), 1)
+        self.assertEqual(wrapped_uglir.address_maps[0].name, "wishbone")
+        self.assertEqual(wrapped_uglir.address_maps[0].entries[0].name, "control_status")
+        self.assertEqual(wrapped_uglir.address_maps[0].entries[1].attributes["offset"], "32'h0000_0100")
+        self.assertEqual(wrapped_uglir.address_maps[0].entries[2].attributes["access"], "ro")
         self.assertIn("module add1 #(", verilog)
         self.assertIn("parameter [31:0] WB_BASE_ADDR = 32'h0000_0000", verilog)
         self.assertIn("input wb_cyc_i,", verilog)
@@ -176,6 +181,8 @@ class RTLLoweringTests(unittest.TestCase):
         wrapped_uglir = wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone+err")
         verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
 
+        self.assertEqual(len(wrapped_uglir.address_maps), 1)
+        self.assertEqual(wrapped_uglir.address_maps[0].entries[0].attributes["symbol"], "WB_REG_CONTROL_STATUS")
         self.assertIn("output wb_err_o", verilog)
         self.assertIn("wire wb_hit_n;", verilog)
         self.assertIn("assign wb_ack_o = wb_req_n & wb_hit_n;", verilog)

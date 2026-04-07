@@ -161,6 +161,72 @@ class UHIRParserTests(unittest.TestCase):
         self.assertEqual(str(design.regions[0].nodes[0].attributes["delay"]), "T * ii + rd")
         self.assertEqual(str(design.regions[0].nodes[0].attributes["end"]), "T * ii + rd - 1")
 
+    def test_parse_uglir_with_address_map(self) -> None:
+        design = parse_uhir(
+            """
+            design wrapped
+            stage uglir
+            input  clk : clock
+            input  idx : u2
+            output wb_ack_o : i1
+            output A_rdata : i32
+            const  WB_REG_CONTROL_STATUS = WB_BASE_ADDR + 32'h0000_0000 : u32
+
+            address_map wishbone {
+              register control_status offset=32'h0000_0000 access=rw symbol=WB_REG_CONTROL_STATUS
+              register x offset=32'h0000_0100 access=rw symbol=WB_REG_IN_X type=i32
+              memory A offset=32'h0000_1000 span=32'h0000_0010 access=rw symbol=WB_MEM_A_BASE word_t=i32 depth=4
+            }
+
+            resources {
+              net wb_req_n : i1
+              mem A_mem_q : i32[4]
+            }
+
+            assign wb_ack_o = wb_req_n
+            assign A_rdata = A_mem_q[idx]
+
+            seq clk {
+              A_mem_q[idx] <= 0:i32
+            }
+            """
+        )
+
+        self.assertEqual(len(design.address_maps), 1)
+        self.assertEqual(design.address_maps[0].name, "wishbone")
+        self.assertEqual(design.address_maps[0].entries[0].kind, "register")
+        self.assertEqual(design.address_maps[0].entries[1].attributes["type"], "i32")
+        self.assertEqual(design.address_maps[0].entries[2].attributes["depth"], 4)
+        self.assertEqual(design.resources[1].kind, "mem")
+        self.assertEqual(design.seq_blocks[0].updates[0].target, "A_mem_q[idx]")
+        self.assertIn("address_map wishbone {", format_uhir(design))
+
+    def test_parse_uglir_accepts_expression_sequential_enable(self) -> None:
+        design = parse_uhir(
+            """
+            design gated
+            stage uglir
+            input  clk : clock
+            input  a : i1
+            input  b : i1
+            output y : i1
+            resources {
+              reg r_q : i1
+            }
+
+            assign y = r_q
+
+            seq clk {
+              r_q <= false
+              if a && b {
+                r_q <= true
+              }
+            }
+            """
+        )
+
+        self.assertEqual(design.seq_blocks[0].updates[1].enable, "a && b")
+
     def test_parse_fsm_uhir_with_controller_shell(self) -> None:
         design = parse_uhir(
             """

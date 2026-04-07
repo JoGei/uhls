@@ -6,7 +6,17 @@ from copy import deepcopy
 from dataclasses import dataclass
 import re
 
-from uhls.backend.hls.uhir.model import UHIRAssign, UHIRConstant, UHIRDesign, UHIRPort, UHIRResource, UHIRSeqBlock, UHIRSeqUpdate
+from uhls.backend.hls.uhir.model import (
+    UHIRAddressMap,
+    UHIRAddressMapEntry,
+    UHIRAssign,
+    UHIRConstant,
+    UHIRDesign,
+    UHIRPort,
+    UHIRResource,
+    UHIRSeqBlock,
+    UHIRSeqUpdate,
+)
 
 from ..wrap import SlaveWrapperPlan
 
@@ -146,6 +156,7 @@ def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWr
         design.constants.append(UHIRConstant(port.symbol, f"WB_BASE_ADDR + {_u32(port.address)}", "u32"))
     for window in protocol.memory_windows:
         design.constants.append(UHIRConstant(window.symbol, f"WB_BASE_ADDR + {_u32(window.base_address)}", "u32"))
+    design.address_maps.append(_wishbone_address_map(protocol))
 
     design.resources.extend(
         [
@@ -422,6 +433,66 @@ def _wishbone_hit_expr(protocol: WishboneSlaveProtocolPlan) -> str:
     terms.extend(f"(wb_adr_i == {port.symbol})" for port in protocol.scalar_outputs)
     terms.extend(f"{window.base}_bus_hit_n" for window in protocol.memory_windows)
     return " || ".join(terms) if terms else "false"
+
+
+def _wishbone_address_map(protocol: WishboneSlaveProtocolPlan) -> UHIRAddressMap:
+    address_map = UHIRAddressMap("wishbone")
+    address_map.entries.append(
+        UHIRAddressMapEntry(
+            "register",
+            "control_status",
+            {
+                "offset": _u32(protocol.control_status_address),
+                "access": "rw",
+                "symbol": "WB_REG_CONTROL_STATUS",
+            },
+        )
+    )
+    for port in protocol.scalar_inputs:
+        address_map.entries.append(
+            UHIRAddressMapEntry(
+                "register",
+                port.name,
+                {
+                    "offset": _u32(port.address),
+                    "access": "rw",
+                    "symbol": port.symbol,
+                    "type": port.type,
+                },
+            )
+        )
+    for port in protocol.scalar_outputs:
+        address_map.entries.append(
+            UHIRAddressMapEntry(
+                "register",
+                port.name,
+                {
+                    "offset": _u32(port.address),
+                    "access": "ro",
+                    "symbol": port.symbol,
+                    "type": port.type,
+                },
+            )
+        )
+    for window in protocol.memory_windows:
+        access = "rw" if window.has_write else "ro"
+        if protocol.err_terminate:
+            access = f"{access}_err"
+        address_map.entries.append(
+            UHIRAddressMapEntry(
+                "memory",
+                window.base,
+                {
+                    "offset": _u32(window.base_address),
+                    "span": _u32(window.span_bytes),
+                    "access": access,
+                    "symbol": window.symbol,
+                    "word_t": window.data_type,
+                    "depth": _memory_depth(window),
+                },
+            )
+        )
+    return address_map
 
 
 def _wishbone_masked_write_expr(current_expr: str, write_data_expr: str, select_expr: str, type_hint: str) -> str:

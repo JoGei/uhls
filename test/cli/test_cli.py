@@ -1496,6 +1496,107 @@ seq clk {
                 self.assertEqual(main(["lint", str(path)]), 0)
             self.assertEqual(stdout.getvalue().strip(), "ok")
 
+    def test_view_command_renders_uglir_mmio_pretty(self) -> None:
+        uglir = """design wrapped
+stage uglir
+input  clk : clock
+input  rst : i1
+input  obi_req_i : i1
+input  obi_addr_i : u32
+output obi_gnt_o : i1
+output obi_rvalid_o : i1
+output obi_rdata_o : u32
+address_map obi {
+  register control_status offset=32'h0000_0000 access=rw symbol=OBI_REG_CONTROL_STATUS
+  register x offset=32'h0000_0100 access=rw symbol=OBI_REG_IN_X type=i32
+  register result offset=32'h0000_0200 access=ro symbol=OBI_REG_OUT_RESULT type=i32
+  memory A offset=32'h0000_1000 span=32'h0000_0010 access=ro symbol=OBI_MEM_A_BASE word_t=i32 depth=4
+}
+resources {
+  reg x_q : i32
+  reg result_q : i32
+  mem A_mem_q : i32[4]
+}
+assign obi_gnt_o = true
+assign obi_rvalid_o = false
+assign obi_rdata_o = 0:u32
+seq clk {
+  if rst {
+    x_q <= 0:i32
+  } else {
+    x_q <= x_q
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "wrapped.uglir"
+            path.write_text(uglir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["view", str(path), "--what", "mmio"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn("design wrapped mmio", rendered)
+            self.assertIn("map obi", rendered)
+            self.assertIn("register control_status range=[0x0 : 0x3] access=rw", rendered)
+            self.assertIn("bit[0] done: read-only completion-latched status; write 1 starts execution and clears done", rendered)
+            self.assertIn("bit[3] req_ready: core can accept a new request", rendered)
+            self.assertIn("register x range=[0x100 : 0x103] access=rw symbol=OBI_REG_IN_X type=i32", rendered)
+            self.assertIn("register result range=[0x200 : 0x203] access=ro symbol=OBI_REG_OUT_RESULT type=i32", rendered)
+            self.assertIn("bits[31:0] data: software-programmable scalar input", rendered)
+            self.assertIn("memory A range=[0x1000 : 0x100f] access=ro", rendered)
+
+    def test_view_command_renders_uglir_mmio_dot(self) -> None:
+        uglir = """design wrapped
+stage uglir
+input  clk : clock
+input  rst : i1
+input  wb_cyc_i : i1
+input  wb_stb_i : i1
+output wb_ack_o : i1
+output wb_dat_o : u32
+address_map wishbone {
+  register control_status offset=32'h0000_0000 access=rw symbol=WB_REG_CONTROL_STATUS
+  register x offset=32'h0000_0100 access=rw symbol=WB_REG_IN_X type=i32
+  memory A offset=32'h0000_1000 span=32'h0000_0010 access=rw symbol=WB_MEM_A_BASE word_t=i32 depth=4
+}
+resources {
+  reg x_q : i32
+  mem A_mem_q : i32[4]
+}
+assign wb_ack_o = true
+assign wb_dat_o = 0:u32
+seq clk {
+  if rst {
+    x_q <= 0:i32
+  } else {
+    x_q <= x_q
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "wrapped.uglir"
+            path.write_text(uglir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["view", str(path), "--what", "mmio", "--dot"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn('digraph "wrapped.mmio"', rendered)
+            self.assertIn('label="wrapper wrapped";', rendered)
+            self.assertIn('bus [label="WISHBONE interface"];', rendered)
+            self.assertIn('mmio_map [shape=plain, label=<', rendered)
+            self.assertIn('<B>WISHBONE MMIO</B>', rendered)
+            self.assertIn("<B>rel. address range</B>", rendered)
+            self.assertIn("<TD>reg</TD><TD>control_status</TD><TD>[0x0 : 0x3]</TD><TD>rw</TD>", rendered)
+            self.assertIn("<TD>mem</TD><TD>A</TD><TD>[0x1000 : 0x100f]</TD><TD>rw</TD>", rendered)
+            self.assertIn('bus -> mmio_map [label="address map"];', rendered)
+            self.assertIn('core [label="HLS core\\nwrapped_core"];', rendered)
+            self.assertIn('label="memory A', rendered)
+            self.assertNotIn('label="external ports', rendered)
+
     def test_lint_accepts_component_library_json(self) -> None:
         library = {
             "components": {

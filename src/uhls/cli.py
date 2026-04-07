@@ -38,7 +38,13 @@ from uhls.backend.hls import (
     wrap_uglir_design,
 )
 from uhls.backend.hls.lib import import_verilog_component_stub, validate_component_library
-from uhls.backend.hls.uglir import format_uglir, parse_uglir_file
+from uhls.backend.hls.uglir import (
+    UGLIRParseError,
+    format_uglir,
+    parse_uglir_file,
+    render_uglir_view,
+    supported_uglir_view_values,
+)
 from uhls.backend.hls.uhir import (
     ExecutabilityGraph,
     GOptPassSpec,
@@ -1031,7 +1037,11 @@ def _supported_view_values_for_input(input_path: Path) -> tuple[str, ...] | None
     if suffix == ".json":
         return ("exg",)
     if suffix == ".uglir":
-        return ("uglir",)
+        try:
+            design = parse_uglir_file(input_path)
+        except (OSError, UGLIRParseError, ValueError):
+            return None
+        return supported_uglir_view_values(design)
     if suffix == ".uhir":
         try:
             design = parse_uhir_file(input_path)
@@ -1191,11 +1201,15 @@ def _render_uglir_view(
     del compact
     if function_name is not None or block_name is not None:
         raise CLIError("'view' only supports --function/--block for canonical µIR inputs")
-    supported = ("uglir",)
-    view_name = _select_view_name("µglIR", backend, what_name, supported, default_pretty="uglir")
-    if backend != "pretty":
-        raise _unsupported_view_backend("µglIR", view_name, backend, ("pretty",))
-    return format_uglir(design)
+    supported = supported_uglir_view_values(design)
+    view_name = _select_view_name("µglIR", backend, what_name, supported, default_pretty="uglir", default_dot="mmio" if design.address_maps else None)
+    try:
+        return render_uglir_view(design, backend=backend, view_name=view_name)
+    except ValueError as exc:
+        message = str(exc)
+        if "only supports --pretty" in message:
+            raise _unsupported_view_backend("µglIR", view_name, backend, ("pretty",))
+        raise CLIError(message) from exc
 
 
 def _render_json_view(input_path: Path, *, backend: str, what_name: str | None) -> str:

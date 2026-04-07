@@ -933,7 +933,7 @@ def glue_cmd(
         "  uhls rtl input.uglir --hdl=verilog\n"
         "\n"
         "\b\n"
-        "  uhls rtl input.uglir --hdl=verilog -o output.v\n"
+        "  uhls rtl input.uglir --hdl=verilog --reset=async+active_lo -o output.v\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -943,14 +943,21 @@ def glue_cmd(
     type=click.Choice(RTL_HDLS, case_sensitive=False),
     help="Target RTL language.",
 )
+@click.option(
+    "--reset",
+    default="sync+active_hi",
+    type=str,
+    show_default=True,
+    help="Reset style for emitted RTL: <sync|async>+<active_hi|active_lo>.",
+)
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
-def rtl_cmd(input_path: Path, hdl: str, output: Path | None) -> None:
+def rtl_cmd(input_path: Path, hdl: str, reset: str, output: Path | None) -> None:
     """Lower µglIR to one textual RTL artifact."""
     design = parse_uglir_file(input_path)
     if design.stage != "uglir":
         raise CLIError(f"'rtl' expects µglIR input, got stage '{design.stage}'")
     try:
-        lowered = lower_uglir_to_rtl(design, hdl=hdl)
+        lowered = lower_uglir_to_rtl(design, hdl=hdl, reset=reset)
     except (NotImplementedError, ValueError) as exc:
         raise CLIError(str(exc)) from exc
     _write_or_print_text(lowered, output)

@@ -2764,6 +2764,164 @@ region proc_add1 kind=procedure {
             self.assertIn("assign wb_ack_o = wb_req_n & wb_hit_n", uglir_text)
             self.assertIn("assign wb_err_o = wb_req_n & !wb_hit_n", uglir_text)
 
+    def test_glue_command_accepts_obi_slave_wrapper(self) -> None:
+        fsm = """design add1
+stage fsm
+schedule kind=control_steps
+input  x : i32
+output result : i32
+resources {
+  fu ewms0 : EWMS
+}
+controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+  input  req_valid : i1
+  input  resp_ready : i1
+  output req_ready : i1
+  output resp_valid : i1
+  state IDLE code=1
+  state DONE code=2
+  transition IDLE -> DONE when=req_valid && req_ready
+  transition DONE -> IDLE when=resp_valid && resp_ready
+  emit IDLE req_ready=true
+  emit DONE resp_valid=true
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = ret x class=CTRL ii=0 delay=0 start=0 end=0
+  node v2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+  edge data v0 -> v1
+  edge data v1 -> v2
+  steps [0:0]
+  latency 1
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fsm_path = root / "add1.fsm.uhir"
+            uglir_path = root / "add1_obi.uglir"
+            fsm_path.write_text(fsm, encoding="utf-8")
+
+            self.assertEqual(
+                main(
+                    [
+                        "glue",
+                        str(fsm_path),
+                        "--wrap",
+                        "slave",
+                        "--protocol",
+                        "obi",
+                        "-o",
+                        str(uglir_path),
+                    ]
+                ),
+                0,
+            )
+
+            uglir_text = uglir_path.read_text(encoding="utf-8")
+            self.assertIn("address_map obi {", uglir_text)
+            self.assertIn("register control_status offset=32'h0000_0000 access=rw symbol=OBI_REG_CONTROL_STATUS", uglir_text)
+            self.assertIn("input  obi_addr_i : u32", uglir_text)
+            self.assertIn("output obi_rdata_o : u32", uglir_text)
+            self.assertIn("OBI_REG_CONTROL_STATUS =", uglir_text)
+            self.assertIn("reg obi_rsp_pending_q : i1", uglir_text)
+            self.assertIn("assign obi_gnt_o = obi_req_i & !obi_rsp_pending_q", uglir_text)
+            self.assertIn("assign obi_rvalid_o = obi_rsp_pending_q", uglir_text)
+
+    def test_glue_command_accepts_obi_burst_slave_wrapper(self) -> None:
+        fsm = """design add1
+stage fsm
+schedule kind=control_steps
+input  x : i32
+output result : i32
+resources {
+  fu ewms0 : EWMS
+}
+controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+  input  req_valid : i1
+  input  resp_ready : i1
+  output req_ready : i1
+  output resp_valid : i1
+  state IDLE code=1
+  state DONE code=2
+  transition IDLE -> DONE when=req_valid && req_ready
+  transition DONE -> IDLE when=resp_valid && resp_ready
+  emit IDLE req_ready=true
+  emit DONE resp_valid=true
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = ret x class=CTRL ii=0 delay=0 start=0 end=0
+  node v2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+  edge data v0 -> v1
+  edge data v1 -> v2
+  steps [0:0]
+  latency 1
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fsm_path = root / "add1.fsm.uhir"
+            uglir_path = root / "add1_obi_burst.uglir"
+            fsm_path.write_text(fsm, encoding="utf-8")
+
+            self.assertEqual(
+                main(
+                    [
+                        "glue",
+                        str(fsm_path),
+                        "--wrap",
+                        "slave",
+                        "--protocol",
+                        "obi+burst",
+                        "-o",
+                        str(uglir_path),
+                    ]
+                ),
+                0,
+            )
+
+            uglir_text = uglir_path.read_text(encoding="utf-8")
+            self.assertIn("address_map obi {", uglir_text)
+            self.assertIn("mem obi_rsp_fifo_q : u32[2]", uglir_text)
+            self.assertIn("reg obi_rsp_count_q : u2", uglir_text)
+            self.assertIn("assign obi_gnt_o = obi_req_i & !(obi_rsp_count_q == 2:u2)", uglir_text)
+
+    def test_rtl_command_accepts_reset_style(self) -> None:
+        uglir = """design add1
+stage uglir
+input  clk : clock
+input  rst : i1
+output y : i1
+resources {
+  reg state_q : i1
+}
+
+assign y = state_q
+
+seq clk {
+  if rst {
+    state_q <= false
+  } else {
+    state_q <= true
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uglir_path = root / "add1.uglir"
+            rtl_path = root / "add1.v"
+            uglir_path.write_text(uglir, encoding="utf-8")
+
+            self.assertEqual(
+                main(["rtl", str(uglir_path), "--hdl", "verilog", "--reset", "async+active_lo", "-o", str(rtl_path)]),
+                0,
+            )
+
+            verilog = rtl_path.read_text(encoding="utf-8")
+            self.assertIn("always @(posedge clk or negedge rst) begin", verilog)
+
     def test_glue_command_accepts_none_memory_wrapper_pair(self) -> None:
         uglir = """design add1
 stage uglir

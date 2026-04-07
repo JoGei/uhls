@@ -79,6 +79,33 @@ class RTLLoweringTests(unittest.TestCase):
         self.assertIn("r_i32_0_q <= mx_r_i32_0_n;", verilog)
         self.assertTrue(verilog.rstrip().endswith("endmodule"))
 
+    def test_lower_uglir_to_verilog_supports_async_active_low_reset(self) -> None:
+        uglir_design = parse_uglir(
+            """
+            design add1
+            stage uglir
+            input  clk : clock
+            input  rst : i1
+            output y : i1
+            resources {
+              reg state_q : i1
+            }
+            assign y = state_q
+            seq clk {
+              if rst {
+                state_q <= false
+              } else {
+                state_q <= true
+              }
+            }
+            """
+        )
+
+        verilog = lower_uglir_to_rtl(uglir_design, hdl="verilog", reset="async+active_lo")
+
+        self.assertIn("always @(posedge clk or negedge rst) begin", verilog)
+        self.assertIn("if (!(rst)) begin", verilog)
+
     def test_lower_uglir_to_verilog_emits_wishbone_slave_wrapper(self) -> None:
         fsm_design = parse_uhir(
             """

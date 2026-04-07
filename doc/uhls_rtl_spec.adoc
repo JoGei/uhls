@@ -87,6 +87,14 @@ The intended generic entrypoint is:
 uhls rtl input.uglir --hdl=<target>
 ----
 
+The emitted-reset policy is selected at the same stage boundary, for example:
+
+[source,text]
+----
+uhls rtl input.uglir --hdl=verilog --reset=sync+active_hi
+uhls rtl input.uglir --hdl=verilog --reset=async+active_lo
+----
+
 Structural wrapper/protocol composition happens earlier in `glue`, for example:
 
 [source,text]
@@ -101,6 +109,21 @@ Short options for structural composition are:
 * `--protocol` / `--prot`
 
 The `--hdl` option is mandatory.
+
+The `--reset` option is optional and defaults to:
+
+* `sync+active_hi`
+
+Supported reset forms are:
+
+* `sync+active_hi`
+* `sync+active_lo`
+* `async+active_hi`
+* `async+active_lo`
+
+This is an RTL-emission policy choice, not a structural `glue`-stage choice.
+The underlying `µglIR` design still carries only the logical reset signal and
+reset-update intent.
 
 == HDL Targets
 
@@ -120,6 +143,43 @@ Planned targets are:
 
 * `vhdl`
 * `systemc`
+
+== Reset Policy
+
+The current RTL backends default to:
+
+* synchronous reset
+* active-high polarity
+
+that is:
+
+* `--reset=sync+active_hi`
+
+This keeps the default behavior aligned with the existing generated RTL and with
+the current wrapper/core implementations.
+
+When requested, `rtl` may emit:
+
+* synchronous active-low reset
+* asynchronous active-high reset
+* asynchronous active-low reset
+
+For Verilog emission, this affects:
+
+* sensitivity lists for sequential blocks
+* the generated reset condition
+
+Examples:
+
+* `sync+active_hi`
+  * `always @(posedge clk)`
+  * `if (rst) begin`
+* `async+active_lo`
+  * `always @(posedge clk or negedge rst)`
+  * `if (!(rst)) begin`
+
+This reset-style setting applies uniformly to the emitted module and does not
+change the higher-level protocol semantics of Wishbone or OBI.
 
 == Wrapper Model
 

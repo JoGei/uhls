@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from math import ceil, log2
 import re
+from typing import TYPE_CHECKING
 
 from uhls.backend.hls.uglir.model import UGLIRDesign, UGLIRMux, UGLIRPort, UGLIRResource, UGLIRSeqBlock, UGLIRSeqUpdate
+
+if TYPE_CHECKING:
+    from .lower import ResetSpec
 
 _TYPED_INT_RE = re.compile(r"(?<![\w$])(-?\d+):(i|u)(\d+)\b")
 _IDENT_RE = re.compile(r"\b[A-Za-z_][\w$]*\b")
@@ -34,10 +38,15 @@ def emit_uglir_to_verilog(
     design: UGLIRDesign,
     module_name: str | None = None,
     module_parameters: list[str] | None = None,
+    reset: "ResetSpec | None" = None,
 ) -> str:
     """Render one uglir design as Verilog."""
     if design.stage != "uglir":
         raise ValueError(f"verilog emission expects uglir input, got stage '{design.stage}'")
+    if reset is None:
+        from .lower import ResetSpec as _ResetSpec
+
+        reset = _ResetSpec(kind="sync", polarity="active_hi")
     rendered_module_name = design.name if module_name is None else module_name
     if module_parameters is None:
         module_parameters = _infer_module_parameters(design)
@@ -127,7 +136,7 @@ def emit_uglir_to_verilog(
         lines.append("")
 
     for seq_block in design.seq_blocks:
-        lines.extend(_format_seq_block(seq_block, ctrl_enums))
+        lines.extend(_format_seq_block(seq_block, ctrl_enums, reset))
         lines.append("")
 
     if lines[-1] == "":
@@ -252,10 +261,17 @@ def _mux_expr(mux: UGLIRMux, ctrl_enums: dict[str, dict[str, str]]) -> str:
     return expr
 
 
-def _format_seq_block(seq_block: UGLIRSeqBlock, ctrl_enums: dict[str, dict[str, str]]) -> list[str]:
-    lines = [f"  always @(posedge {seq_block.clock}) begin"]
+def _format_seq_block(
+    seq_block: UGLIRSeqBlock,
+    ctrl_enums: dict[str, dict[str, str]],
+    reset: "ResetSpec",
+) -> list[str]:
+    sensitivity = f"posedge {seq_block.clock}"
+    if seq_block.reset is not None and reset.kind == "async":
+        sensitivity += f" or {_reset_edge(reset)} {_translate_expr(seq_block.reset, ctrl_enums, None)}"
+    lines = [f"  always @({sensitivity}) begin"]
     if seq_block.reset is not None:
-        lines.append(f"    if ({_translate_expr(seq_block.reset, ctrl_enums, None)}) begin")
+        lines.append(f"    if ({_reset_condition(seq_block.reset, ctrl_enums, reset)}) begin")
         for update in seq_block.reset_updates:
             lines.append(f"      {_format_seq_update(update, ctrl_enums)}")
         lines.append("    end else begin")
@@ -281,6 +297,17 @@ def _format_seq_updates(updates: list[UGLIRSeqUpdate], ctrl_enums: dict[str, dic
 
 def _format_seq_update(update: UGLIRSeqUpdate, ctrl_enums: dict[str, dict[str, str]]) -> str:
     return f"{update.target} <= {_translate_expr(update.value, ctrl_enums, None)};"
+
+
+def _reset_edge(reset: "ResetSpec") -> str:
+    return "posedge" if reset.polarity == "active_hi" else "negedge"
+
+
+def _reset_condition(expr: str, ctrl_enums: dict[str, dict[str, str]], reset: "ResetSpec") -> str:
+    translated = _translate_expr(expr, ctrl_enums, None)
+    if reset.polarity == "active_hi":
+        return translated
+    return f"!({translated})"
 
 
 def _pack_to_wishbone(signal: str, type_hint: str) -> str:

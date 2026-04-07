@@ -31,7 +31,7 @@ class CLITests(unittest.TestCase):
 
             verify_out = io.StringIO()
             with redirect_stdout(verify_out):
-                self.assertEqual(main(["verify", str(uir_path)]), 0)
+                self.assertEqual(main(["lint", str(uir_path)]), 0)
             self.assertEqual(verify_out.getvalue().strip(), "ok")
 
             cfg_out = io.StringIO()
@@ -1325,7 +1325,7 @@ block entry:
             self.assertIn("call to unknown function 'missing'", rendered)
             self.assertNotIn("Traceback", rendered)
 
-    def test_verify_accepts_local_arrays_and_print(self) -> None:
+    def test_lint_accepts_local_arrays_and_print(self) -> None:
         uir = """func dot4(A:i32[], B:i32[]) -> i32
 
 block entry:
@@ -1350,7 +1350,83 @@ block entry:
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["verify", str(path)]), 0)
+                self.assertEqual(main(["lint", str(path)]), 0)
+            self.assertEqual(stdout.getvalue().strip(), "ok")
+
+    def test_lint_accepts_uhir(self) -> None:
+        uhir = """design add1
+stage seq
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "add1.seq.uhir"
+            path.write_text(uhir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["lint", str(path)]), 0)
+            self.assertEqual(stdout.getvalue().strip(), "ok")
+
+    def test_lint_accepts_uglir(self) -> None:
+        uglir = """design add1
+stage uglir
+input  clk : clock
+input  rst : i1
+output req_ready : i1
+resources {
+  reg state_q : u1
+  net next_state_n : u1
+}
+assign req_ready = true
+seq clk {
+  state_q <= next_state_n
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "add1.uglir"
+            path.write_text(uglir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["lint", str(path)]), 0)
+            self.assertEqual(stdout.getvalue().strip(), "ok")
+
+    def test_lint_accepts_component_library_json(self) -> None:
+        library = {
+            "components": {
+                "MEM": {
+                    "kind": "memory",
+                    "parameters": {
+                        "word_t": {"kind": "type"},
+                        "word_len": {"kind": "int"},
+                    },
+                    "ports": {
+                        "addr": {"dir": "input", "type": "i32"},
+                        "rdata": {"dir": "output", "type": "i32"},
+                    },
+                    "supports": {
+                        "load": {"ii": 1, "d": 1},
+                    },
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "ressources.json"
+            path.write_text(json.dumps(library), encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["lint", str(path)]), 0)
             self.assertEqual(stdout.getvalue().strip(), "ok")
 
     def test_opt_command_runs_constprop_pipeline(self) -> None:

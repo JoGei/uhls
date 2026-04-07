@@ -33,6 +33,7 @@ from uhls.backend.hls import (
     lower_fsm_to_uglir,
     lower_uglir_to_rtl,
     parse_bind_dump_spec,
+    validate_uglir_for_rtl,
 )
 from uhls.backend.hls.component_library import validate_component_library
 from uhls.backend.hls.uhir import (
@@ -345,12 +346,11 @@ def parse_cmd(source: Path, output: Path | None) -> None:
     _write_or_print_text(format_module(module), output)
 
 
-@cli.command("verify")
+@cli.command("lint")
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-def verify_cmd(input_path: Path) -> None:
-    """Verify canonical IR."""
-    module = _load_ir_file(input_path)
-    verify_module(module, require_ssa=True, allow_calls=True)
+def lint_cmd(input_path: Path) -> None:
+    """Run basic syntax and static validation for µIR, µhIR, µglIR, and res.json artifacts."""
+    _lint_exchange_file(input_path)
     click.echo("ok")
 
 
@@ -1015,6 +1015,27 @@ def rtl_cmd(input_path: Path, hdl: str, wrap: str | None, protocol: str | None, 
 
 def _load_ir_file(path: Path) -> object:
     return parse_module(path.read_text(encoding="utf-8"))
+
+
+def _lint_exchange_file(path: Path) -> None:
+    suffix = path.suffix.lower()
+    if suffix == ".uir":
+        module = _load_ir_file(path)
+        verify_module(module, require_ssa=True, allow_calls=True)
+        return
+    if suffix in {".uhir", ".uglir"}:
+        design = parse_uhir_file(path)
+        if design.stage == "exg":
+            executability_graph_from_uhir(design)
+        elif design.stage == "uglir":
+            validate_uglir_for_rtl(design)
+        return
+    if suffix == ".json":
+        _load_executability_graph(path)
+        return
+    raise CLIError(
+        f"don't know how to lint '{path}'; expected one of: .uir, .uhir, .uglir, .json"
+    )
 
 
 def _load_executability_graph(path: Path) -> ExecutabilityGraph:

@@ -135,7 +135,7 @@ def parse_uhir(text: str) -> UHIRDesign:
             design.resources.extend(resources)
             continue
         if match := _ASSIGN_RE.fullmatch(line):
-            design.assigns.append(UHIRAssign(match.group(1), match.group(2).strip()))
+            design.assigns.append(UHIRAssign(match.group(1), _unwrap_parenthesized_expr(match.group(2).strip())))
             index += 1
             continue
         if match := _ATTACH_RE.fullmatch(line):
@@ -167,10 +167,23 @@ def parse_uhir_file(path: str | Path) -> UHIRDesign:
 
 def _normalize_lines(text: str) -> list[str]:
     lines: list[str] = []
+    buffer: list[str] = []
+    paren_depth = 0
     for raw_line in text.splitlines():
         line = _strip_comment(raw_line).strip()
-        if line:
-            lines.append(line)
+        if not line:
+            continue
+        if not buffer:
+            buffer.append(line)
+        else:
+            buffer.append(line)
+        paren_depth += _paren_delta(line)
+        if paren_depth <= 0:
+            lines.append(" ".join(buffer))
+            buffer = []
+            paren_depth = 0
+    if buffer:
+        lines.append(" ".join(buffer))
     return lines
 
 
@@ -190,6 +203,63 @@ def _strip_comment(text: str) -> str:
         if char == "#" and not in_string:
             return text[:index]
     return text
+
+
+def _paren_delta(text: str) -> int:
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = in_string
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+    return depth
+
+
+def _unwrap_parenthesized_expr(expr: str) -> str:
+    text = expr.strip()
+    while _is_fully_parenthesized(text):
+        text = text[1:-1].strip()
+    return text
+
+
+def _is_fully_parenthesized(text: str) -> bool:
+    if len(text) < 2 or text[0] != "(" or text[-1] != ")":
+        return False
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = in_string
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0 and index != len(text) - 1:
+                return False
+    return depth == 0
 
 
 def _parse_design(line: str, line_number: int) -> str:
@@ -219,7 +289,7 @@ def _try_parse_const(line: str) -> UHIRConstant | None:
     if match is None:
         return None
     name, value_text, type_hint = match.groups()
-    return UHIRConstant(name, _parse_scalar_text(value_text.strip()), type_hint.strip())
+    return UHIRConstant(name, _parse_scalar_text(_unwrap_parenthesized_expr(value_text.strip())), type_hint.strip())
 
 
 def _try_parse_schedule(line: str) -> UHIRSchedule | None:
@@ -313,7 +383,7 @@ def _parse_seq_block(lines: list[str], index: int) -> tuple[UHIRSeqBlock, int]:
     line = lines[index]
     if_match = _IF_RE.fullmatch(line)
     if if_match is not None:
-        seq_block.reset = if_match.group(1).strip()
+        seq_block.reset = _unwrap_parenthesized_expr(if_match.group(1).strip())
         index += 1
         seq_block.reset_updates, index = _parse_seq_updates_until(lines, index, "}")
         if index >= len(lines):
@@ -348,7 +418,7 @@ def _parse_seq_updates_until(lines: list[str], index: int, terminator: str) -> t
         match = _UPDATE_RE.fullmatch(line)
         if match is None:
             raise UHIRParseError(f"invalid sequential update at line {line_number}: {line!r}")
-        updates.append(UHIRSeqUpdate(match.group(1), match.group(3).strip()))
+        updates.append(UHIRSeqUpdate(match.group(1), _unwrap_parenthesized_expr(match.group(3).strip())))
         index += 1
     raise UHIRParseError("unterminated sequential update block")
 
@@ -362,7 +432,7 @@ def _parse_seq_updates_with_guards_until(lines: list[str], index: int, terminato
             return updates, index
         guard_match = _IF_RE.fullmatch(line)
         if guard_match is not None:
-            guard = guard_match.group(1).strip()
+            guard = _unwrap_parenthesized_expr(guard_match.group(1).strip())
             index += 1
             guarded_updates, index = _parse_seq_updates_until(lines, index, "}")
             updates.extend(UHIRSeqUpdate(update.target, update.value, guard) for update in guarded_updates)
@@ -371,7 +441,7 @@ def _parse_seq_updates_with_guards_until(lines: list[str], index: int, terminato
         match = _UPDATE_RE.fullmatch(line)
         if match is None:
             raise UHIRParseError(f"invalid sequential update at line {line_number}: {line!r}")
-        updates.append(UHIRSeqUpdate(match.group(1), match.group(3).strip()))
+        updates.append(UHIRSeqUpdate(match.group(1), _unwrap_parenthesized_expr(match.group(3).strip())))
         index += 1
     raise UHIRParseError("unterminated sequential update block")
 

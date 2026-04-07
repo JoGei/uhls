@@ -587,6 +587,22 @@ Syntax:
 assign <name> = <expr>
 ----
 
+Long expressions may be wrapped across multiple physical lines by enclosing the
+expression in one balanced parenthesized form. The parser then treats the
+multiline form as one logical expression.
+
+Example:
+
+[source,text]
+----
+assign next_state =
+  (
+    state == IDLE ? (req_fire ? T0 : IDLE) :
+    state == T0   ? T1 :
+                    DONE
+  )
+----
+
 Examples:
 
 [source,text]
@@ -687,6 +703,9 @@ seq <clock-name> {
   }
 }
 ----
+
+As with `assign`, long reset conditions, enables, and update expressions may be
+wrapped across multiple physical lines inside balanced parentheses.
 
 Example:
 

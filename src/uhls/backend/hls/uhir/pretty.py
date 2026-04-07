@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import textwrap
+
 from uhls.utils.graph import topological_sort
 
 from .model import (
@@ -40,7 +42,7 @@ def format_uhir(design: UHIRDesign) -> str:
     for port in design.outputs:
         lines.append(f"output {port.name} : {port.type}")
     for const_decl in design.constants:
-        lines.append(f"const  {const_decl.name} = {const_decl.value} : {const_decl.type}")
+        lines.extend(format_constant(const_decl))
     for address_map in design.address_maps:
         lines.append("")
         lines.extend(format_address_map(address_map))
@@ -57,7 +59,7 @@ def format_uhir(design: UHIRDesign) -> str:
     if design.stage == "uglir":
         for assign in design.assigns:
             lines.append("")
-            lines.append(format_assign(assign))
+            lines.extend(format_assign(assign))
         for attachment in design.attachments:
             lines.append("")
             lines.append(format_attach(attachment))
@@ -127,7 +129,12 @@ def format_controller_link(link: UHIRControllerLink) -> str:
 
 def format_assign(assign: UHIRAssign) -> str:
     """Render one uglir combinational assignment."""
-    return f"assign {assign.target} = {assign.expr}"
+    return _format_expr_statement(f"assign {assign.target} =", assign.expr)
+
+
+def format_constant(const_decl: UHIRConstant) -> list[str]:
+    """Render one top-level constant declaration."""
+    return _format_expr_statement(f"const  {const_decl.name} =", str(const_decl.value), suffix=f" : {const_decl.type}")
 
 
 def format_address_map(address_map: UHIRAddressMap) -> list[str]:
@@ -168,33 +175,33 @@ def format_seq_block(seq_block: UHIRSeqBlock) -> list[str]:
     """Render one uglir sequential block."""
     lines = [f"seq {seq_block.clock} {{"]
     if seq_block.reset is not None:
-        lines.append(f"  if {seq_block.reset} {{")
+        lines.extend(_indent_lines(_format_if_header(seq_block.reset), "  "))
         for update in seq_block.reset_updates:
-            lines.append(f"    {format_seq_update(update)}")
+            lines.extend(_indent_lines(format_seq_update(update), "    "))
         lines.append("  } else {")
         for update in seq_block.updates:
             if update.enable is None:
-                lines.append(f"    {format_seq_update(update)}")
+                lines.extend(_indent_lines(format_seq_update(update), "    "))
             else:
-                lines.append(f"    if {update.enable} {{")
-                lines.append(f"      {format_seq_update(UHIRSeqUpdate(update.target, update.value))}")
+                lines.extend(_indent_lines(_format_if_header(update.enable), "    "))
+                lines.extend(_indent_lines(format_seq_update(UHIRSeqUpdate(update.target, update.value)), "      "))
                 lines.append("    }")
         lines.append("  }")
     else:
         for update in seq_block.updates:
             if update.enable is None:
-                lines.append(f"  {format_seq_update(update)}")
+                lines.extend(_indent_lines(format_seq_update(update), "  "))
             else:
-                lines.append(f"  if {update.enable} {{")
-                lines.append(f"    {format_seq_update(UHIRSeqUpdate(update.target, update.value))}")
+                lines.extend(_indent_lines(_format_if_header(update.enable), "  "))
+                lines.extend(_indent_lines(format_seq_update(UHIRSeqUpdate(update.target, update.value)), "    "))
                 lines.append("  }")
     lines.append("}")
     return lines
 
 
-def format_seq_update(update: UHIRSeqUpdate) -> str:
+def format_seq_update(update: UHIRSeqUpdate) -> list[str]:
     """Render one uglir sequential update."""
-    return f"{update.target} <= {update.value}"
+    return _format_expr_statement(f"{update.target} <=", update.value)
 
 
 def format_region(region: UHIRRegion) -> list[str]:
@@ -313,6 +320,32 @@ def _format_attr_value(value: AttributeValue) -> str:
 
 def _format_timing_value(value: TimingValue) -> str:
     return str(value)
+
+
+def _format_if_header(condition: str) -> list[str]:
+    return _format_expr_statement("if", condition, suffix=" {")
+
+
+def _format_expr_statement(prefix: str, expr: str, *, suffix: str = "", width: int = 100) -> list[str]:
+    single = f"{prefix} {expr}{suffix}"
+    if len(single) <= width:
+        return [single]
+    wrapped = textwrap.wrap(
+        expr,
+        width=max(40, width - 4),
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    if len(wrapped) <= 1:
+        return [single]
+    lines = [f"{prefix} ("]
+    lines.extend(f"  {part}" for part in wrapped)
+    lines.append(f"){suffix}")
+    return lines
+
+
+def _indent_lines(lines: list[str], indent: str) -> list[str]:
+    return [f"{indent}{line}" for line in lines]
 
 
 def _order_region_nodes(region: UHIRRegion) -> list[UHIRNode]:

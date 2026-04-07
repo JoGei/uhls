@@ -227,6 +227,75 @@ class UHIRParserTests(unittest.TestCase):
 
         self.assertEqual(design.seq_blocks[0].updates[1].enable, "a && b")
 
+    def test_parse_uglir_accepts_multiline_parenthesized_expressions(self) -> None:
+        design = parse_uhir(
+            """
+            design wrapped
+            stage uglir
+            input  clk : clock
+            input  a : i1
+            input  b : i1
+            output y : i1
+            resources {
+              reg r_q : i1
+              net n_n : i1
+            }
+
+            assign n_n = (
+              a &&
+              b
+            )
+
+            assign y = (
+              n_n
+            )
+
+            seq clk {
+              r_q <= false
+              if (
+                a &&
+                b
+              ) {
+                r_q <= (
+                  n_n
+                )
+              }
+            }
+            """
+        )
+
+        self.assertEqual(design.assigns[0].expr, "a && b")
+        self.assertEqual(design.assigns[1].expr, "n_n")
+        self.assertEqual(design.seq_blocks[0].updates[1].enable, "a && b")
+        self.assertEqual(design.seq_blocks[0].updates[1].value, "n_n")
+
+    def test_format_uhir_wraps_long_uglir_expressions_in_parentheses(self) -> None:
+        design = parse_uhir(
+            """
+            design wrapped
+            stage uglir
+            input  clk : clock
+            input  req_valid : i1
+            input  req_ready : i1
+            output y : i1
+            resources {
+              reg r_q : i1
+              net n_n : i1
+            }
+
+            assign n_n = req_valid && req_ready && req_valid && req_ready && req_valid && req_ready && req_valid && req_ready && req_valid && req_ready
+            assign y = n_n
+
+            seq clk {
+              r_q <= req_valid && req_ready && req_valid && req_ready && req_valid && req_ready && req_valid && req_ready && req_valid && req_ready
+            }
+            """
+        )
+
+        rendered = format_uhir(design)
+        self.assertIn("assign n_n = (", rendered)
+        self.assertIn("r_q <= (", rendered)
+
     def test_parse_fsm_uhir_with_controller_shell(self) -> None:
         design = parse_uhir(
             """

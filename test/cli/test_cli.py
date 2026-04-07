@@ -148,6 +148,41 @@ block entry:
             self.assertIn('digraph "add1.seq"', dot_text)
             self.assertIn('cluster_proc_add1', dot_text)
 
+    def test_view_command_rejects_seq_view_for_uir(self) -> None:
+        uir = """func add1(x:i32) -> i32
+
+block entry:
+    y:i32 = add x, 1
+    ret y
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uir_path = root / "add1.uir"
+            uir_path.write_text(uir, encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["view", str(uir_path), "--what", "seq"]), 1)
+            self.assertIn("supported --what values: uir, cfg, dfg, cdfg", stderr.getvalue())
+
+    def test_view_command_missing_what_argument_prints_supported_values_hint(self) -> None:
+        uir = """func add1(x:i32) -> i32
+
+block entry:
+    y:i32 = add x, 1
+    ret y
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uir_path = root / "add1.uir"
+            uir_path.write_text(uir, encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["view", str(uir_path), "--what"]), 2)
+            self.assertIn("Option '--what' requires an argument.", stderr.getvalue())
+            self.assertIn("hint: supported --what values: uir, cfg, dfg, cdfg", stderr.getvalue())
+
     def test_gopt_command_runs_builtin_infer_static_on_seq_uhir(self) -> None:
         uir = """func dot4(A:i32[], B:i32[]) -> i32
 
@@ -1145,7 +1180,7 @@ block entry:
             self.assertIn("region proc_top kind=procedure {", rendered)
             self.assertIn("region proc_helper kind=procedure {", rendered)
 
-    def test_view_command_can_render_seq_dot_from_uir_input(self) -> None:
+    def test_view_command_can_render_seq_dot_from_seq_uhir_input(self) -> None:
         uir = """func dot4(A:i32[], B:i32[]) -> i32
 
 block entry:
@@ -1153,12 +1188,16 @@ block entry:
     ret sum_0
 """
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "dot4.uir"
-            path.write_text(uir, encoding="utf-8")
+            root = Path(tmpdir)
+            uir_path = root / "dot4.uir"
+            seq_path = root / "dot4.seq.uhir"
+            uir_path.write_text(uir, encoding="utf-8")
+
+            self.assertEqual(main(["seq", str(uir_path), "-o", str(seq_path)]), 0)
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["view", str(path), "--what", "seq", "--dot"]), 0)
+                self.assertEqual(main(["view", str(seq_path), "--dot"]), 0)
 
             rendered = stdout.getvalue()
             self.assertIn('digraph "dot4.seq"', rendered)
@@ -1172,12 +1211,16 @@ block entry:
     ret sum_0
 """
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "dot4.uir"
-            path.write_text(uir, encoding="utf-8")
+            root = Path(tmpdir)
+            uir_path = root / "dot4.uir"
+            seq_path = root / "dot4.seq.uhir"
+            uir_path.write_text(uir, encoding="utf-8")
+
+            self.assertEqual(main(["seq", str(uir_path), "-o", str(seq_path)]), 0)
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["view", str(path), "--what", "seq", "--dot", "--compact"]), 0)
+                self.assertEqual(main(["view", str(seq_path), "--dot", "--compact"]), 0)
 
             rendered = stdout.getvalue()
             self.assertIn('"v0" [label="v0: nop"', rendered)
@@ -2755,7 +2798,7 @@ region proc_add_pair kind=procedure {
             self.assertIn('subgraph "cluster_conflict_register_i32"', rendered)
             self.assertIn('"v1" -> "v2" [label="proc_add_pair"', rendered)
             self.assertIn('"v1" [label="v1 add ewms0"', rendered)
-            self.assertIn('"reg_v1" [label="reg_v1 reg r_i32_0"', rendered)
+            self.assertIn('"reg_v1" [label="val=v1 bind=r_i32_0"', rendered)
 
     def test_view_command_supports_compact_bind_conflict_dot_labels(self) -> None:
         sched = """design add1

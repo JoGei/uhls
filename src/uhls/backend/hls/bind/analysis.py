@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import combinations
+import re
 
 from uhls.backend.hls.uhir.model import UHIRDesign, UHIRNode, UHIRRegion, UHIRValueBinding
 from uhls.backend.hls.uhir.timing import TimingExpr
@@ -142,7 +143,7 @@ def _format_conflict_like(design: UHIRDesign, *, compatibility: bool) -> list[st
     graph_name = "compatibility" if compatibility else "conflict"
     graph_type = "compatibility graph" if compatibility else "conflict graph"
     lines = [f"bind_dump {graph_name}", f"binding_mode {_bind_analysis_mode(design)}"]
-    for (category, class_name), region_entries in _group_entries(_collect_local_bound_entries(design)).items():
+    for (category, class_name), region_entries in _group_entries(_collect_template_bound_entries(design)).items():
         lines.append(f"class {class_name} ({category} {graph_type})")
         for region_id, entries in sorted(region_entries.items()):
             lines.append(f"  region {region_id}")
@@ -212,7 +213,7 @@ def _dot_conflict_like(design: UHIRDesign, *, compatibility: bool, compact: bool
     graph_type = "compatibility graph" if compatibility else "conflict graph"
     edge_color = "#2ca02c" if compatibility else "#666666"
     lines: list[str] = []
-    for (category, class_name), region_entries in _group_entries(_collect_local_bound_entries(design)).items():
+    for (category, class_name), region_entries in _group_entries(_collect_template_bound_entries(design)).items():
         cluster_id = f"{graph_name}_{category}_{class_name.lower()}"
         lines.append(f'  subgraph "cluster_{cluster_id}" {{')
         lines.append(f'    label="{_escape_dot(class_name)} {category} {graph_type}";')
@@ -237,6 +238,53 @@ def _dot_conflict_like(design: UHIRDesign, *, compatibility: bool, compact: bool
                 )
         lines.append("  }")
     return lines
+
+
+def _collect_template_bound_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
+    return _collapse_template_bound_entries(_collect_local_bound_entries(design))
+
+
+def _collapse_template_bound_entries(entries: list[_BoundOccurrence]) -> list[_BoundOccurrence]:
+    grouped: dict[
+        tuple[str, str, str, str, str, str, str, str],
+        tuple[int, int],
+    ] = {}
+    for entry in entries:
+        template_node_id = _template_node_id(entry.node_id)
+        template_display_id = _template_display_id(entry, template_node_id)
+        key = (
+            entry.category,
+            entry.scope_id,
+            entry.region_id,
+            template_node_id,
+            template_display_id,
+            entry.opcode,
+            entry.bind,
+            entry.class_name,
+        )
+        existing = grouped.get(key)
+        if existing is None:
+            grouped[key] = (entry.start, entry.end)
+            continue
+        grouped[key] = (min(existing[0], entry.start), max(existing[1], entry.end))
+    collapsed: list[_BoundOccurrence] = []
+    for key, (start, end) in sorted(grouped.items()):
+        category, scope_id, region_id, node_id, display_id, opcode, bind, class_name = key
+        collapsed.append(
+            _BoundOccurrence(
+                category=category,
+                scope_id=scope_id,
+                region_id=region_id,
+                node_id=node_id,
+                display_id=display_id,
+                opcode=opcode,
+                bind=bind,
+                class_name=class_name,
+                start=start,
+                end=end,
+            )
+        )
+    return collapsed
 
 
 def _dot_trp(design: UHIRDesign, *, compact: bool) -> list[str]:
@@ -1514,6 +1562,8 @@ def _render_trp_html_table(entries: list[_BoundOccurrence], *, compact: bool) ->
 
 
 def _entry_label(entry: _BoundOccurrence, *, compact: bool) -> str:
+    if entry.category == "register":
+        return f"val={_entry_body(entry, compact=compact)} bind={_entry_bind_label(entry)}"
     opcode = _compact_opcode(entry.opcode) if compact else entry.opcode
     return f"{entry.display_id} {opcode} {_entry_bind_label(entry)}"
 
@@ -1557,6 +1607,18 @@ def _display_suffix(node_id: str, display_id: str) -> str:
                 return suffix[:cut]
         return suffix
     return ""
+
+
+def _template_node_id(node_id: str) -> str:
+    return re.sub(r"@\d+$", "", node_id)
+
+
+def _template_display_id(entry: _BoundOccurrence, template_node_id: str) -> str:
+    if entry.category != "register":
+        return template_node_id
+    binding_suffix_match = re.search(r"(_b\d+)$", entry.display_id)
+    binding_suffix = "" if binding_suffix_match is None else binding_suffix_match.group(1)
+    return f"reg_{template_node_id}{binding_suffix}"
 
 
 def _suffixes_for_region_node(entries: list[_BoundOccurrence], region_id: str, node_id: str) -> list[str]:

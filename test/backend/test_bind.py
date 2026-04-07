@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from uhls.backend.hls import bind_dump_to_dot, binding_to_dot, format_bind_dump, lower_alloc_to_sched, lower_sched_to_bind, parse_bind_dump_spec
+from uhls.backend.hls.bind.analysis import _BoundOccurrence, _collapse_template_bound_entries
 from uhls.backend.hls.bind.builtin import CompatibilityBinder, LeftEdgeBinder
 from uhls.backend.hls.uhir import (
     ExecutabilityGraph,
@@ -80,6 +81,21 @@ class BindingLoweringTests(unittest.TestCase):
             functional_units=("EWMS",),
             operations=operations,
             edges=tuple(("EWMS", operation, 1, 1) for operation in operations),
+        )
+
+    def test_conflict_like_template_collapse_merges_occurrence_suffixes(self) -> None:
+        collapsed = _collapse_template_bound_entries(
+            [
+                _BoundOccurrence("operation", "R0", "R0", "v1@0", "v1@0", "mul", "mul0", "MUL", 0, 1),
+                _BoundOccurrence("operation", "R0", "R0", "v1@1", "v1@1", "mul", "mul0", "MUL", 2, 3),
+                _BoundOccurrence("register", "R0", "R0", "v2@0", "reg_v2@0_b1", "reg", "r0", "i32", 1, 2),
+                _BoundOccurrence("register", "R0", "R0", "v2@1", "reg_v2@1_b1", "reg", "r0", "i32", 3, 4),
+            ]
+        )
+
+        self.assertEqual(
+            [(entry.display_id, entry.start, entry.end) for entry in collapsed],
+            [("v1", 0, 3), ("reg_v2_b1", 1, 4)],
         )
 
     def test_lower_sched_to_bind_reuses_one_resource_for_non_overlapping_ops(self) -> None:
@@ -594,7 +610,7 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertIn('"v1" -> "v2" [label="proc_add_pair"', dot)
         self.assertIn('"v1" [label="v1 add ewms0"', dot)
         self.assertIn('"v2" [label="v2 add ewms1"', dot)
-        self.assertIn('"reg_v1" [label="reg_v1 reg r_i32_0"', dot)
+        self.assertIn('"reg_v1" [label="val=v1 bind=r_i32_0"', dot)
 
     def test_binding_to_dot_supports_compact_labels(self) -> None:
         bind_design = lower_sched_to_bind(

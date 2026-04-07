@@ -320,6 +320,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except click.ClickException as exc:
         exc.show(file=sys.stderr)
+        hint = _view_missing_what_hint(active_argv, exc)
+        if hint is not None:
+            click.echo(hint, err=True)
         return int(exc.exit_code)
     except click.Abort:
         click.echo("Aborted!", err=True)
@@ -955,6 +958,66 @@ def _resolve_view_backend(*, emit_pretty: bool, emit_dot: bool) -> str:
     return "pretty"
 
 
+def _view_missing_what_hint(argv: list[str], exc: click.ClickException) -> str | None:
+    if not argv or argv[0] != "view":
+        return None
+    if "requires an argument" not in str(exc) or "--what" not in str(exc):
+        return None
+    input_path = _extract_view_input_path(argv[1:])
+    if input_path is None:
+        return None
+    supported = _supported_view_values_for_input(input_path)
+    if supported is None:
+        return None
+    return f"hint: supported --what values: {', '.join(supported)}"
+
+
+def _extract_view_input_path(argv: list[str]) -> Path | None:
+    option_names_with_values = {
+        "--what",
+        "--function",
+        "--block",
+        "-o",
+        "--output",
+    }
+    skip_next = False
+    candidates: list[Path] = []
+    for token in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in option_names_with_values:
+            skip_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        candidates.append(Path(token))
+    return candidates[-1] if candidates else None
+
+
+def _supported_view_values_for_input(input_path: Path) -> tuple[str, ...] | None:
+    suffix = input_path.suffix.lower()
+    if suffix == ".uir":
+        return ("uir", "cfg", "dfg", "cdfg")
+    if suffix == ".json":
+        return ("exg",)
+    if suffix == ".uglir":
+        return ("uglir",)
+    if suffix == ".uhir":
+        try:
+            design = parse_uhir_file(input_path)
+        except (OSError, UHIRParseError, ValueError):
+            return None
+        if design.stage == "bind":
+            return ("bind", *BIND_DUMP_KINDS)
+        if design.stage == "fsm":
+            return ("fsm",)
+        if design.stage == "exg":
+            return ("exg",)
+        return (design.stage,)
+    return None
+
+
 def _render_view(
     input_path: Path,
     *,
@@ -999,7 +1062,7 @@ def _render_uir_view(
     function_name: str | None,
     block_name: str | None,
 ) -> str:
-    supported = ("uir", "cfg", "dfg", "cdfg", "seq")
+    supported = ("uir", "cfg", "dfg", "cdfg")
     view_name = _select_view_name("µIR", backend, what_name, supported, default_pretty="uir")
     functions = _selected_functions(module, function_name)
     if view_name == "uir":
@@ -1030,13 +1093,6 @@ def _render_uir_view(
                 return to_module_cdfg_dot(module, compact=compact)
             return "\n\n".join(to_cdfg_dot(function, compact=compact) for function in functions)
         return "\n\n".join(_format_cdfg_summary(function) for function in functions)
-    if view_name == "seq":
-        if block_name is not None:
-            raise CLIError("'view --what=seq' does not support --block")
-        design = lower_module_to_seq(module, top=function_name)
-        if backend == "dot":
-            return to_uhir_dot(design, compact=compact)
-        return format_uhir(design)
     raise CLIError(f"internal error: unhandled µIR view '{view_name}'")
 
 

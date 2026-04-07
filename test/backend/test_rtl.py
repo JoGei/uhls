@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from uhls.backend.hls import lower_fsm_to_uglir, lower_uglir_to_rtl
+from uhls.backend.hls import lower_fsm_to_uglir, lower_uglir_to_rtl, wrap_uglir_design
 from uhls.backend.hls.uhir import parse_uhir
 import json
 
@@ -115,10 +115,9 @@ class RTLLoweringTests(unittest.TestCase):
         )
 
         uglir_design = lower_fsm_to_uglir(fsm_design)
-        verilog = lower_uglir_to_rtl(uglir_design, hdl="verilog", wrap="slave", protocol="wishbone")
+        wrapped_uglir = wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone")
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
 
-        self.assertIn("// Wrapper for wrap=slave protocol=wishbone.", verilog)
-        self.assertIn("module add1_core (", verilog)
         self.assertIn("module add1 #(", verilog)
         self.assertIn("parameter [31:0] WB_BASE_ADDR = 32'h0000_0000", verilog)
         self.assertIn("input wb_cyc_i,", verilog)
@@ -129,10 +128,9 @@ class RTLLoweringTests(unittest.TestCase):
         self.assertIn("reg busy_q;", verilog)
         self.assertIn("reg done_q;", verilog)
         self.assertIn("assign wb_ack_o = wb_req_n;", verilog)
-        self.assertIn("assign core_req_valid_n = start_pending_q;", verilog)
-        self.assertIn("assign core_resp_ready_n = 1'b1;", verilog)
+        self.assertIn("assign req_valid = start_pending_q;", verilog)
+        self.assertIn("assign resp_ready = 1'b1;", verilog)
         self.assertIn("start_pending_q <= ((wb_req_n && wb_we_i) && (wb_adr_i == WB_REG_CONTROL_STATUS) && wb_dat_i[0]) ? 1'b1", verilog)
-        self.assertIn("add1_core core (", verilog)
 
     def test_lower_uglir_to_verilog_accepts_none_memory_wrap_pair(self) -> None:
         fsm_design = parse_uhir(
@@ -171,7 +169,8 @@ class RTLLoweringTests(unittest.TestCase):
         )
 
         uglir_design = lower_fsm_to_uglir(fsm_design)
-        verilog = lower_uglir_to_rtl(uglir_design, hdl="verilog", wrap="none", protocol="memory")
+        wrapped_uglir = wrap_uglir_design(uglir_design, wrap="none", protocol="memory")
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
 
         self.assertIn("module add1 (", verilog)
         self.assertNotIn("module add1_core (", verilog)
@@ -257,7 +256,8 @@ class RTLLoweringTests(unittest.TestCase):
         )["components"]
 
         uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
-        verilog = lower_uglir_to_rtl(uglir_design, hdl="verilog", wrap="none", protocol="memory")
+        wrapped_uglir = wrap_uglir_design(uglir_design, wrap="none", protocol="memory")
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
 
         self.assertIn("input signed [31:0] A_rdata,", verilog)
         self.assertIn("output signed [31:0] A_addr", verilog)
@@ -342,7 +342,8 @@ class RTLLoweringTests(unittest.TestCase):
         )["components"]
 
         uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
-        verilog = lower_uglir_to_rtl(uglir_design, hdl="verilog", wrap="slave", protocol="wishbone")
+        wrapped_uglir = wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone")
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
 
         self.assertIn(("A_depth", 4, "u32"), [(const.name, const.value, const.type) for const in uglir_design.constants])
         self.assertIn("localparam [31:0] WB_MEM_A_BASE = WB_BASE_ADDR + 32'h0000_1000;", verilog)
@@ -444,4 +445,4 @@ class RTLLoweringTests(unittest.TestCase):
             ValueError,
             "memory interface 'A' declares word_t=i16 but core bundle uses i32",
         ):
-            lower_uglir_to_rtl(uglir_design, hdl="verilog", wrap="slave", protocol="wishbone")
+            wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone")

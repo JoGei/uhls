@@ -87,14 +87,15 @@ The intended generic entrypoint is:
 uhls rtl input.uglir --hdl=<target>
 ----
 
-with wrapper options:
+Structural wrapper/protocol composition happens earlier in `glue`, for example:
 
 [source,text]
 ----
-uhls rtl input.uglir --hdl=<target> --wrapper=<kind> --protocol=<kind>
+uhls glue input.fsm.uhir --wrap=<kind> --protocol=<kind> -o wrapped.uglir
+uhls rtl wrapped.uglir --hdl=<target>
 ----
 
-Short options should also be available:
+Short options for structural composition are:
 
 * `--wrapper` / `--wrap`
 * `--protocol` / `--prot`
@@ -107,8 +108,9 @@ The stage is intentionally generic.
 
 The common contract is:
 
+* `glue` decides structural composition such as wrappers and bus protocols
 * `rtl` decides *which HDL* to emit
-* `uglir` stays independent of HDL syntax
+* `µglIR` stays independent of HDL syntax
 
 The first implemented target is:
 
@@ -121,7 +123,10 @@ Planned targets are:
 
 == Wrapper Model
 
-The `rtl` stage should offer integration wrappers for ease of:
+The wrapper model is part of structural hardware-glue composition and is
+therefore decided in `glue`, then carried in `µglIR` into `rtl`.
+
+The wrapper model should support ease of:
 
 * SoC integration
 * HW-SW interfacing
@@ -195,7 +200,7 @@ That means the wrapper contract should be described in abstract terms such as:
 * master-side memory access
 * raw memory/slave/master interface roles
 
-Only after that semantic choice is made should `rtl` pick a concrete transport
+Only after that semantic choice is made should `glue` pick a concrete transport
 protocol with `--protocol`.
 
 === `--protocol` / `--prot`
@@ -243,8 +248,8 @@ is exposed directly without an integration bus wrapper.
 
 The staged implementation should be:
 
-1. plain `rtl` emission from `uglir` with `--hdl=verilog`
-2. wrapper stubs for:
+1. plain `rtl` emission from `µglIR` with `--hdl=verilog`
+2. wrapper-capable `glue` generation for:
    * `slave + wishbone`
 3. explicit raw-core mode:
    * `none`
@@ -351,8 +356,9 @@ That means:
 * the wrapper decides how those interfaces are realized for a particular SoC
   integration style
 
-This is exactly why wrapper generation belongs in `rtl`, not earlier in the
-pipeline.
+This is exactly why wrapper generation belongs in `glue` as structural
+composition, while `rtl` stays focused on HDL emission from a fully formed
+`µglIR` design.
 
 == Bare Core Memory Semantics
 

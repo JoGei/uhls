@@ -18,9 +18,9 @@ from uhls.backend.hls import (
     BIND_DUMP_KINDS,
     CallableSGUScheduler,
     FSM_ENCODINGS,
+    GLUE_PROTOCOLS,
+    GLUE_WRAPS,
     RTL_HDLS,
-    RTL_PROTOCOLS,
-    RTL_WRAPS,
     bind_dump_to_dot,
     binding_to_dot,
     builtin_binder_names,
@@ -34,6 +34,7 @@ from uhls.backend.hls import (
     lower_uglir_to_rtl,
     parse_bind_dump_spec,
     validate_uglir_for_rtl,
+    wrap_uglir_design,
 )
 from uhls.backend.hls.component_library import validate_component_library
 from uhls.backend.hls.uhir import (
@@ -791,6 +792,9 @@ def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
         "\n"
         "\b\n"
         "  uhls glue input.fsm.uhir --resources ressources.json -o output.uglir\n"
+        "\n"
+        "\b\n"
+        "  uhls glue input.fsm.uhir --wrap=slave --protocol=wishbone -o output.uglir\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -802,14 +806,37 @@ def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Optional component-library JSON used to drive µglIR instance-port attachment/signature handling.",
 )
+@click.option(
+    "--wrap",
+    type=click.Choice(GLUE_WRAPS, case_sensitive=False),
+    help="Optional structural wrapping style applied while building µglIR.",
+)
+@click.option(
+    "--protocol",
+    type=click.Choice(GLUE_PROTOCOLS, case_sensitive=False),
+    help="Optional interface/bus protocol used for wrapped µglIR generation.",
+)
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
-def glue_cmd(input_path: Path, resources_path: Path | None, output: Path | None) -> None:
-    """Lower fsm-stage µhIR to µglIR."""
+def glue_cmd(
+    input_path: Path,
+    resources_path: Path | None,
+    wrap: str | None,
+    protocol: str | None,
+    output: Path | None,
+) -> None:
+    """Lower fsm-stage µhIR to µglIR and optionally apply wrapper composition."""
     design = parse_uhir_file(input_path)
-    if design.stage != "fsm":
-        raise CLIError(f"'glue' expects fsm-stage µhIR input, got stage '{design.stage}'")
-    component_library = _load_component_library(resources_path) if resources_path is not None else None
-    lowered = lower_fsm_to_uglir(design, component_library=component_library)
+    if design.stage == "fsm":
+        component_library = _load_component_library(resources_path) if resources_path is not None else None
+        lowered = lower_fsm_to_uglir(design, component_library=component_library)
+    elif design.stage == "uglir":
+        lowered = design
+    else:
+        raise CLIError(f"'glue' expects fsm-stage µhIR or µglIR input, got stage '{design.stage}'")
+    try:
+        lowered = wrap_uglir_design(lowered, wrap=wrap, protocol=protocol)
+    except (NotImplementedError, ValueError) as exc:
+        raise CLIError(str(exc)) from exc
     _write_or_print_text(format_uhir(lowered), output)
 
 
@@ -825,12 +852,6 @@ def glue_cmd(input_path: Path, resources_path: Path | None, output: Path | None)
         "\n"
         "\b\n"
         "  uhls rtl input.uglir --hdl=verilog -o output.v\n"
-        "\n"
-        "\b\n"
-        "  uhls rtl input.uglir --hdl=verilog --wrap=none --protocol=memory -o output.v\n"
-        "\n"
-        "\b\n"
-        "  uhls rtl input.uglir --hdl=verilog --wrap=slave --protocol=wishbone -o output.v\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -840,24 +861,14 @@ def glue_cmd(input_path: Path, resources_path: Path | None, output: Path | None)
     type=click.Choice(RTL_HDLS, case_sensitive=False),
     help="Target RTL language.",
 )
-@click.option(
-    "--wrap",
-    type=click.Choice(RTL_WRAPS, case_sensitive=False),
-    help="Optional external wrapping style for the generated RTL.",
-)
-@click.option(
-    "--protocol",
-    type=click.Choice(RTL_PROTOCOLS, case_sensitive=False),
-    help="Optional interface/bus protocol for the generated wrapper.",
-)
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
-def rtl_cmd(input_path: Path, hdl: str, wrap: str | None, protocol: str | None, output: Path | None) -> None:
+def rtl_cmd(input_path: Path, hdl: str, output: Path | None) -> None:
     """Lower µglIR to one textual RTL artifact."""
     design = parse_uhir_file(input_path)
     if design.stage != "uglir":
         raise CLIError(f"'rtl' expects µglIR input, got stage '{design.stage}'")
     try:
-        lowered = lower_uglir_to_rtl(design, hdl=hdl, wrap=wrap, protocol=protocol)
+        lowered = lower_uglir_to_rtl(design, hdl=hdl)
     except (NotImplementedError, ValueError) as exc:
         raise CLIError(str(exc)) from exc
     _write_or_print_text(lowered, output)

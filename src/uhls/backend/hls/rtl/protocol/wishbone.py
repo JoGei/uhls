@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import re
 
-from uhls.backend.hls.uhir.model import UHIRAssign, UHIRAttach, UHIRConstant, UHIRDesign, UHIRPort, UHIRResource, UHIRSeqBlock, UHIRSeqUpdate
+from uhls.backend.hls.uhir.model import UHIRAssign, UHIRConstant, UHIRDesign, UHIRPort, UHIRResource, UHIRSeqBlock, UHIRSeqUpdate
 
-from ..wrap import SlaveWrapperPlan, wrapper_core_signal
+from ..wrap import SlaveWrapperPlan
 
 
 @dataclass(frozen=True)
@@ -109,16 +110,27 @@ def plan_wishbone_slave_protocol(wrapper: SlaveWrapperPlan) -> WishboneSlaveProt
     )
 
 
-def build_wishbone_slave_wrapper_uglir(
-    core_design: UHIRDesign,
-    core_module_name: str,
-    wrapper: SlaveWrapperPlan,
-    protocol: WishboneSlaveProtocolPlan,
-) -> UHIRDesign:
-    """Build one Wishbone slave wrapper as an internal µglIR design."""
-    design = UHIRDesign(name=core_design.name, stage="uglir")
+def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWrapperPlan, protocol: WishboneSlaveProtocolPlan) -> UHIRDesign:
+    """Merge a Wishbone slave wrapper around one core µglIR design."""
+    design = deepcopy(core_design)
+    if design.stage != "uglir":
+        raise ValueError(f"wishbone wrapper builder expects µglIR input, got stage '{design.stage}'")
+
+    original_inputs = list(design.inputs)
+    original_outputs = list(design.outputs)
+    core_scalar_input_names = {port.name for port in wrapper.scalar_inputs}
+    core_scalar_output_names = {port.name for port in wrapper.scalar_outputs}
+    memory_bases = {interface.base for interface in wrapper.memory_interfaces}
+
     design.inputs = [UHIRPort(port.direction, port.name, port.type) for port in protocol.ports if port.direction == "input"]
     design.outputs = [UHIRPort(port.direction, port.name, port.type) for port in protocol.ports if port.direction == "output"]
+
+    for port in original_inputs:
+        if port.name not in {"clk", "rst"}:
+            design.resources.append(UHIRResource("net", port.name, port.type))
+    for port in original_outputs:
+        design.resources.append(UHIRResource("net", port.name, port.type))
+
     design.constants.append(UHIRConstant("WB_REG_CONTROL_STATUS", f"WB_BASE_ADDR + {_u32(protocol.control_status_address)}", "u32"))
     for port in protocol.scalar_inputs:
         design.constants.append(UHIRConstant(port.symbol, f"WB_BASE_ADDR + {_u32(port.address)}", "u32"))
@@ -130,49 +142,32 @@ def build_wishbone_slave_wrapper_uglir(
     design.resources.extend(
         [
             UHIRResource("net", "wb_req_n", "i1"),
-            UHIRResource("net", "core_req_valid_n", "i1"),
-            UHIRResource("net", "core_resp_ready_n", "i1"),
-            UHIRResource("net", "core_req_ready_n", "i1"),
-            UHIRResource("net", "core_resp_valid_n", "i1"),
             UHIRResource("reg", "start_pending_q", "i1"),
             UHIRResource("reg", "busy_q", "i1"),
             UHIRResource("reg", "done_q", "i1"),
-            UHIRResource("inst", "core", core_module_name),
         ]
     )
-
     for port in wrapper.scalar_inputs:
         design.resources.append(UHIRResource("reg", f"{port.name}_q", port.type))
-        design.resources.append(UHIRResource("net", f"core_{port.name}_n", port.type))
     for port in wrapper.scalar_outputs:
         design.resources.append(UHIRResource("reg", f"{port.name}_q", port.type))
-        design.resources.append(UHIRResource("net", f"core_{port.name}_n", port.type))
     for interface in wrapper.memory_interfaces:
         depth = _memory_depth(interface)
         design.resources.append(UHIRResource("mem", f"{interface.base}_mem_q", f"{interface.data_type}[{depth}]"))
         design.resources.append(UHIRResource("net", f"{interface.base}_bus_hit_n", "i1"))
         design.resources.append(UHIRResource("net", f"{interface.base}_bus_word_addr_n", f"u{_memory_index_width(interface)}"))
-        if interface.addr_type is not None:
-            design.resources.append(UHIRResource("net", f"core_{interface.base}_addr_n", interface.addr_type))
-        if interface.write_type is not None:
-            design.resources.append(UHIRResource("net", f"core_{interface.base}_wdata_n", interface.write_type))
-            design.resources.append(UHIRResource("net", f"core_{interface.base}_we_n", "i1"))
-        design.resources.append(UHIRResource("net", f"core_{interface.base}_rdata_n", interface.data_type))
 
     design.assigns.extend(
         [
             UHIRAssign("wb_req_n", "wb_cyc_i & wb_stb_i"),
             UHIRAssign("wb_ack_o", "wb_req_n"),
-            UHIRAssign("core_req_valid_n", "start_pending_q"),
-            UHIRAssign("core_resp_ready_n", "true"),
-            UHIRAssign(
-                "wb_dat_o",
-                _wishbone_read_data_expr(wrapper, protocol),
-            ),
+            UHIRAssign("req_valid", "start_pending_q"),
+            UHIRAssign("resp_ready", "true"),
+            UHIRAssign("wb_dat_o", _wishbone_read_data_expr(wrapper, protocol)),
         ]
     )
     for port in wrapper.scalar_inputs:
-        design.assigns.append(UHIRAssign(f"core_{port.name}_n", f"{port.name}_q"))
+        design.assigns.append(UHIRAssign(port.name, f"{port.name}_q"))
     for interface in wrapper.memory_interfaces:
         window = next(window for window in protocol.memory_windows if window.base == interface.base)
         design.assigns.append(
@@ -184,13 +179,10 @@ def build_wishbone_slave_wrapper_uglir(
         design.assigns.append(UHIRAssign(f"{interface.base}_bus_word_addr_n", "wb_adr_i[11:2]"))
         design.assigns.append(
             UHIRAssign(
-                f"core_{interface.base}_rdata_n",
-                f"{interface.base}_mem_q[{_memory_index_expr(f'core_{interface.base}_addr_n', interface)}]",
+                f"{interface.base}_rdata",
+                f"{interface.base}_mem_q[{_memory_index_expr(f'{interface.base}_addr', interface)}]",
             )
         )
-
-    for port in [*core_design.inputs, *core_design.outputs]:
-        design.attachments.append(UHIRAttach("core", port.name, wrapper_core_signal(port.name, wrapper)))
 
     seq = UHIRSeqBlock(clock="clk", reset="rst")
     seq.reset_updates.extend(
@@ -209,19 +201,19 @@ def build_wishbone_slave_wrapper_uglir(
     seq.updates.append(
         UHIRSeqUpdate(
             "start_pending_q",
-            f"({control_write_cond}) ? true : ((start_pending_q && core_req_ready_n) ? false : start_pending_q)",
+            f"({control_write_cond}) ? true : ((start_pending_q && req_ready) ? false : start_pending_q)",
         )
     )
     seq.updates.append(
         UHIRSeqUpdate(
             "busy_q",
-            "((start_pending_q && core_req_ready_n) ? true : (core_resp_valid_n ? false : busy_q))",
+            "((start_pending_q && req_ready) ? true : (resp_valid ? false : busy_q))",
         )
     )
     seq.updates.append(
         UHIRSeqUpdate(
             "done_q",
-            f"({control_write_cond}) ? false : (core_resp_valid_n ? true : done_q)",
+            f"({control_write_cond}) ? false : (resp_valid ? true : done_q)",
         )
     )
     for port in protocol.scalar_inputs:
@@ -235,7 +227,7 @@ def build_wishbone_slave_wrapper_uglir(
         seq.updates.append(
             UHIRSeqUpdate(
                 f"{port.name}_q",
-                f"core_resp_valid_n ? core_{port.name}_n : {port.name}_q",
+                f"resp_valid ? {port.name} : {port.name}_q",
             )
         )
     for interface in wrapper.memory_interfaces:
@@ -247,16 +239,65 @@ def build_wishbone_slave_wrapper_uglir(
                     f"(wb_req_n && wb_we_i) && {interface.base}_bus_hit_n",
                 )
             )
-        if interface.write_type is not None:
             seq.updates.append(
                 UHIRSeqUpdate(
-                    f"{interface.base}_mem_q[{_memory_index_expr(f'core_{interface.base}_addr_n', interface)}]",
-                    f"core_{interface.base}_wdata_n",
-                    f"core_{interface.base}_we_n",
+                    f"{interface.base}_mem_q[{_memory_index_expr(f'{interface.base}_addr', interface)}]",
+                    f"{interface.base}_wdata",
+                    f"{interface.base}_we",
                 )
             )
     design.seq_blocks.append(seq)
+
+    _dedupe_resources(design)
+    _dedupe_constants(design)
+    _drop_obsolete_interface_ports(design, original_inputs, original_outputs, core_scalar_input_names, core_scalar_output_names, memory_bases)
     return design
+
+
+def _drop_obsolete_interface_ports(
+    design: UHIRDesign,
+    original_inputs: list[UHIRPort],
+    original_outputs: list[UHIRPort],
+    scalar_input_names: set[str],
+    scalar_output_names: set[str],
+    memory_bases: set[str],
+) -> None:
+    current_input_names = {port.name for port in design.inputs}
+    current_output_names = {port.name for port in design.outputs}
+    for port in original_inputs:
+        if port.name in {"clk", "rst"} or port.name in current_input_names:
+            continue
+        if port.name in scalar_input_names or any(port.name == f"{base}_rdata" for base in memory_bases):
+            continue
+    for port in original_outputs:
+        if port.name in current_output_names:
+            continue
+        if port.name in scalar_output_names or any(port.name in {f"{base}_addr", f"{base}_wdata", f"{base}_we"} for base in memory_bases):
+            continue
+
+
+def _dedupe_resources(design: UHIRDesign) -> None:
+    deduped: list[UHIRResource] = []
+    seen: set[tuple[str, str, str, str | None]] = set()
+    for resource in design.resources:
+        key = (resource.kind, resource.id, resource.value, resource.target)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(resource)
+    design.resources = deduped
+
+
+def _dedupe_constants(design: UHIRDesign) -> None:
+    deduped: list[UHIRConstant] = []
+    seen: set[tuple[str, int | str, str]] = set()
+    for constant in design.constants:
+        key = (constant.name, constant.value, constant.type)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(constant)
+    design.constants = deduped
 
 
 def _sanitize_symbol(text: str) -> str:
@@ -350,6 +391,6 @@ def _wishbone_read_data_expr(wrapper: SlaveWrapperPlan, protocol: WishboneSlaveP
         read_expr = f"(wb_adr_i == {port.symbol}) ? {_pack_to_wishbone(port.name + '_q', port.type)} : ({read_expr})"
     for port in reversed(protocol.scalar_inputs):
         read_expr = f"(wb_adr_i == {port.symbol}) ? {_pack_to_wishbone(port.name + '_q', port.type)} : ({read_expr})"
-    status_expr = "{28:u28, core_req_ready_n, start_pending_q, busy_q, done_q}"
+    status_expr = "{28:u28, req_ready, start_pending_q, busy_q, done_q}"
     read_expr = f"(wb_adr_i == WB_REG_CONTROL_STATUS) ? {status_expr} : ({read_expr})"
     return f"((wb_req_n && !wb_we_i) ? ({read_expr}) : 0:u32)"

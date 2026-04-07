@@ -2542,72 +2542,69 @@ seq clk {
             self.assertIn("always @(posedge clk) begin", verilog_text)
             self.assertIn("endmodule", verilog_text)
 
-    def test_rtl_command_accepts_wishbone_slave_wrapper(self) -> None:
-        uglir = """design add1
-stage uglir
-input  clk : clock
-input  rst : i1
-input  req_valid : i1
-input  resp_ready : i1
+    def test_glue_command_accepts_wishbone_slave_wrapper(self) -> None:
+        fsm = """design add1
+stage fsm
+schedule kind=control_steps
 input  x : i32
-output req_ready : i1
-output resp_valid : i1
 output result : i32
 resources {
-  reg state : u1
-  net next_state : u1
+  fu ewms0 : EWMS
+}
+controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+  input  req_valid : i1
+  input  resp_ready : i1
+  output req_ready : i1
+  output resp_valid : i1
+  state IDLE code=1
+  state DONE code=2
+  transition IDLE -> DONE when=req_valid && req_ready
+  transition DONE -> IDLE when=resp_valid && resp_ready
+  emit IDLE req_ready=true
+  emit DONE resp_valid=true
 }
 
-assign req_ready = 1:i1
-
-assign resp_valid = 1:i1
-
-assign next_state = 0:u1
-
-assign result = x
-
-seq clk {
-  if rst {
-    state <= 0:u1
-  } else {
-    state <= next_state
-  }
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = ret x class=CTRL ii=0 delay=0 start=0 end=0
+  node v2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+  edge data v0 -> v1
+  edge data v1 -> v2
+  steps [0:0]
+  latency 1
 }
 """
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            uglir_path = root / "add1.uglir"
-            rtl_path = root / "add1_wrap.v"
-            uglir_path.write_text(uglir, encoding="utf-8")
+            fsm_path = root / "add1.fsm.uhir"
+            uglir_path = root / "add1_wrap.uglir"
+            fsm_path.write_text(fsm, encoding="utf-8")
 
             self.assertEqual(
                 main(
                     [
-                        "rtl",
-                        str(uglir_path),
-                        "--hdl",
-                        "verilog",
+                        "glue",
+                        str(fsm_path),
                         "--wrap",
                         "slave",
                         "--protocol",
                         "wishbone",
                         "-o",
-                        str(rtl_path),
+                        str(uglir_path),
                     ]
                 ),
                 0,
             )
 
-            verilog_text = rtl_path.read_text(encoding="utf-8")
-            self.assertIn("module add1_core (", verilog_text)
-            self.assertIn("module add1 #(", verilog_text)
-            self.assertIn("input [31:0] wb_adr_i,", verilog_text)
-            self.assertIn("parameter [31:0] WB_BASE_ADDR = 32'h0000_0000", verilog_text)
-            self.assertIn("localparam [31:0] WB_REG_CONTROL_STATUS = WB_BASE_ADDR + 32'h0000_0000;", verilog_text)
-            self.assertIn("assign wb_ack_o = wb_req_n;", verilog_text)
-            self.assertIn("assign core_req_valid_n = start_pending_q;", verilog_text)
+            uglir_text = uglir_path.read_text(encoding="utf-8")
+            self.assertIn("input  wb_adr_i : u32", uglir_text)
+            self.assertIn("output wb_dat_o : u32", uglir_text)
+            self.assertIn("WB_REG_CONTROL_STATUS =", uglir_text)
+            self.assertIn("reg start_pending_q : i1", uglir_text)
+            self.assertIn("assign req_valid = start_pending_q", uglir_text)
+            self.assertIn("assign wb_ack_o = wb_req_n", uglir_text)
 
-    def test_rtl_command_accepts_none_memory_wrapper_pair(self) -> None:
+    def test_glue_command_accepts_none_memory_wrapper_pair(self) -> None:
         uglir = """design add1
 stage uglir
 input  clk : clock
@@ -2648,10 +2645,8 @@ seq clk {
             self.assertEqual(
                 main(
                     [
-                        "rtl",
+                        "glue",
                         str(uglir_path),
-                        "--hdl",
-                        "verilog",
                         "--wrap",
                         "none",
                         "--protocol",
@@ -2663,11 +2658,10 @@ seq clk {
                 0,
             )
 
-            verilog_text = rtl_path.read_text(encoding="utf-8")
-            self.assertIn("module add1 (", verilog_text)
-            self.assertNotIn("module add1_core (", verilog_text)
-            self.assertIn("input req_valid,", verilog_text)
-            self.assertIn("output resp_valid,", verilog_text)
+            uglir_text = rtl_path.read_text(encoding="utf-8")
+            self.assertIn("stage uglir", uglir_text)
+            self.assertIn("input  req_valid : i1", uglir_text)
+            self.assertIn("output resp_valid : i1", uglir_text)
 
     def test_view_command_can_render_bind_conflict_dot(self) -> None:
         sched = """design add_pair

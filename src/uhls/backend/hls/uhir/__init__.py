@@ -88,7 +88,7 @@ def lower_bind_to_fsm(*args: object, **kwargs: object) -> object:
 
 def lower_fsm_to_uglir(*args: object, **kwargs: object) -> object:
     """Lower fsm-stage µhIR to uglir-stage µhIR."""
-    from uhls.backend.hls.uglir import lower_fsm_to_uglir as _impl
+    from uhls.backend.hls.glue import lower_fsm_to_uglir as _impl
 
     return _impl(*args, **kwargs)
 

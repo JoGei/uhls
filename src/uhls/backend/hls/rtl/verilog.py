@@ -41,6 +41,8 @@ def emit_uglir_to_verilog(
     if design.stage != "uglir":
         raise ValueError(f"verilog emission expects uglir input, got stage '{design.stage}'")
     rendered_module_name = design.name if module_name is None else module_name
+    if module_parameters is None:
+        module_parameters = _infer_module_parameters(design)
 
     ctrl_widths = _ctrl_widths(design)
     ctrl_enums = _ctrl_enum_symbols(design)
@@ -172,6 +174,13 @@ def emit_uglir_to_verilog_wrapped(design: UHIRDesign, wrap: str, protocol: str) 
         )
     )
     return "\n".join(wrapper_lines)
+
+
+def _infer_module_parameters(design: UHIRDesign) -> list[str] | None:
+    parameters: list[str] = []
+    if any(re.search(r"\bWB_BASE_ADDR\b", str(const_decl.value)) for const_decl in design.constants):
+        parameters.append("parameter [31:0] WB_BASE_ADDR = 32'h0000_0000")
+    return parameters or None
 
 
 def _format_port_decl(port: UHIRPort, ctrl_widths: dict[str, int]) -> str:

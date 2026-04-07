@@ -59,7 +59,7 @@ It does *not* restate the internals of arithmetic or memory components.
 
 == Purpose
 
-µglIR is the first backend IR whose primary viewpoint is *signal-oriented
+µglIR is the first backend IR within µhLS whose primary viewpoint is *signal-oriented
 hardware structure* instead of graph refinement or control-step actions.
 
 It exists to separate:
@@ -87,6 +87,9 @@ ____
 So a component such as an adder, multiplier, memory port, or child controller
 appears in µglIR as an *instance with ports*, not as re-expanded behavioral
 logic.
+
+NOTE: While µglIR is not intendend to model behaviorals of functional units and 
+components, in theory pure-digital components are within its scope.
 
 == Current Memory Assumption
 
@@ -543,7 +546,7 @@ The first version of µglIR should support four core structural statements:
 
 === Instance Port Attachment
 
-Instance hookups use one explicit application-like form:
+Instance wiring use one explicit application-like form:
 
 Syntax:
 

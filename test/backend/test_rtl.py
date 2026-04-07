@@ -131,7 +131,7 @@ class RTLLoweringTests(unittest.TestCase):
         self.assertIn("assign wb_ack_o = wb_req_n;", verilog)
         self.assertIn("assign core_req_valid_n = start_pending_q;", verilog)
         self.assertIn("assign core_resp_ready_n = 1'b1;", verilog)
-        self.assertIn("if (wb_adr_i == WB_REG_CONTROL_STATUS && wb_dat_i[0]) begin", verilog)
+        self.assertIn("start_pending_q <= ((wb_req_n && wb_we_i) && (wb_adr_i == WB_REG_CONTROL_STATUS) && wb_dat_i[0]) ? 1'b1", verilog)
         self.assertIn("add1_core core (", verilog)
 
     def test_lower_uglir_to_verilog_accepts_none_memory_wrap_pair(self) -> None:

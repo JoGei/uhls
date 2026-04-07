@@ -32,7 +32,11 @@ _VERILOG_KEYWORDS = frozenset({
 })
 
 
-def emit_uglir_to_verilog(design: UHIRDesign, module_name: str | None = None) -> str:
+def emit_uglir_to_verilog(
+    design: UHIRDesign,
+    module_name: str | None = None,
+    module_parameters: list[str] | None = None,
+) -> str:
     """Render one uglir design as Verilog."""
     if design.stage != "uglir":
         raise ValueError(f"verilog emission expects uglir input, got stage '{design.stage}'")
@@ -44,7 +48,14 @@ def emit_uglir_to_verilog(design: UHIRDesign, module_name: str | None = None) ->
 
     lines: list[str] = []
     port_lines = [f"    {_format_port_decl(port, ctrl_widths)}" for port in [*design.inputs, *design.outputs]]
-    lines.append(f"module {rendered_module_name} (")
+    if module_parameters:
+        lines.append(f"module {rendered_module_name} #(")
+        for index, parameter in enumerate(module_parameters):
+            suffix = "," if index < len(module_parameters) - 1 else ""
+            lines.append(f"    {parameter}{suffix}")
+        lines.append(") (")
+    else:
+        lines.append(f"module {rendered_module_name} (")
     for index, port_line in enumerate(port_lines):
         suffix = "," if index < len(port_lines) - 1 else ""
         lines.append(f"{port_line}{suffix}")
@@ -77,6 +88,9 @@ def emit_uglir_to_verilog(design: UHIRDesign, module_name: str | None = None) ->
             continue
         if resource.kind == "reg":
             lines.append(f"  {_join_decl_tokens('reg', _format_decl_type(resource.value, ctrl_widths, resource.id), resource.id)};")
+            continue
+        if resource.kind == "mem":
+            lines.append(f"  {_format_mem_decl(resource)};")
             continue
         if resource.kind in {"net", "mux"}:
             lines.append(f"  {_join_decl_tokens('wire', _format_decl_type(resource.value, ctrl_widths, resource.id), resource.id)};")
@@ -143,18 +157,20 @@ def emit_uglir_to_verilog_wrapped(design: UHIRDesign, wrap: str, protocol: str) 
         "//   0x1000.. memory windows (4 KiB per memory, word addressed)",
         emit_uglir_to_verilog(design, module_name=core_module_name),
         "",
-        f"module {design.name} #(",
-        "    parameter [31:0] WB_BASE_ADDR = 32'h0000_0000",
-        ") (",
-        *[
-            f"    {_format_port_decl(UHIRPort(port.direction, port.name, port.type), {})}{',' if index < len(protocol_plan.ports) - 1 else ''}"
-            for index, port in enumerate(protocol_plan.ports)
-        ],
-        ");",
-        "",
     ]
-    wrapper_lines.extend(_emit_wishbone_slave_wrapper_body(design, core_module_name, wrapper_plan, protocol_plan))
-    wrapper_lines.append("endmodule")
+    from .protocol import build_wishbone_slave_wrapper_uglir
+
+    wrapper_design = build_wishbone_slave_wrapper_uglir(design, core_module_name, wrapper_plan, protocol_plan)
+    from ..uglir import validate_uglir_for_rtl
+
+    validate_uglir_for_rtl(wrapper_design)
+    wrapper_lines.append(
+        emit_uglir_to_verilog(
+            wrapper_design,
+            module_name=design.name,
+            module_parameters=["parameter [31:0] WB_BASE_ADDR = 32'h0000_0000"],
+        )
+    )
     return "\n".join(wrapper_lines)
 
 
@@ -296,186 +312,6 @@ def _format_seq_update(update: UHIRSeqUpdate, ctrl_enums: dict[str, dict[str, st
     return f"{update.target} <= {_translate_expr(update.value, ctrl_enums, None)};"
 
 
-def _emit_wishbone_slave_wrapper_body(
-    design: UHIRDesign,
-    core_module_name: str,
-    wrapper_plan: SlaveWrapperPlan,
-    protocol_plan: WishboneSlaveProtocolPlan,
-) -> list[str]:
-    scalar_inputs = list(wrapper_plan.scalar_inputs)
-    scalar_outputs = list(wrapper_plan.scalar_outputs)
-    memory_interfaces = list(wrapper_plan.memory_interfaces)
-    lines: list[str] = []
-    lines.append(
-        f"  localparam [31:0] WB_REG_CONTROL_STATUS = WB_BASE_ADDR + {_format_hex32(protocol_plan.control_status_address)};"
-    )
-    for port in protocol_plan.scalar_inputs:
-        lines.append(f"  localparam [31:0] {port.symbol} = WB_BASE_ADDR + {_format_hex32(port.address)};")
-    for port in protocol_plan.scalar_outputs:
-        lines.append(f"  localparam [31:0] {port.symbol} = WB_BASE_ADDR + {_format_hex32(port.address)};")
-    for window in protocol_plan.memory_windows:
-        lines.append(f"  localparam [31:0] {window.symbol} = WB_BASE_ADDR + {_format_hex32(window.base_address)};")
-    if scalar_inputs or scalar_outputs or memory_interfaces:
-        lines.append("")
-
-    lines.extend(
-        [
-            "  wire wb_req_n;",
-            "  wire core_req_valid_n;",
-            "  wire core_resp_ready_n;",
-            "  wire core_req_ready_n;",
-            "  wire core_resp_valid_n;",
-            "  reg start_pending_q;",
-            "  reg busy_q;",
-            "  reg done_q;",
-            "  reg [31:0] wb_dat_o_q;",
-            "",
-            "  assign wb_req_n = wb_cyc_i & wb_stb_i;",
-            "  assign wb_ack_o = wb_req_n;",
-            "  assign wb_dat_o = wb_dat_o_q;",
-            "  assign core_req_valid_n = start_pending_q;",
-            "  assign core_resp_ready_n = 1'b1;",
-            "",
-        ]
-    )
-
-    for port in scalar_inputs:
-        lines.append(f"  reg {_join_decl_tokens(_format_decl_type(port.type, {}, port.name), f'{port.name}_q')};")
-    for port in scalar_outputs:
-        lines.append(f"  reg {_join_decl_tokens(_format_decl_type(port.type, {}, port.name), f'{port.name}_q')};")
-    for interface in memory_interfaces:
-        data_type = interface.data_type
-        base = interface.base
-        lines.append(
-            f"  reg {_join_decl_tokens(_format_decl_type(data_type, {}, base), f'{base}_mem_q [0:{_memory_depth(interface) - 1}]')};"
-        )
-    if scalar_inputs or scalar_outputs or memory_interfaces:
-        lines.append("")
-
-    for interface in memory_interfaces:
-        base = interface.base
-        lines.append(
-            f"  wire {_join_decl_tokens(_format_decl_type(f'u{_memory_index_width(interface)}', {}, None), f'{base}_bus_word_addr_n')};"
-        )
-        lines.append(f"  wire {base}_bus_hit_n;")
-    if memory_interfaces:
-        lines.append("")
-
-    for interface in memory_interfaces:
-        base = interface.base
-        window = next(window for window in protocol_plan.memory_windows if window.base == base)
-        lines.append(
-            f"  assign {base}_bus_hit_n = wb_adr_i >= {window.symbol} && "
-            f"wb_adr_i < ({window.symbol} + {_format_hex32(window.span_bytes)});"
-        )
-        lines.append(f"  assign {base}_bus_word_addr_n = wb_adr_i[11:2];")
-    if memory_interfaces:
-        lines.append("")
-
-    for interface in memory_interfaces:
-        base = interface.base
-        lines.append(f"  wire {_join_decl_tokens(_format_decl_type(str(interface.addr_type), {}, None), f'core_{base}_addr_n')};")
-        if interface.write_type is not None:
-            lines.append(f"  wire {_join_decl_tokens(_format_decl_type(str(interface.write_type), {}, None), f'core_{base}_wdata_n')};")
-            lines.append(f"  wire core_{base}_we_n;")
-        lines.append(f"  wire {_join_decl_tokens(_format_decl_type(str(interface.data_type), {}, None), f'core_{base}_rdata_n')};")
-    for port in scalar_inputs:
-        lines.append(f"  wire {_join_decl_tokens(_format_decl_type(port.type, {}, port.name), f'core_{port.name}_n')};")
-    for port in scalar_outputs:
-        lines.append(f"  wire {_join_decl_tokens(_format_decl_type(port.type, {}, port.name), f'core_{port.name}_n')};")
-    if scalar_inputs or scalar_outputs or memory_interfaces:
-        lines.append("")
-
-    for port in scalar_inputs:
-        lines.append(f"  assign core_{port.name}_n = {port.name}_q;")
-    for interface in memory_interfaces:
-        base = interface.base
-        lines.append(f"  assign core_{base}_rdata_n = {base}_mem_q[{_memory_index_expr(f'core_{base}_addr_n', interface)}];")
-    if scalar_inputs or memory_interfaces:
-        lines.append("")
-
-    lines.append("  always @(*) begin")
-    lines.append("    wb_dat_o_q = 32'd0;")
-    lines.append("    if (wb_req_n && !wb_we_i) begin")
-    lines.append("      if (wb_adr_i == WB_REG_CONTROL_STATUS) begin")
-    lines.append("        wb_dat_o_q = {28'd0, core_req_ready_n, start_pending_q, busy_q, done_q};")
-    lines.append("      end")
-    for port in protocol_plan.scalar_inputs:
-        lines.append(f"      else if (wb_adr_i == {port.symbol}) begin")
-        lines.append(f"        wb_dat_o_q = {_pack_to_wishbone(port.name + '_q', port.type)};")
-        lines.append("      end")
-    for port in protocol_plan.scalar_outputs:
-        lines.append(f"      else if (wb_adr_i == {port.symbol}) begin")
-        lines.append(f"        wb_dat_o_q = {_pack_to_wishbone(port.name + '_q', port.type)};")
-        lines.append("      end")
-    for interface in memory_interfaces:
-        base = interface.base
-        lines.append(f"      else if ({base}_bus_hit_n) begin")
-        lines.append(f"        wb_dat_o_q = {_pack_to_wishbone(f'{base}_mem_q[{base}_bus_word_addr_n]', str(interface.data_type))};")
-        lines.append("      end")
-    lines.append("    end")
-    lines.append("  end")
-    lines.append("")
-
-    lines.append("  always @(posedge clk) begin")
-    lines.append("    if (rst) begin")
-    lines.append("      start_pending_q <= 1'b0;")
-    lines.append("      busy_q <= 1'b0;")
-    lines.append("      done_q <= 1'b0;")
-    for port in scalar_inputs:
-        lines.append(f"      {port.name}_q <= {_zero_expr_for_type(port.type)};")
-    for port in scalar_outputs:
-        lines.append(f"      {port.name}_q <= {_zero_expr_for_type(port.type)};")
-    lines.append("    end else begin")
-    lines.append("      if (wb_req_n && wb_we_i) begin")
-    lines.append("        if (wb_adr_i == WB_REG_CONTROL_STATUS && wb_dat_i[0]) begin")
-    lines.append("          start_pending_q <= 1'b1;")
-    lines.append("          done_q <= 1'b0;")
-    lines.append("        end")
-    for port in protocol_plan.scalar_inputs:
-        lines.append(f"        else if (wb_adr_i == {port.symbol}) begin")
-        lines.append(f"          {port.name}_q <= {_unpack_from_wishbone('wb_dat_i', port.type)};")
-        lines.append("        end")
-    for interface in memory_interfaces:
-        if not interface.has_write:
-            continue
-        base = interface.base
-        lines.append(f"        else if ({base}_bus_hit_n) begin")
-        lines.append(f"          {base}_mem_q[{base}_bus_word_addr_n] <= {_unpack_from_wishbone('wb_dat_i', str(interface.data_type))};")
-        lines.append("        end")
-    lines.append("      end")
-    lines.append("")
-    lines.append("      if (start_pending_q && core_req_ready_n) begin")
-    lines.append("        start_pending_q <= 1'b0;")
-    lines.append("        busy_q <= 1'b1;")
-    lines.append("      end")
-    lines.append("      if (core_resp_valid_n) begin")
-    lines.append("        busy_q <= 1'b0;")
-    lines.append("        done_q <= 1'b1;")
-    for port in scalar_outputs:
-        lines.append(f"        {port.name}_q <= core_{port.name}_n;")
-    lines.append("      end")
-    for interface in memory_interfaces:
-        if not interface.has_write:
-            continue
-        base = interface.base
-        lines.append(f"      if (core_{base}_we_n) begin")
-        lines.append(f"        {base}_mem_q[{_memory_index_expr(f'core_{base}_addr_n', interface)}] <= core_{base}_wdata_n;")
-        lines.append("      end")
-    lines.append("    end")
-    lines.append("  end")
-    lines.append("")
-
-    lines.append(f"  {core_module_name} core (")
-    core_ports = [*design.inputs, *design.outputs]
-    for index, port in enumerate(core_ports):
-        suffix = "," if index < len(core_ports) - 1 else ""
-        signal = wrapper_core_signal(port.name, wrapper_plan)
-        lines.append(f"    .{port.name}({signal}){suffix}")
-    lines.append("  );")
-    return lines
-
-
 def _pack_to_wishbone(signal: str, type_hint: str) -> str:
     match = re.fullmatch(r"([iu])(\d+)", type_hint)
     if match is None:
@@ -516,6 +352,18 @@ def _memory_depth(interface) -> int:
     if isinstance(depth, int) and depth > 0:
         return depth
     return 1024
+
+
+def _format_mem_decl(resource: UHIRResource) -> str:
+    type_hint, depth = _parse_mem_type(resource.value)
+    return f"{_join_decl_tokens('reg', _format_decl_type(type_hint, {}, resource.id), f'{resource.id} [0:{depth - 1}]')};"
+
+
+def _parse_mem_type(type_hint: str) -> tuple[str, int]:
+    match = re.fullmatch(r"([iu]\d+)\[(\d+)\]", type_hint)
+    if match is None:
+        raise ValueError(f"unsupported uglir memory resource type '{type_hint}'; expected <scalar>[<depth>]")
+    return match.group(1), int(match.group(2))
 
 
 def _memory_index_width(interface) -> int:

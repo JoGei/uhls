@@ -8,6 +8,7 @@ import re
 from uhls.backend.hls.uhir.model import UHIRDesign
 
 _TYPED_INT_RE = re.compile(r"(?<![\w$])(-?\d+):(i|u)(\d+)\b")
+_VERILOG_INT_RE = re.compile(r"(?<![\w$])\d+'[sS]?[bBoOdDhH][0-9a-fA-F_xXzZ]+")
 _IDENT_RE = re.compile(r"\b[A-Za-z_][\w$]*\b")
 
 
@@ -28,9 +29,9 @@ def validate_uglir_for_rtl(design: UHIRDesign) -> None:
     signal_types.update(constants)
     signal_types.update(
         {
-            resource.id: resource.value
+            resource.id: (_mem_element_type(resource.value) if resource.kind == "mem" else resource.value)
             for resource in design.resources
-            if resource.kind in {"reg", "net", "mux"}
+            if resource.kind in {"reg", "net", "mux", "mem"}
         }
     )
     instance_ids = {resource.id for resource in design.resources if resource.kind == "inst"}
@@ -115,18 +116,24 @@ def validate_uglir_for_rtl(design: UHIRDesign) -> None:
             _validate_expr_identifiers(seq_block.reset, None, signal_types, ctrl_labels)
         reset_targets = set()
         for update in seq_block.reset_updates:
-            if update.target not in resources or resources[update.target].kind != "reg":
-                raise ValueError(f"uglir sequential update target '{update.target}' must be a reg resource")
+            target_base, target_index = _split_seq_target(update.target)
+            if target_base not in resources or resources[target_base].kind not in {"reg", "mem"}:
+                raise ValueError(f"uglir sequential update target '{update.target}' must be a reg or mem resource")
+            if resources[target_base].kind == "reg" and target_index is not None:
+                raise ValueError(f"uglir reg target '{update.target}' must not use indexed syntax")
             if update.target in reset_targets:
                 raise ValueError(f"uglir seq block reset must not update reg '{update.target}' more than once")
             reset_targets.add(update.target)
-            owner = reg_seq_owners.setdefault(update.target, seq_index)
-            if owner != seq_index:
-                raise ValueError(f"uglir reg '{update.target}' must not be driven by multiple sequential blocks")
-            reg_seq_drivers[update.target] += 1
+            if resources[target_base].kind == "reg":
+                owner = reg_seq_owners.setdefault(target_base, seq_index)
+                if owner != seq_index:
+                    raise ValueError(f"uglir reg '{target_base}' must not be driven by multiple sequential blocks")
+                reg_seq_drivers[target_base] += 1
+            if target_index is not None:
+                _validate_expr_identifiers(target_index, None, signal_types, ctrl_labels)
             _validate_expr_identifiers(update.value, None, signal_types, ctrl_labels)
             value_type = _infer_simple_expr_type(update.value, signal_types, constants)
-            target_type = signal_types[update.target]
+            target_type = signal_types[target_base]
             if value_type is not None and not _rtl_types_compatible(target_type, value_type):
                 raise ValueError(
                     f"uglir sequential update '{update.target} <= ...' has incompatible type '{value_type}' for target '{target_type}'"
@@ -134,18 +141,24 @@ def validate_uglir_for_rtl(design: UHIRDesign) -> None:
 
         update_targets = set()
         for update in seq_block.updates:
-            if update.target not in resources or resources[update.target].kind != "reg":
-                raise ValueError(f"uglir sequential update target '{update.target}' must be a reg resource")
+            target_base, target_index = _split_seq_target(update.target)
+            if target_base not in resources or resources[target_base].kind not in {"reg", "mem"}:
+                raise ValueError(f"uglir sequential update target '{update.target}' must be a reg or mem resource")
+            if resources[target_base].kind == "reg" and target_index is not None:
+                raise ValueError(f"uglir reg target '{update.target}' must not use indexed syntax")
             if update.target in update_targets:
                 raise ValueError(f"uglir seq block must not update reg '{update.target}' more than once")
             update_targets.add(update.target)
-            owner = reg_seq_owners.setdefault(update.target, seq_index)
-            if owner != seq_index:
-                raise ValueError(f"uglir reg '{update.target}' must not be driven by multiple sequential blocks")
-            reg_seq_drivers[update.target] += 1
+            if resources[target_base].kind == "reg":
+                owner = reg_seq_owners.setdefault(target_base, seq_index)
+                if owner != seq_index:
+                    raise ValueError(f"uglir reg '{target_base}' must not be driven by multiple sequential blocks")
+                reg_seq_drivers[target_base] += 1
+            if target_index is not None:
+                _validate_expr_identifiers(target_index, None, signal_types, ctrl_labels)
             _validate_expr_identifiers(update.value, None, signal_types, ctrl_labels)
             value_type = _infer_simple_expr_type(update.value, signal_types, constants)
-            target_type = signal_types[update.target]
+            target_type = signal_types[target_base]
             if value_type is not None and not _rtl_types_compatible(target_type, value_type):
                 raise ValueError(
                     f"uglir sequential update '{update.target} <= ...' has incompatible type '{value_type}' for target '{target_type}'"
@@ -159,6 +172,8 @@ def validate_uglir_for_rtl(design: UHIRDesign) -> None:
                 raise ValueError(f"uglir reg '{resource.id}' must not be driven by a continuous assign")
             if reg_seq_drivers[resource.id] == 0:
                 raise ValueError(f"uglir reg '{resource.id}' must be driven by a sequential block")
+        if resource.kind == "mem":
+            _mem_element_type(resource.value)
 
 
 def _validate_unique_signal_names(design: UHIRDesign) -> None:
@@ -195,6 +210,7 @@ def _validate_expr_identifiers(
 
 def _expr_identifiers(expr: str) -> set[str]:
     stripped = _TYPED_INT_RE.sub("", expr)
+    stripped = _VERILOG_INT_RE.sub("", stripped)
     return {token for token in _IDENT_RE.findall(stripped) if token not in {"s", "d"}}
 
 
@@ -226,3 +242,20 @@ def _rtl_types_compatible(target_type: str, source_type: str) -> bool:
 
 def _is_scalar_int_type(type_name: str) -> bool:
     return re.fullmatch(r"[iu]\d+", type_name) is not None
+
+
+def _split_seq_target(target: str) -> tuple[str, str | None]:
+    match = re.fullmatch(r"([_A-Za-z][\w$]*)(?:\[(.+)\])?", target)
+    if match is None:
+        raise ValueError(f"uglir sequential update target '{target}' must be an identifier or indexed memory element")
+    return match.group(1), match.group(2)
+
+
+def _mem_element_type(type_name: str) -> str:
+    match = re.fullmatch(r"([iu]\d+)\[(\d+)\]", type_name)
+    if match is None:
+        raise ValueError(f"uglir memory resource type '{type_name}' must be <scalar>[<depth>]")
+    depth = int(match.group(2))
+    if depth <= 0:
+        raise ValueError(f"uglir memory resource type '{type_name}' must use depth > 0")
+    return match.group(1)

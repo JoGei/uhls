@@ -210,6 +210,7 @@ For wrapped designs, the first targeted protocols are:
 * `wishbone`
 * `wishbone+err`
 * `obi`
+* `obi+burst`
 
 where:
 
@@ -222,6 +223,15 @@ where:
 * `obi` means Open Bus Interface (OpenHW Group)
   * reference: https://github.com/openhwgroup/obi
   * targeted version: `1.6.0`
+  * currently implemented subset: minimal subordinate/slave profile
+    * no sideband signals
+    * no IDs
+    * no atomics/exclusive features
+    * no integrity/parity extensions
+    * no burst support in plain `obi`
+* `obi+burst` means the same base OBI `1.6.0` subordinate profile with a
+  small in-order response queue so back-to-back accesses can be accepted while
+  earlier responses are still pending
 
 The wrapper should therefore be interpreted as:
 
@@ -255,11 +265,11 @@ The staged implementation should be:
 1. plain `rtl` emission from `µglIR` with `--hdl=verilog`
 2. wrapper-capable `glue` generation for:
    * `slave + wishbone`
+   * `slave + obi`
 3. explicit raw-core mode:
    * `none`
 4. later:
    * `master + wishbone`
-   * `slave + obi`
    * `master + obi`
 
 The first wrapper implementations may remain stubs as long as they:

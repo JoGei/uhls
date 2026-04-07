@@ -140,6 +140,8 @@ def _infer_module_parameters(design: UGLIRDesign) -> list[str] | None:
     parameters: list[str] = []
     if any(re.search(r"\bWB_BASE_ADDR\b", str(const_decl.value)) for const_decl in design.constants):
         parameters.append("parameter [31:0] WB_BASE_ADDR = 32'h0000_0000")
+    if any(re.search(r"\bOBI_BASE_ADDR\b", str(const_decl.value)) for const_decl in design.constants):
+        parameters.append("parameter [31:0] OBI_BASE_ADDR = 32'h0000_0000")
     return parameters or None
 
 

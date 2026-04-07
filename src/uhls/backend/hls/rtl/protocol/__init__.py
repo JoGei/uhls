@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .obi import plan_obi_slave_protocol
+from .obi import OBISlaveProtocolPlan, build_obi_slave_wrapper_uglir, plan_obi_slave_protocol
 from .wishbone import (
     ProtocolPort,
     WishboneMemoryWindow,
@@ -48,20 +48,24 @@ def parse_protocol_spec(text: str) -> ProtocolSpec:
 
 def protocol_spec_help() -> str:
     """Render a short user-facing help string for supported protocol specs."""
-    return "memory, wishbone[+err], obi"
+    return "memory, wishbone[+err], obi[+burst]"
 
 
 def _supported_protocol_features(base: str) -> set[str]:
     if base == "wishbone":
         return {"err"}
+    if base == "obi":
+        return {"burst"}
     return set()
 
 __all__ = [
+    "OBISlaveProtocolPlan",
     "ProtocolSpec",
     "ProtocolPort",
     "WishboneMemoryWindow",
     "WishboneScalarRegister",
     "WishboneSlaveProtocolPlan",
+    "build_obi_slave_wrapper_uglir",
     "build_wishbone_slave_wrapper_uglir",
     "parse_protocol_spec",
     "plan_obi_slave_protocol",

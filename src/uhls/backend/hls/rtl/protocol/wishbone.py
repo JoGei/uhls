@@ -426,7 +426,7 @@ def _wishbone_read_data_expr(wrapper: SlaveWrapperPlan, protocol: WishboneSlaveP
         read_expr = f"(wb_adr_i == {port.symbol}) ? {_pack_to_wishbone(port.name + '_q', port.type)} : ({read_expr})"
     for port in reversed(protocol.scalar_inputs):
         read_expr = f"(wb_adr_i == {port.symbol}) ? {_pack_to_wishbone(port.name + '_q', port.type)} : ({read_expr})"
-    status_expr = "{28:u28, req_ready, start_pending_q, busy_q, done_q}"
+    status_expr = "{0:u28, req_ready, start_pending_q, busy_q, done_q}"
     read_expr = f"(wb_adr_i == WB_REG_CONTROL_STATUS) ? {status_expr} : ({read_expr})"
     return f"((wb_req_n && !wb_we_i) ? ({read_expr}) : 0:u32)"
 

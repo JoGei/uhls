@@ -865,13 +865,16 @@ def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
         "  uhls glue input.fsm.uhir -o output.uglir\n"
         "\n"
         "\b\n"
-        "  uhls glue input.fsm.uhir --resources ressources.json -o output.uglir\n"
+        "  uhls glue input.fsm.uhir --resources resources.json -o output.uglir\n"
         "\n"
         "\b\n"
         "  uhls glue input.fsm.uhir --wrap=slave --protocol=wishbone -o output.uglir\n"
         "\n"
         "\b\n"
         "  uhls glue input.fsm.uhir --wrap=slave --protocol=wishbone+err -o output.uglir\n"
+        "\n"
+        "\b\n"
+        "  uhls glue input.fsm.uhir --wrap=slave --protocol=obi -o output.uglir\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -892,7 +895,7 @@ def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
     type=str,
     help=(
         f"Optional interface/bus protocol used for wrapped µglIR generation. Supported forms: {protocol_spec_help()}. "
-        "Current Wishbone support is Classic B3 slave only."
+        "Current Wishbone support is Classic B3 slave only. Current OBI support is a minimal non-sideband subordinate profile."
     ),
 )
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))

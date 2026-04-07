@@ -189,6 +189,130 @@ class RTLLoweringTests(unittest.TestCase):
         self.assertIn("assign wb_ack_o = wb_req_n & wb_hit_n;", verilog)
         self.assertIn("assign wb_err_o = wb_req_n & !wb_hit_n;", verilog)
 
+    def test_lower_uglir_to_verilog_emits_obi_slave_wrapper(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design add1
+            stage fsm
+            schedule kind=control_steps
+            input  x : i32
+            output result : i32
+            resources {
+              fu ewms0 : EWMS
+            }
+            controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=1
+              state DONE code=2
+              transition IDLE -> DONE when=req_valid && req_ready
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit DONE resp_valid=true
+            }
+
+            region proc_add1 kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = ret x class=CTRL ii=0 delay=0 start=0 end=0
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data v0 -> v1
+              edge data v1 -> v2
+              steps [0:0]
+              latency 1
+            }
+            """
+        )
+
+        uglir_design = lower_fsm_to_uglir(fsm_design)
+        wrapped_uglir = wrap_uglir_design(uglir_design, wrap="slave", protocol="obi")
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
+
+        self.assertEqual(len(wrapped_uglir.address_maps), 1)
+        self.assertEqual(wrapped_uglir.address_maps[0].name, "obi")
+        self.assertEqual(wrapped_uglir.address_maps[0].entries[0].name, "control_status")
+        self.assertEqual(wrapped_uglir.address_maps[0].entries[1].attributes["offset"], "32'h0000_0100")
+        self.assertEqual(wrapped_uglir.address_maps[0].entries[2].attributes["access"], "ro")
+        self.assertIn("module add1 #(", verilog)
+        self.assertIn("parameter [31:0] OBI_BASE_ADDR = 32'h0000_0000", verilog)
+        self.assertIn("input obi_req_i,", verilog)
+        self.assertIn("input [31:0] obi_addr_i,", verilog)
+        self.assertIn("input obi_rready_i,", verilog)
+        self.assertIn("output obi_gnt_o,", verilog)
+        self.assertIn("output obi_rvalid_o,", verilog)
+        self.assertIn("output [31:0] obi_rdata_o", verilog)
+        self.assertIn("localparam [31:0] OBI_REG_CONTROL_STATUS = OBI_BASE_ADDR + 32'h0000_0000;", verilog)
+        self.assertIn("reg obi_rsp_pending_q;", verilog)
+        self.assertIn("reg [31:0] obi_rsp_rdata_q;", verilog)
+        self.assertIn("assign obi_gnt_o = obi_req_i & !obi_rsp_pending_q;", verilog)
+        self.assertIn("assign obi_rvalid_o = obi_rsp_pending_q;", verilog)
+        self.assertIn("assign obi_rdata_o = obi_rsp_rdata_q;", verilog)
+        self.assertIn("assign req_valid = start_pending_q;", verilog)
+        self.assertIn("assign resp_ready = 1'b1;", verilog)
+
+    def test_lower_uglir_to_verilog_emits_obi_burst_slave_wrapper(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design add1
+            stage fsm
+            schedule kind=control_steps
+            input  x : i32
+            output result : i32
+            resources {
+              fu ewms0 : EWMS
+            }
+            controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=1
+              state DONE code=2
+              transition IDLE -> DONE when=req_valid && req_ready
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit DONE resp_valid=true
+            }
+
+            region proc_add1 kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = ret x class=CTRL ii=0 delay=0 start=0 end=0
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data v0 -> v1
+              edge data v1 -> v2
+              steps [0:0]
+              latency 1
+            }
+            """
+        )
+
+        uglir_design = lower_fsm_to_uglir(fsm_design)
+        wrapped_uglir = wrap_uglir_design(uglir_design, wrap="slave", protocol="obi+burst")
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
+
+        self.assertEqual(len(wrapped_uglir.address_maps), 1)
+        self.assertEqual(wrapped_uglir.address_maps[0].name, "obi")
+        self.assertIn(("OBI_REG_CONTROL_STATUS", "OBI_BASE_ADDR + 32'h0000_0000", "u32"), [(const.name, const.value, const.type) for const in wrapped_uglir.constants])
+        self.assertIn("mem obi_rsp_fifo_q : u32[2]", "\n".join(
+            f"{resource.kind} {resource.id} : {resource.value}"
+            for resource in wrapped_uglir.resources
+        ))
+        self.assertIn("reg obi_rsp_count_q : u2", "\n".join(
+            f"{resource.kind} {resource.id} : {resource.value}"
+            for resource in wrapped_uglir.resources
+        ))
+        self.assertIn("assign obi_gnt_o = obi_req_i & !(obi_rsp_count_q == 2:u2)", "\n".join(
+            f"assign {assign.target} = {assign.expr}" for assign in wrapped_uglir.assigns
+        ))
+        self.assertIn("reg [31:0] obi_rsp_fifo_q [0:1];", verilog)
+        self.assertIn("reg obi_rsp_head_q;", verilog)
+        self.assertIn("reg obi_rsp_tail_q;", verilog)
+        self.assertIn("reg [1:0] obi_rsp_count_q;", verilog)
+        self.assertIn("assign obi_gnt_o = obi_req_i & !(obi_rsp_count_q == 2'd2);", verilog)
+        self.assertIn("assign obi_rvalid_o = obi_rsp_count_q != 2'd0;", verilog)
+        self.assertIn("assign obi_rdata_o = obi_rsp_fifo_q[obi_rsp_head_q];", verilog)
+
     def test_lower_uglir_to_verilog_applies_wishbone_byte_selects_to_scalar_inputs(self) -> None:
         fsm_design = parse_uhir(
             """

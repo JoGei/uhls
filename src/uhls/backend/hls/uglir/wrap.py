@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..rtl.protocol import (
+    build_obi_slave_wrapper_uglir,
     build_wishbone_slave_wrapper_uglir,
     parse_protocol_spec,
     plan_obi_slave_protocol,
@@ -37,8 +38,10 @@ def wrap_uglir_design(design: UGLIRDesign, wrap: str | None = None, protocol: st
         return wrapped
     if normalized_wrap == "slave" and normalized_protocol.base == "obi":
         wrapper_plan = plan_slave_wrapper(design, normalized_protocol.base)
-        plan_obi_slave_protocol(wrapper_plan)
-        raise NotImplementedError("µglIR wrapping for wrap='slave' protocol='obi' is not implemented yet")
+        protocol_plan = plan_obi_slave_protocol(wrapper_plan, features=normalized_protocol.features)
+        wrapped = to_uglir_design(build_obi_slave_wrapper_uglir(design, wrapper_plan, protocol_plan))
+        validate_uglir_for_rtl(wrapped)
+        return wrapped
     if normalized_wrap == "master":
         plan_master_wrapper(design, normalized_protocol.base)
         raise NotImplementedError(

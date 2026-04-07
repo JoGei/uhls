@@ -1,6 +1,7 @@
 """HLS-oriented backend infrastructure."""
 
 from .alloc import ExecutabilityGraph, dummy_executability_graph, executability_graph_from_uhir, lower_seq_to_alloc
+from .drv import DRV_LANGS, emit_uglir_driver
 from .bind import (
     BIND_DUMP_KINDS,
     CompatibilityBinder,
@@ -47,6 +48,7 @@ __all__ = [
     "BIND_DUMP_KINDS",
     "CompatibilityBinder",
     "CallableSGUScheduler",
+    "DRV_LANGS",
     "ExecutabilityGraph",
     "FSM_ENCODINGS",
     "GLUE_PROTOCOLS",
@@ -67,6 +69,7 @@ __all__ = [
     "create_builtin_binder",
     "create_builtin_scheduler",
     "dummy_executability_graph",
+    "emit_uglir_driver",
     "emit_uglir_to_verilog",
     "executability_graph_from_uhir",
     "fsm_to_dot",

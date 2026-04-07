@@ -567,7 +567,7 @@ def _obi_address_map(protocol: OBISlaveProtocolPlan) -> UGLIRAddressMap:
                 {
                     "offset": _u32(window.base_address),
                     "span": _u32(window.span_bytes),
-                    "access": "rw" if window.has_write else "ro",
+                    "access": "rw",
                     "symbol": window.symbol,
                     "word_t": window.data_type,
                     "depth": _memory_depth(window),

@@ -479,7 +479,7 @@ def _wishbone_address_map(protocol: WishboneSlaveProtocolPlan) -> UGLIRAddressMa
             )
         )
     for window in protocol.memory_windows:
-        access = "rw" if window.has_write else "ro"
+        access = "rw"
         if protocol.err_terminate:
             access = f"{access}_err"
         address_map.entries.append(

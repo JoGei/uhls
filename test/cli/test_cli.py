@@ -1510,7 +1510,7 @@ address_map obi {
   register control_status offset=32'h0000_0000 access=rw symbol=OBI_REG_CONTROL_STATUS
   register x offset=32'h0000_0100 access=rw symbol=OBI_REG_IN_X type=i32
   register result offset=32'h0000_0200 access=ro symbol=OBI_REG_OUT_RESULT type=i32
-  memory A offset=32'h0000_1000 span=32'h0000_0010 access=ro symbol=OBI_MEM_A_BASE word_t=i32 depth=4
+  memory A offset=32'h0000_1000 span=32'h0000_0010 access=rw symbol=OBI_MEM_A_BASE word_t=i32 depth=4
 }
 resources {
   reg x_q : i32
@@ -1545,7 +1545,7 @@ seq clk {
             self.assertIn("register x range=[0x100 : 0x103] access=rw symbol=OBI_REG_IN_X type=i32", rendered)
             self.assertIn("register result range=[0x200 : 0x203] access=ro symbol=OBI_REG_OUT_RESULT type=i32", rendered)
             self.assertIn("bits[31:0] data: software-programmable scalar input", rendered)
-            self.assertIn("memory A range=[0x1000 : 0x100f] access=ro", rendered)
+            self.assertIn("memory A range=[0x1000 : 0x100f] access=rw", rendered)
 
     def test_view_command_renders_uglir_mmio_dot(self) -> None:
         uglir = """design wrapped
@@ -1596,6 +1596,50 @@ seq clk {
             self.assertIn('core [label="HLS core\\nwrapped_core"];', rendered)
             self.assertIn('label="memory A', rendered)
             self.assertNotIn('label="external ports', rendered)
+
+    def test_drv_command_emits_c_driver_from_wrapped_uglir(self) -> None:
+        uglir = """design wrapped
+stage uglir
+input  clk : clock
+input  rst : i1
+input  wb_cyc_i : i1
+input  wb_stb_i : i1
+output wb_ack_o : i1
+output wb_dat_o : u32
+address_map wishbone {
+  register control_status offset=32'h0000_0000 access=rw symbol=WB_REG_CONTROL_STATUS
+  register x offset=32'h0000_0100 access=rw symbol=WB_REG_IN_X type=i32
+  register result offset=32'h0000_0200 access=ro symbol=WB_REG_OUT_RESULT type=i32
+  memory A offset=32'h0000_1000 span=32'h0000_0010 access=rw symbol=WB_MEM_A_BASE word_t=i32 depth=4
+}
+resources {
+  reg x_q : i32
+  reg result_q : i32
+  mem A_mem_q : i32[4]
+}
+assign wb_ack_o = true
+assign wb_dat_o = 0:u32
+seq clk {
+  if rst {
+    x_q <= 0:i32
+  } else {
+    x_q <= x_q
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "wrapped.uglir"
+            path.write_text(uglir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["drv", str(path), "--lang", "c"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn("WRAPPED_DRV_REG_CONTROL_STATUS_RANGE_START", rendered)
+            self.assertIn("wrapped_drv_init(wrapped_drv_t *inst, uintptr_t base_addr)", rendered)
+            self.assertIn("wrapped_drv_start_nonblocking(wrapped_drv_t *inst)", rendered)
+            self.assertIn("wrapped_drv_start_blocking(wrapped_drv_t *inst, int32_t value_x)", rendered)
 
     def test_lint_accepts_component_library_json(self) -> None:
         library = {

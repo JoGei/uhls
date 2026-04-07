@@ -17,6 +17,7 @@ import click
 from uhls.backend.hls import (
     BIND_DUMP_KINDS,
     CallableSGUScheduler,
+    DRV_LANGS,
     FSM_ENCODINGS,
     GLUE_PROTOCOLS,
     GLUE_WRAPS,
@@ -27,6 +28,7 @@ from uhls.backend.hls import (
     builtin_scheduler_names,
     create_builtin_binder,
     create_builtin_scheduler,
+    emit_uglir_driver,
     fsm_to_dot,
     format_bind_dump,
     lower_bind_to_fsm,
@@ -926,6 +928,40 @@ def glue_cmd(
     except (NotImplementedError, ValueError) as exc:
         raise CLIError(str(exc)) from exc
     _write_or_print_text(_format_hls_exchange_design(lowered), output)
+
+
+@cli.command(
+    "drv",
+    help=(
+        "Emit one software driver/HAL from wrapped µglIR.\n"
+        "\n"
+        "Examples:\n"
+        "\n"
+        "\b\n"
+        "  uhls drv input.uglir --lang=c\n"
+        "\n"
+        "\b\n"
+        "  uhls drv input.uglir --lang=c -o output.h\n"
+    ),
+)
+@click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--lang",
+    required=True,
+    type=click.Choice(DRV_LANGS, case_sensitive=False),
+    help="Target driver language.",
+)
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
+def drv_cmd(input_path: Path, lang: str, output: Path | None) -> None:
+    """Emit one software driver/HAL from wrapped µglIR."""
+    design = parse_uglir_file(input_path)
+    if design.stage != "uglir":
+        raise CLIError(f"'drv' expects µglIR input, got stage '{design.stage}'")
+    try:
+        rendered = emit_uglir_driver(design, lang=lang)
+    except (NotImplementedError, ValueError) as exc:
+        raise CLIError(str(exc)) from exc
+    _write_or_print_text(rendered, output)
 
 
 @cli.command(

@@ -2550,7 +2550,7 @@ region proc_add1 kind=procedure {
             fsm_path.write_text(fsm, encoding="utf-8")
             library_path.write_text(json.dumps(component_library), encoding="utf-8")
 
-            self.assertEqual(main(["glue", str(fsm_path), "--ressources", str(library_path), "-o", str(uglir_path)]), 0)
+            self.assertEqual(main(["glue", str(fsm_path), "--resources", str(library_path), "-o", str(uglir_path)]), 0)
 
             uglir_text = uglir_path.read_text(encoding="utf-8")
             self.assertIn("ewms0.a(ewms0_a_n)", uglir_text)
@@ -2700,6 +2700,66 @@ region proc_add1 kind=procedure {
             self.assertIn("reg start_pending_q : i1", uglir_text)
             self.assertIn("assign req_valid = start_pending_q", uglir_text)
             self.assertIn("assign wb_ack_o = wb_req_n", uglir_text)
+
+    def test_glue_command_accepts_wishbone_err_slave_wrapper(self) -> None:
+        fsm = """design add1
+stage fsm
+schedule kind=control_steps
+input  x : i32
+output result : i32
+resources {
+  fu ewms0 : EWMS
+}
+controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+  input  req_valid : i1
+  input  resp_ready : i1
+  output req_ready : i1
+  output resp_valid : i1
+  state IDLE code=1
+  state DONE code=2
+  transition IDLE -> DONE when=req_valid && req_ready
+  transition DONE -> IDLE when=resp_valid && resp_ready
+  emit IDLE req_ready=true
+  emit DONE resp_valid=true
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = ret x class=CTRL ii=0 delay=0 start=0 end=0
+  node v2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+  edge data v0 -> v1
+  edge data v1 -> v2
+  steps [0:0]
+  latency 1
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fsm_path = root / "add1.fsm.uhir"
+            uglir_path = root / "add1_wrap.uglir"
+            fsm_path.write_text(fsm, encoding="utf-8")
+
+            self.assertEqual(
+                main(
+                    [
+                        "glue",
+                        str(fsm_path),
+                        "--wrap",
+                        "slave",
+                        "--protocol",
+                        "wishbone+err",
+                        "-o",
+                        str(uglir_path),
+                    ]
+                ),
+                0,
+            )
+
+            uglir_text = uglir_path.read_text(encoding="utf-8")
+            self.assertIn("output wb_err_o : i1", uglir_text)
+            self.assertIn("net wb_hit_n : i1", uglir_text)
+            self.assertIn("assign wb_ack_o = wb_req_n & wb_hit_n", uglir_text)
+            self.assertIn("assign wb_err_o = wb_req_n & !wb_hit_n", uglir_text)
 
     def test_glue_command_accepts_none_memory_wrapper_pair(self) -> None:
         uglir = """design add1

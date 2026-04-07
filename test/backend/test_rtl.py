@@ -130,7 +130,137 @@ class RTLLoweringTests(unittest.TestCase):
         self.assertIn("assign wb_ack_o = wb_req_n;", verilog)
         self.assertIn("assign req_valid = start_pending_q;", verilog)
         self.assertIn("assign resp_ready = 1'b1;", verilog)
-        self.assertIn("start_pending_q <= ((wb_req_n && wb_we_i) && (wb_adr_i == WB_REG_CONTROL_STATUS) && wb_dat_i[0]) ? 1'b1", verilog)
+        self.assertIn(
+            "start_pending_q <= ((wb_req_n && wb_we_i) && (wb_adr_i == WB_REG_CONTROL_STATUS) && wb_dat_i[0] && wb_sel_i[0]) ? 1'b1",
+            verilog,
+        )
+        self.assertNotIn("wb_err_o", verilog)
+
+    def test_lower_uglir_to_verilog_emits_wishbone_err_wrapper(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design add1
+            stage fsm
+            schedule kind=control_steps
+            input  x : i32
+            output result : i32
+            resources {
+              fu ewms0 : EWMS
+            }
+            controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=1
+              state DONE code=2
+              transition IDLE -> DONE when=req_valid && req_ready
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit DONE resp_valid=true
+            }
+
+            region proc_add1 kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = ret x class=CTRL ii=0 delay=0 start=0 end=0
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data v0 -> v1
+              edge data v1 -> v2
+              steps [0:0]
+              latency 1
+            }
+            """
+        )
+
+        uglir_design = lower_fsm_to_uglir(fsm_design)
+        wrapped_uglir = wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone+err")
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
+
+        self.assertIn("output wb_err_o", verilog)
+        self.assertIn("wire wb_hit_n;", verilog)
+        self.assertIn("assign wb_ack_o = wb_req_n & wb_hit_n;", verilog)
+        self.assertIn("assign wb_err_o = wb_req_n & !wb_hit_n;", verilog)
+
+    def test_lower_uglir_to_verilog_applies_wishbone_byte_selects_to_scalar_inputs(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design passthrough
+            stage fsm
+            schedule kind=control_steps
+            input  x : i16
+            output result : i16
+            resources {
+              fu ctrl0 : CTRL
+            }
+            controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_passthrough {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=1
+              state DONE code=2
+              transition IDLE -> DONE when=req_valid && req_ready
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit DONE resp_valid=true
+            }
+
+            region proc_passthrough kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = ret x class=CTRL ii=0 delay=0 start=0 end=0
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data v0 -> v1
+              edge data v1 -> v2
+              steps [0:0]
+              latency 1
+            }
+            """
+        )
+
+        uglir_design = lower_fsm_to_uglir(fsm_design)
+        wrapped_uglir = wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone")
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
+
+        self.assertIn(
+            "x_q <= {(wb_sel_i[1] ? wb_dat_i[15:8] : x_q[15:8]), (wb_sel_i[0] ? wb_dat_i[7:0] : x_q[7:0])};",
+            verilog,
+        )
+
+    def test_lower_uglir_to_verilog_applies_wishbone_byte_selects_to_memory_windows(self) -> None:
+        uglir_design = parse_uhir(
+            """
+            design mem_core
+            stage uglir
+            input  clk : clock
+            input  rst : i1
+            input  req_valid : i1
+            input  resp_ready : i1
+            input  A_rdata : i16
+            output req_ready : i1
+            output resp_valid : i1
+            output A_addr : i16
+            resources {
+              port A : MEM<word_t=i16,word_len=4> A
+              reg state_q : u1
+              net next_state_n : u1
+            }
+            assign req_ready = true
+            assign resp_valid = false
+            assign A_addr = 0:i16
+            assign next_state_n = 0:u1
+            seq clk {
+              state_q <= next_state_n
+            }
+            """
+        )
+
+        wrapped_uglir = wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone")
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
+
+        self.assertIn(
+            "A_mem_q[A_bus_word_addr_n] <= {(wb_sel_i[1] ? wb_dat_i[15:8] : A_mem_q[A_bus_word_addr_n][15:8]), (wb_sel_i[0] ? wb_dat_i[7:0] : A_mem_q[A_bus_word_addr_n][7:0])};",
+            verilog,
+        )
 
     def test_lower_uglir_to_verilog_accepts_none_memory_wrap_pair(self) -> None:
         fsm_design = parse_uhir(
@@ -446,3 +576,33 @@ class RTLLoweringTests(unittest.TestCase):
             "memory interface 'A' declares word_t=i16 but core bundle uses i32",
         ):
             wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone")
+
+    def test_wrap_uglir_design_rejects_unsupported_protocol_feature(self) -> None:
+        uglir_design = parse_uhir(
+            """
+            design add1
+            stage uglir
+            input  clk : clock
+            input  rst : i1
+            input  req_valid : i1
+            input  resp_ready : i1
+            input  x : i32
+            output req_ready : i1
+            output resp_valid : i1
+            output result : i32
+            resources {
+              reg state_q : u1
+              net next_state_n : u1
+            }
+            assign req_ready = true
+            assign resp_valid = false
+            assign result = x
+            assign next_state_n = 0:u1
+            seq clk {
+              state_q <= next_state_n
+            }
+            """
+        )
+
+        with self.assertRaisesRegex(ValueError, "unsupported protocol feature\\(s\\) for 'wishbone': foo"):
+            wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone+foo")

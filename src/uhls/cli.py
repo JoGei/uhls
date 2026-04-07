@@ -32,6 +32,7 @@ from uhls.backend.hls import (
     lower_bind_to_fsm,
     lower_fsm_to_uglir,
     lower_uglir_to_rtl,
+    protocol_spec_help,
     parse_bind_dump_spec,
     validate_uglir_for_rtl,
     wrap_uglir_design,
@@ -867,11 +868,13 @@ def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
         "\n"
         "\b\n"
         "  uhls glue input.fsm.uhir --wrap=slave --protocol=wishbone -o output.uglir\n"
+        "\n"
+        "\b\n"
+        "  uhls glue input.fsm.uhir --wrap=slave --protocol=wishbone+err -o output.uglir\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
-    "--ressources",
     "--resources",
     "-res",
     "resources_path",
@@ -885,8 +888,11 @@ def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
 )
 @click.option(
     "--protocol",
-    type=click.Choice(GLUE_PROTOCOLS, case_sensitive=False),
-    help="Optional interface/bus protocol used for wrapped µglIR generation.",
+    type=str,
+    help=(
+        f"Optional interface/bus protocol used for wrapped µglIR generation. Supported forms: {protocol_spec_help()}. "
+        "Current Wishbone support is Classic B3 slave only."
+    ),
 )
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def glue_cmd(

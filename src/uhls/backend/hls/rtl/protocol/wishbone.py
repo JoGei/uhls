@@ -54,9 +54,11 @@ class WishboneSlaveProtocolPlan:
     scalar_inputs: tuple[WishboneScalarRegister, ...]
     scalar_outputs: tuple[WishboneScalarRegister, ...]
     memory_windows: tuple[WishboneMemoryWindow, ...]
+    features: tuple[str, ...] = ()
+    err_terminate: bool = False
 
 
-def plan_wishbone_slave_protocol(wrapper: SlaveWrapperPlan) -> WishboneSlaveProtocolPlan:
+def plan_wishbone_slave_protocol(wrapper: SlaveWrapperPlan, features: tuple[str, ...] = ()) -> WishboneSlaveProtocolPlan:
     """Build the generic Wishbone-slave protocol plan for one slave wrapper."""
     scalar_inputs = tuple(
         WishboneScalarRegister(
@@ -90,8 +92,8 @@ def plan_wishbone_slave_protocol(wrapper: SlaveWrapperPlan) -> WishboneSlaveProt
         )
         for index, interface in enumerate(wrapper.memory_interfaces)
     )
-    return WishboneSlaveProtocolPlan(
-        ports=(
+    err_terminate = "err" in features
+    ports = [
             ProtocolPort("input", "clock", "clk"),
             ProtocolPort("input", "i1", "rst"),
             ProtocolPort("input", "i1", "wb_cyc_i"),
@@ -102,11 +104,17 @@ def plan_wishbone_slave_protocol(wrapper: SlaveWrapperPlan) -> WishboneSlaveProt
             ProtocolPort("input", "u4", "wb_sel_i"),
             ProtocolPort("output", "u32", "wb_dat_o"),
             ProtocolPort("output", "i1", "wb_ack_o"),
-        ),
+    ]
+    if err_terminate:
+        ports.append(ProtocolPort("output", "i1", "wb_err_o"))
+    return WishboneSlaveProtocolPlan(
+        ports=tuple(ports),
         control_status_address=0x0000,
         scalar_inputs=scalar_inputs,
         scalar_outputs=scalar_outputs,
         memory_windows=memory_windows,
+        features=features,
+        err_terminate=err_terminate,
     )
 
 
@@ -142,6 +150,7 @@ def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWr
     design.resources.extend(
         [
             UHIRResource("net", "wb_req_n", "i1"),
+            UHIRResource("net", "wb_hit_n", "i1"),
             UHIRResource("reg", "start_pending_q", "i1"),
             UHIRResource("reg", "busy_q", "i1"),
             UHIRResource("reg", "done_q", "i1"),
@@ -160,12 +169,17 @@ def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWr
     design.assigns.extend(
         [
             UHIRAssign("wb_req_n", "wb_cyc_i & wb_stb_i"),
-            UHIRAssign("wb_ack_o", "wb_req_n"),
             UHIRAssign("req_valid", "start_pending_q"),
             UHIRAssign("resp_ready", "true"),
             UHIRAssign("wb_dat_o", _wishbone_read_data_expr(wrapper, protocol)),
         ]
     )
+    design.assigns.append(UHIRAssign("wb_hit_n", _wishbone_hit_expr(protocol)))
+    if protocol.err_terminate:
+        design.assigns.append(UHIRAssign("wb_ack_o", "wb_req_n & wb_hit_n"))
+        design.assigns.append(UHIRAssign("wb_err_o", "wb_req_n & !wb_hit_n"))
+    else:
+        design.assigns.append(UHIRAssign("wb_ack_o", "wb_req_n"))
     for port in wrapper.scalar_inputs:
         design.assigns.append(UHIRAssign(port.name, f"{port.name}_q"))
     for interface in wrapper.memory_interfaces:
@@ -201,7 +215,7 @@ def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWr
     seq.updates.append(
         UHIRSeqUpdate(
             "start_pending_q",
-            f"({control_write_cond}) ? true : ((start_pending_q && req_ready) ? false : start_pending_q)",
+            f"({control_write_cond} && wb_sel_i[0]) ? true : ((start_pending_q && req_ready) ? false : start_pending_q)",
         )
     )
     seq.updates.append(
@@ -213,14 +227,15 @@ def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWr
     seq.updates.append(
         UHIRSeqUpdate(
             "done_q",
-            f"({control_write_cond}) ? false : (resp_valid ? true : done_q)",
+            f"({control_write_cond} && wb_sel_i[0]) ? false : (resp_valid ? true : done_q)",
         )
     )
     for port in protocol.scalar_inputs:
         seq.updates.append(
             UHIRSeqUpdate(
                 f"{port.name}_q",
-                f"((wb_req_n && wb_we_i) && (wb_adr_i == {port.symbol})) ? {_unpack_from_wishbone('wb_dat_i', port.type)} : {port.name}_q",
+                _wishbone_masked_write_expr(f"{port.name}_q", "wb_dat_i", "wb_sel_i", port.type),
+                f"(wb_req_n && wb_we_i) && (wb_adr_i == {port.symbol})",
             )
         )
     for port in wrapper.scalar_outputs:
@@ -231,14 +246,19 @@ def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWr
             )
         )
     for interface in wrapper.memory_interfaces:
-        if interface.has_write:
-            seq.updates.append(
-                UHIRSeqUpdate(
+        seq.updates.append(
+            UHIRSeqUpdate(
+                f"{interface.base}_mem_q[{interface.base}_bus_word_addr_n]",
+                _wishbone_masked_write_expr(
                     f"{interface.base}_mem_q[{interface.base}_bus_word_addr_n]",
-                    _unpack_from_wishbone("wb_dat_i", interface.data_type),
-                    f"(wb_req_n && wb_we_i) && {interface.base}_bus_hit_n",
-                )
+                    "wb_dat_i",
+                    "wb_sel_i",
+                    interface.data_type,
+                ),
+                f"(wb_req_n && wb_we_i) && {interface.base}_bus_hit_n",
             )
+        )
+        if interface.has_write:
             seq.updates.append(
                 UHIRSeqUpdate(
                     f"{interface.base}_mem_q[{_memory_index_expr(f'{interface.base}_addr', interface)}]",
@@ -394,3 +414,40 @@ def _wishbone_read_data_expr(wrapper: SlaveWrapperPlan, protocol: WishboneSlaveP
     status_expr = "{28:u28, req_ready, start_pending_q, busy_q, done_q}"
     read_expr = f"(wb_adr_i == WB_REG_CONTROL_STATUS) ? {status_expr} : ({read_expr})"
     return f"((wb_req_n && !wb_we_i) ? ({read_expr}) : 0:u32)"
+
+
+def _wishbone_hit_expr(protocol: WishboneSlaveProtocolPlan) -> str:
+    terms = ["(wb_adr_i == WB_REG_CONTROL_STATUS)"]
+    terms.extend(f"(wb_adr_i == {port.symbol})" for port in protocol.scalar_inputs)
+    terms.extend(f"(wb_adr_i == {port.symbol})" for port in protocol.scalar_outputs)
+    terms.extend(f"{window.base}_bus_hit_n" for window in protocol.memory_windows)
+    return " || ".join(terms) if terms else "false"
+
+
+def _wishbone_masked_write_expr(current_expr: str, write_data_expr: str, select_expr: str, type_hint: str) -> str:
+    match = re.fullmatch(r"([iu])(\d+)", type_hint)
+    if match is None:
+        return write_data_expr
+    width = int(match.group(2))
+    if width <= 0:
+        return current_expr
+    if width == 1:
+        return f"({select_expr}[0] ? {write_data_expr}[0] : {current_expr})"
+
+    parts: list[str] = []
+    byte_count = max((width + 7) // 8, 1)
+    for byte_index in reversed(range(byte_count)):
+        lo = byte_index * 8
+        hi = min(width - 1, lo + 7)
+        current_slice = _bit_slice_expr(current_expr, hi, lo)
+        write_slice = _bit_slice_expr(write_data_expr, hi, lo)
+        parts.append(f"({select_expr}[{byte_index}] ? {write_slice} : {current_slice})")
+    if len(parts) == 1:
+        return parts[0]
+    return "{" + ", ".join(parts) + "}"
+
+
+def _bit_slice_expr(signal: str, hi: int, lo: int) -> str:
+    if hi == lo:
+        return f"{signal}[{lo}]"
+    return f"{signal}[{hi}:{lo}]"

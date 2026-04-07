@@ -208,6 +208,7 @@ protocol with `--protocol`.
 For wrapped designs, the first targeted protocols are:
 
 * `wishbone`
+* `wishbone+err`
 * `obi`
 
 where:
@@ -215,6 +216,9 @@ where:
 * `wishbone` means Wishbone-compatible slave/master interfacing
   * reference: https://opencores.org/projects/wishbone
   * targeted version: Wishbone `B3`
+  * currently implemented subset: Wishbone Classic `B3` slave only
+* `wishbone+err` means the same Wishbone `B3` wrapper with explicit
+  `ERR` termination for unmapped accesses
 * `obi` means Open Bus Interface (OpenHW Group)
   * reference: https://github.com/openhwgroup/obi
   * targeted version: `1.6.0`
@@ -304,6 +308,15 @@ The first non-stub wrapper implementation targets:
 * `--wrap=slave`
 * `--protocol=wishbone`
 
+The current Wishbone wrapper is explicitly:
+
+* Wishbone Classic `B3`
+* slave-side only
+* not Wishbone Registered Feedback
+* not burst-aware
+* not using tag signals
+* not using `LOCK`
+
 This wrapper currently provides:
 
 * a wrapper-owned control/status register
@@ -313,6 +326,7 @@ This wrapper currently provides:
 * a simple start/busy/done protocol around the core request/response handshake
 * wrapper module parameter `WB_BASE_ADDR`, default `32'h0000_0000`
   * all software-visible register and memory offsets are relative to `WB_BASE_ADDR`
+* byte-lane aware Wishbone writes through `wb_sel_i`
 
 The initial register map is:
 
@@ -336,10 +350,18 @@ Current simplifications:
 
 * `wb_ack_o` is asserted for each request without wait states
 * wrapper-owned memories are fixed-size local arrays
+* software may initialize wrapper-owned memories through Wishbone memory
+  windows even when the core only reads from those memories
 * the wrapper assumes software does not intentionally race the core on one
   memory window while the core is active
 * the wrapper always accepts core completion immediately and latches scalar
   outputs into wrapper registers
+* plain `wishbone` uses normal `ACK` termination for all accesses
+  * unmapped reads therefore behave as `ack + zero`
+  * unmapped writes behave as acknowledged no-ops
+* `wishbone+err` changes only that unmapped-access policy
+  * mapped accesses terminate with `ACK`
+  * unmapped accesses terminate with `ERR`
 
 This is intentionally a first useful implementation, not yet a full
 integration-grade bus subsystem.

@@ -22,10 +22,12 @@ from .rtl import (
     RTL_HDLS,
     emit_uglir_to_verilog,
     lower_uglir_to_rtl,
+    parse_protocol_spec,
     plan_master_wrapper,
     plan_obi_slave_protocol,
     plan_slave_wrapper,
     plan_wishbone_slave_protocol,
+    protocol_spec_help,
 )
 from .sched import (
     ALAPScheduler,
@@ -78,9 +80,11 @@ __all__ = [
     "lower_module_to_seq",
     "lower_sched_to_bind",
     "lower_seq_to_alloc",
+    "parse_protocol_spec",
     "parse_bind_dump_spec",
     "plan_master_wrapper",
     "plan_obi_slave_protocol",
     "plan_slave_wrapper",
     "plan_wishbone_slave_protocol",
+    "protocol_spec_help",
 ]

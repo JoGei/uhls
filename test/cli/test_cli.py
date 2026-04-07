@@ -2197,9 +2197,9 @@ region proc_add1 kind=procedure {
             self.assertIn("input  req_valid : i1", uglir_text)
             self.assertIn("output req_ready : i1", uglir_text)
             self.assertIn("inst ewms0 : EWMS", uglir_text)
-            self.assertIn("assign req_ready = state == 1", uglir_text)
-            self.assertIn("ewms0.go(ewms0_go)", uglir_text)
-            self.assertIn("mux mx_r_i32_0 : i32 sel=sel_r_i32_0 {", uglir_text)
+            self.assertIn("assign req_ready = state_q == 1", uglir_text)
+            self.assertIn("ewms0.go(ewms0_go_n)", uglir_text)
+            self.assertIn("mux mx_r_i32_0_n : i32 sel=sel_r_i32_0_n {", uglir_text)
             self.assertIn("seq clk {", uglir_text)
 
     def test_uglir_command_accepts_component_library_json(self) -> None:
@@ -2278,12 +2278,218 @@ region proc_add1 kind=procedure {
             self.assertEqual(main(["uglir", str(fsm_path), "--ressources", str(library_path), "-o", str(uglir_path)]), 0)
 
             uglir_text = uglir_path.read_text(encoding="utf-8")
-            self.assertIn("ewms0.a(ewms0_a)", uglir_text)
-            self.assertIn("assign ewms0_a = x", uglir_text)
-            self.assertIn("assign ewms0_b = 1:i32", uglir_text)
-            self.assertIn("ewms0.op(ewms0_op)", uglir_text)
-            self.assertIn("assign ewms0_op = 0", uglir_text)
+            self.assertIn("ewms0.a(ewms0_a_n)", uglir_text)
+            self.assertIn("assign ewms0_a_n = mx_ewms0_a_n", uglir_text)
+            self.assertIn("assign ewms0_b_n = mx_ewms0_b_n", uglir_text)
+            self.assertIn("mux mx_ewms0_a_n : i32 sel=sel_ewms0_a_n {", uglir_text)
+            self.assertIn("ewms0.op(ewms0_op_n)", uglir_text)
+            self.assertIn("assign ewms0_op_n = 0", uglir_text)
             self.assertNotIn("ewms0.go(", uglir_text)
+
+    def test_rtl_command_lowers_uglir_to_verilog(self) -> None:
+        uglir = """design add1
+stage uglir
+input  clk : clock
+input  rst : i1
+input  req_valid : i1
+input  resp_ready : i1
+input  x : i32
+output req_ready : i1
+output resp_valid : i1
+output result : i32
+resources {
+  reg state : u5
+  net next_state : u5
+  net req_fire : i1
+  net resp_fire : i1
+  inst ewms0 : EWMS
+  net ewms0_go : i1
+  net ewms0_y : i32
+  reg r_i32_0 : i32
+  net latch_r_i32_0 : i1
+  net sel_r_i32_0 : ctrl
+  mux mx_r_i32_0 : i32
+}
+
+assign req_fire = req_valid & req_ready
+
+assign resp_fire = resp_valid & resp_ready
+
+assign req_ready = state == 1
+
+assign resp_valid = state == 16
+
+assign next_state = (state == 1 && req_fire) ? 2 : state == 2 ? 4 : state == 4 ? 8 : state == 8 ? 16 : (state == 16 && resp_fire) ? 1 : 1
+
+assign ewms0_go = state == 2
+
+assign latch_r_i32_0 = state == 4
+
+assign sel_r_i32_0 = (state == 4) ? ewms0_y : hold
+
+assign result = r_i32_0
+
+ewms0.go(ewms0_go)
+
+ewms0.y(ewms0_y)
+
+mux mx_r_i32_0 : i32 sel=sel_r_i32_0 {
+  hold -> r_i32_0
+  ewms0_y -> ewms0_y
+}
+
+seq clk {
+  if rst {
+    state <= 1
+  } else {
+    state <= next_state
+    if latch_r_i32_0 {
+      r_i32_0 <= mx_r_i32_0
+    }
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uglir_path = root / "add1.uglir"
+            rtl_path = root / "add1.v"
+            uglir_path.write_text(uglir, encoding="utf-8")
+
+            self.assertEqual(main(["rtl", str(uglir_path), "--hdl", "verilog", "-o", str(rtl_path)]), 0)
+
+            verilog_text = rtl_path.read_text(encoding="utf-8")
+            self.assertIn("module add1 (", verilog_text)
+            self.assertIn("assign req_ready = state == 1;", verilog_text)
+            self.assertIn("EWMS ewms0 (", verilog_text)
+            self.assertIn("always @(posedge clk) begin", verilog_text)
+            self.assertIn("endmodule", verilog_text)
+
+    def test_rtl_command_accepts_wishbone_slave_wrapper(self) -> None:
+        uglir = """design add1
+stage uglir
+input  clk : clock
+input  rst : i1
+input  req_valid : i1
+input  resp_ready : i1
+input  x : i32
+output req_ready : i1
+output resp_valid : i1
+output result : i32
+resources {
+  reg state : u1
+  net next_state : u1
+}
+
+assign req_ready = 1:i1
+
+assign resp_valid = 1:i1
+
+assign next_state = 0:u1
+
+assign result = x
+
+seq clk {
+  if rst {
+    state <= 0:u1
+  } else {
+    state <= next_state
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uglir_path = root / "add1.uglir"
+            rtl_path = root / "add1_wrap.v"
+            uglir_path.write_text(uglir, encoding="utf-8")
+
+            self.assertEqual(
+                main(
+                    [
+                        "rtl",
+                        str(uglir_path),
+                        "--hdl",
+                        "verilog",
+                        "--wrap",
+                        "slave",
+                        "--protocol",
+                        "wishbone",
+                        "-o",
+                        str(rtl_path),
+                    ]
+                ),
+                0,
+            )
+
+            verilog_text = rtl_path.read_text(encoding="utf-8")
+            self.assertIn("module add1_core (", verilog_text)
+            self.assertIn("module add1 #(", verilog_text)
+            self.assertIn("input [31:0] wb_adr_i,", verilog_text)
+            self.assertIn("parameter [31:0] WB_BASE_ADDR = 32'h0000_0000", verilog_text)
+            self.assertIn("localparam [31:0] WB_REG_CONTROL_STATUS = WB_BASE_ADDR + 32'h0000_0000;", verilog_text)
+            self.assertIn("assign wb_ack_o = wb_req_n;", verilog_text)
+            self.assertIn("assign core_req_valid_n = start_pending_q;", verilog_text)
+
+    def test_rtl_command_accepts_none_memory_wrapper_pair(self) -> None:
+        uglir = """design add1
+stage uglir
+input  clk : clock
+input  rst : i1
+input  req_valid : i1
+input  resp_ready : i1
+input  x : i32
+output req_ready : i1
+output resp_valid : i1
+output result : i32
+resources {
+  reg state : u1
+  net next_state : u1
+}
+
+assign req_ready = 1:i1
+
+assign resp_valid = 1:i1
+
+assign next_state = 0:u1
+
+assign result = x
+
+seq clk {
+  if rst {
+    state <= 0:u1
+  } else {
+    state <= next_state
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uglir_path = root / "add1.uglir"
+            rtl_path = root / "add1_none.v"
+            uglir_path.write_text(uglir, encoding="utf-8")
+
+            self.assertEqual(
+                main(
+                    [
+                        "rtl",
+                        str(uglir_path),
+                        "--hdl",
+                        "verilog",
+                        "--wrap",
+                        "none",
+                        "--protocol",
+                        "memory",
+                        "-o",
+                        str(rtl_path),
+                    ]
+                ),
+                0,
+            )
+
+            verilog_text = rtl_path.read_text(encoding="utf-8")
+            self.assertIn("module add1 (", verilog_text)
+            self.assertNotIn("module add1_core (", verilog_text)
+            self.assertIn("input req_valid,", verilog_text)
+            self.assertIn("output resp_valid,", verilog_text)
 
     def test_bind_command_can_render_conflict_dot(self) -> None:
         sched = """design add_pair

@@ -86,6 +86,35 @@ So a component such as an adder, multiplier, memory port, or child controller
 appears in µglIR as an *instance with ports*, not as re-expanded behavioral
 logic.
 
+== Current Memory Assumption
+
+For the first µglIR version, each top-level addressed memory object is lowered
+as one visible memory-interface bundle, not as storage instantiated inside the
+bare core.
+
+So a top-level `memref<T>` such as `A` may expand into glue-level ports like:
+
+* `A_addr`
+* `A_wdata`
+* `A_we`
+* `A_rdata`
+
+Current assumption:
+
+* one visible memory-interface bundle per top-level memory name
+* multiple scheduled/bound accesses may share that bundle when they are
+  multiplexed over time onto the same bound memory resource
+* competing accesses to the same memory bundle in one FSMD state are currently
+  invalid and should be rejected before or during µglIR lowering
+* explicit multi-port or arbitrated memory modeling is not yet part of µglIR
+
+This keeps the first memory lowering simple while still allowing repeated
+time-separated accesses to one memory through one port.
+
+In particular, the memory-bound FU/resource used during scheduling and binding
+should be understood as an access endpoint, not necessarily as a concrete
+storage instance in the emitted bare-core RTL.
+
 == Design Goals
 
 µglIR is designed to be:
@@ -100,6 +129,32 @@ logic.
 
 It should also serve as the main validation point for hardware structure before
 RTL printing.
+
+== Generated Signal Naming Convention
+
+The generated µglIR emitted by µhLS uses a simple storage-versus-combinational
+naming convention:
+
+* register resources/signals end in `_q`
+* net resources/signals end in `_n`
+* mux resources/signals end in `_n`
+
+Examples:
+
+* `state_q`
+* `next_state_n`
+* `r_acc_q`
+* `mx_r_acc_n`
+* `alu0_a_n`
+* `const_i32_0_n`
+
+This convention is intended to make the hardware role of one signal visible at
+a glance:
+
+* `_q` means stored state
+* `_n` means next/combinational/interconnect logic
+
+Top-level interface ports and instance identifiers remain unsuffixed.
 
 == Position Relative To `fsm`
 
@@ -200,9 +255,9 @@ done_valid
 
 Recommended style:
 
-* registers: `r_acc`, `state`
-* nets: `next_state`, `req_fire`
-* muxes: `mx0`, `mx_r_acc`
+* registers: `r_acc_q`, `state_q`
+* nets: `next_state_n`, `req_fire_n`
+* muxes: `mx0_n`, `mx_r_acc_n`
 * instances: `ewms0`, `memA`
 
 === Types

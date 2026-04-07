@@ -228,7 +228,100 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                 updates=[UHIRSeqUpdate(_controller_state_id(controller, top_controller), _controller_next_state_id(controller, top_controller))],
             )
         )
-    return lowered
+    return _apply_signal_naming_convention(lowered)
+
+
+def _apply_signal_naming_convention(design: UHIRDesign) -> UHIRDesign:
+    rename_map = {
+        resource.id: _uglir_signal_name(resource.kind, resource.id)
+        for resource in design.resources
+        if resource.kind in {"reg", "net", "mux"}
+    }
+    if not rename_map:
+        return design
+
+    normalized = UHIRDesign(name=design.name, stage=design.stage)
+    normalized.inputs = list(design.inputs)
+    normalized.outputs = list(design.outputs)
+    normalized.constants = list(design.constants)
+    normalized.schedule = design.schedule
+
+    for resource in design.resources:
+        normalized.resources.append(
+            UHIRResource(
+                resource.kind,
+                rename_map.get(resource.id, resource.id),
+                resource.value,
+                resource.target,
+            )
+        )
+    for assign in design.assigns:
+        normalized.assigns.append(
+            UHIRAssign(
+                rename_map.get(assign.target, assign.target),
+                _rewrite_signal_expr(assign.expr, rename_map),
+            )
+        )
+    for attachment in design.attachments:
+        normalized.attachments.append(
+            UHIRAttach(
+                attachment.instance,
+                attachment.port,
+                rename_map.get(attachment.signal, attachment.signal),
+            )
+        )
+    for glue_mux in design.glue_muxes:
+        normalized.glue_muxes.append(
+            UHIRGlueMux(
+                name=rename_map.get(glue_mux.name, glue_mux.name),
+                type=glue_mux.type,
+                select=rename_map.get(glue_mux.select, glue_mux.select),
+                cases=[
+                    UHIRGlueMuxCase(case.key, rename_map.get(case.source, case.source))
+                    for case in glue_mux.cases
+                ],
+            )
+        )
+    for seq_block in design.seq_blocks:
+        normalized.seq_blocks.append(
+            UHIRSeqBlock(
+                clock=seq_block.clock,
+                reset=None if seq_block.reset is None else _rewrite_signal_expr(seq_block.reset, rename_map),
+                reset_updates=[
+                    UHIRSeqUpdate(
+                        rename_map.get(update.target, update.target),
+                        _rewrite_signal_expr(update.value, rename_map),
+                        None if update.enable is None else _rewrite_signal_expr(update.enable, rename_map),
+                    )
+                    for update in seq_block.reset_updates
+                ],
+                updates=[
+                    UHIRSeqUpdate(
+                        rename_map.get(update.target, update.target),
+                        _rewrite_signal_expr(update.value, rename_map),
+                        None if update.enable is None else _rewrite_signal_expr(update.enable, rename_map),
+                    )
+                    for update in seq_block.updates
+                ],
+            )
+        )
+    return normalized
+
+
+def _uglir_signal_name(kind: str, signal_id: str) -> str:
+    if kind == "reg":
+        return f"{signal_id}_q"
+    if kind in {"net", "mux"}:
+        return f"{signal_id}_n"
+    return signal_id
+
+
+def _rewrite_signal_expr(expr: str, rename_map: dict[str, str]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        token = match.group(0)
+        return rename_map.get(token, token)
+
+    return re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\b", replace, expr)
 
 
 def _state_type(controller) -> str:
@@ -879,7 +972,13 @@ def _operand_port_choices(
                 binding_key = _component_port_binding(component_library, component_name, node.opcode, port_name)
                 if binding_key is None:
                     continue
-                source_expr = _binding_key_expr(design, node, binding_key, component_library)
+                source_expr = _binding_key_expr(
+                    design,
+                    node,
+                    binding_key,
+                    component_library,
+                    _issued_node_occurrence_index(node_id),
+                )
                 condition = _state_eq_expr(
                     _controller_state_id(controller, top_controller),
                     controller_codes[controller.name][emit.state],
@@ -1235,6 +1334,7 @@ def _binding_key_expr(
     node,
     binding_key: str,
     component_library: dict[str, dict[str, Any]] | None,
+    occurrence_index: int | None = None,
 ) -> str:
     if binding_key.startswith("operand"):
         operand_index_text = binding_key[len("operand") :]
@@ -1245,7 +1345,7 @@ def _binding_key_expr(
             raise ValueError(
                 f"node '{node.id}' opcode '{node.opcode}' does not provide operand index {operand_index} for binding '{binding_key}'"
             )
-        return _resolve_value_signal(design, node.operands[operand_index], component_library)
+        return _resolve_value_signal(design, node.operands[operand_index], component_library, occurrence_index)
     return binding_key
 
 
@@ -1253,11 +1353,12 @@ def _resolve_value_signal(
     design: UHIRDesign,
     value_id: str,
     component_library: dict[str, dict[str, Any]] | None,
+    occurrence_index: int | None = None,
 ) -> str:
     producer_to_register = _producer_register_map(design)
     if value_id in producer_to_register:
         return producer_to_register[value_id]
-    result_signal = _resolve_producer_signal(design, value_id, component_library)
+    result_signal = _resolve_producer_signal(design, value_id, component_library, occurrence_index)
     if result_signal is not None:
         return result_signal
     return value_id
@@ -1267,11 +1368,37 @@ def _resolve_producer_signal(
     design: UHIRDesign,
     value_id: str,
     component_library: dict[str, dict[str, Any]] | None,
+    occurrence_index: int | None = None,
 ) -> str | None:
     producer_node = _producer_node_map(design).get(value_id)
     if producer_node is None:
         return None
-    return _node_result_signal(design, producer_node, component_library)
+    result_signal = _node_result_signal(design, producer_node, component_library)
+    if result_signal is not None:
+        return result_signal
+    return _node_value_expr(design, producer_node, component_library, occurrence_index)
+
+
+def _node_value_expr(
+    design: UHIRDesign,
+    node,
+    component_library: dict[str, dict[str, Any]] | None,
+    occurrence_index: int | None,
+) -> str | None:
+    if node.opcode == "phi":
+        if not node.operands:
+            return None
+        if occurrence_index is None or occurrence_index > 0:
+            chosen = node.operands[1] if len(node.operands) > 1 else node.operands[0]
+        else:
+            chosen = node.operands[0]
+        return _resolve_value_signal(design, chosen, component_library, None if occurrence_index is None else max(occurrence_index - 1, 0))
+    if node.opcode == "sel" and len(node.operands) == 3:
+        condition = _resolve_value_signal(design, node.operands[0], component_library, occurrence_index)
+        true_value = _resolve_value_signal(design, node.operands[1], component_library, occurrence_index)
+        false_value = _resolve_value_signal(design, node.operands[2], component_library, occurrence_index)
+        return f"{condition} ? {true_value} : {false_value}"
+    return None
 
 
 def _producer_node_map(design: UHIRDesign) -> dict[str, Any]:
@@ -1352,3 +1479,12 @@ def _iter_issue_actions(attributes: dict[str, Any]) -> tuple[str, ...]:
 
 def _issued_node_base_id(node_id: str) -> str:
     return node_id.split("@", 1)[0]
+
+
+def _issued_node_occurrence_index(node_id: str) -> int | None:
+    if "@" not in node_id:
+        return None
+    _, occurrence_text = node_id.split("@", 1)
+    if not occurrence_text.isdigit():
+        return None
+    return int(occurrence_text)

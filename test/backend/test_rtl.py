@@ -64,21 +64,21 @@ class RTLLoweringTests(unittest.TestCase):
         self.assertIn("module add1 (", verilog)
         self.assertIn("input clk,", verilog)
         self.assertIn("output req_ready,", verilog)
-        self.assertIn("reg [4:0] state;", verilog)
-        self.assertIn("wire req_fire;", verilog)
-        self.assertIn("assign req_fire = req_valid & req_ready;", verilog)
-        self.assertIn("localparam SEL_R_I32_0_HOLD = 1'd0;", verilog)
-        self.assertIn("assign mx_r_i32_0 = (sel_r_i32_0 == SEL_R_I32_0_HOLD) ? r_i32_0 : ewms0_y;", verilog)
+        self.assertIn("reg [4:0] state_q;", verilog)
+        self.assertIn("wire req_fire_n;", verilog)
+        self.assertIn("assign req_fire_n = req_valid & req_ready;", verilog)
+        self.assertIn("localparam SEL_R_I32_0_N_HOLD = 1'd0;", verilog)
+        self.assertIn("assign mx_r_i32_0_n = (sel_r_i32_0_n == SEL_R_I32_0_N_HOLD) ? r_i32_0_q : ewms0_y_n;", verilog)
         self.assertIn("EWMS ewms0 (", verilog)
-        self.assertIn(".go(ewms0_go)", verilog)
-        self.assertIn(".y(ewms0_y)", verilog)
+        self.assertIn(".go(ewms0_go_n)", verilog)
+        self.assertIn(".y(ewms0_y_n)", verilog)
         self.assertIn("always @(posedge clk) begin", verilog)
         self.assertIn("if (rst) begin", verilog)
-        self.assertIn("state <= next_state;", verilog)
-        self.assertIn("r_i32_0 <= mx_r_i32_0;", verilog)
+        self.assertIn("state_q <= next_state_n;", verilog)
+        self.assertIn("r_i32_0_q <= mx_r_i32_0_n;", verilog)
         self.assertTrue(verilog.rstrip().endswith("endmodule"))
 
-    def test_lower_uglir_to_verilog_emits_wishbone_slave_wrapper_stub(self) -> None:
+    def test_lower_uglir_to_verilog_emits_wishbone_slave_wrapper(self) -> None:
         fsm_design = parse_uhir(
             """
             design add1
@@ -117,15 +117,21 @@ class RTLLoweringTests(unittest.TestCase):
         uglir_design = lower_fsm_to_uglir(fsm_design)
         verilog = lower_uglir_to_rtl(uglir_design, hdl="verilog", wrap="slave", protocol="wishbone")
 
-        self.assertIn("// Stub wrapper for wrap=slave protocol=wishbone.", verilog)
+        self.assertIn("// Wrapper for wrap=slave protocol=wishbone.", verilog)
         self.assertIn("module add1_core (", verilog)
-        self.assertIn("module add1 (", verilog)
+        self.assertIn("module add1 #(", verilog)
+        self.assertIn("parameter [31:0] WB_BASE_ADDR = 32'h0000_0000", verilog)
         self.assertIn("input wb_cyc_i,", verilog)
         self.assertIn("input wb_stb_i,", verilog)
         self.assertIn("output [31:0] wb_dat_o,", verilog)
-        self.assertIn("assign wb_ack_o = wb_cyc_i & wb_stb_i;", verilog)
-        self.assertIn("assign core_req_valid = 1'd0;", verilog)
-        self.assertIn("assign core_resp_ready = 1'd0;", verilog)
+        self.assertIn("localparam [31:0] WB_REG_CONTROL_STATUS = WB_BASE_ADDR + 32'h0000_0000;", verilog)
+        self.assertIn("reg start_pending_q;", verilog)
+        self.assertIn("reg busy_q;", verilog)
+        self.assertIn("reg done_q;", verilog)
+        self.assertIn("assign wb_ack_o = wb_req_n;", verilog)
+        self.assertIn("assign core_req_valid_n = start_pending_q;", verilog)
+        self.assertIn("assign core_resp_ready_n = 1'b1;", verilog)
+        self.assertIn("if (wb_adr_i == WB_REG_CONTROL_STATUS && wb_dat_i[0]) begin", verilog)
         self.assertIn("add1_core core (", verilog)
 
     def test_lower_uglir_to_verilog_accepts_none_memory_wrap_pair(self) -> None:
@@ -255,8 +261,8 @@ class RTLLoweringTests(unittest.TestCase):
 
         self.assertIn("input signed [31:0] A_rdata,", verilog)
         self.assertIn("output signed [31:0] A_addr", verilog)
-        self.assertIn("assign A_addr = mr0_addr;", verilog)
-        self.assertIn("assign mr0_rdata = A_rdata;", verilog)
+        self.assertIn("assign A_addr = mr0_addr_n;", verilog)
+        self.assertIn("assign mr0_rdata_n = A_rdata;", verilog)
         self.assertNotIn("MEM mr0 (", verilog)
 
     def test_lower_uglir_to_verilog_rejects_missing_output_driver(self) -> None:
@@ -300,11 +306,12 @@ class RTLLoweringTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "assign 'r = \\.\\.\\.' must target an output port or net resource"):
             lower_uglir_to_rtl(uglir_design, hdl="verilog")
 
-    def test_lower_uglir_to_verilog_rejects_mismatched_mux_case_type(self) -> None:
+    def test_lower_uglir_to_verilog_rejects_incompatible_mux_case_type(self) -> None:
         uglir_design = parse_uhir(
             """
             design bad
             stage uglir
+            input  bad_sel : ctrl
             input  x : i1
             output y : i32
             resources {
@@ -314,10 +321,10 @@ class RTLLoweringTests(unittest.TestCase):
             assign y = mx
             assign sel = ZERO
             mux mx : i32 sel=sel {
-              ZERO -> x
+              ZERO -> bad_sel
             }
             """
         )
 
-        with self.assertRaisesRegex(ValueError, "mux 'mx' case 'ZERO' source 'x' has type 'i1', expected 'i32'"):
+        with self.assertRaisesRegex(ValueError, "mux 'mx' case 'ZERO' source 'bad_sel' has type 'ctrl', expected 'i32'"):
             lower_uglir_to_rtl(uglir_design, hdl="verilog")

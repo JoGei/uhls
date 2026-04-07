@@ -111,6 +111,10 @@ Function parameters are SSA definitions.
 
 NOTE: The non-SSA memory relaxation is a strong simplification for ease-of-understanding.
 
+NOTE: At present, µIR only models addressed memory objects (`T[]`) as first-class memory.
+FIFO and STREAM style channels are intentionally not yet part of the canonical IR.
+If they are added later, they are expected to become full-stack concepts across frontend, µIR, µHIR, scheduling, binding, FSMD, and uglIR, rather than being introduced only as a backend-specific lowering detail.
+
 === Core scalar instructions
 
 * `x:T = const k:T`

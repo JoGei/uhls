@@ -17,6 +17,17 @@ from .bind import (
     parse_bind_dump_spec,
 )
 from .fsm import FSM_ENCODINGS, fsm_to_dot, lower_bind_to_fsm
+from .rtl import (
+    RTL_HDLS,
+    RTL_PROTOCOLS,
+    RTL_WRAPS,
+    emit_uglir_to_verilog,
+    lower_uglir_to_rtl,
+    plan_master_wrapper,
+    plan_obi_slave_protocol,
+    plan_slave_wrapper,
+    plan_wishbone_slave_protocol,
+)
 from .sched import (
     ALAPScheduler,
     ASAPScheduler,
@@ -29,7 +40,7 @@ from .sched import (
     lower_alloc_to_sched,
 )
 from .seq import build_sequencing_graph, lower_module_to_seq
-from .uglir import lower_fsm_to_uglir
+from .uglir import lower_fsm_to_uglir, validate_uglir_for_rtl
 
 __all__ = [
     "ALAPScheduler",
@@ -43,6 +54,9 @@ __all__ = [
     "OperationBinder",
     "OperationBinderBase",
     "OperationBindingResult",
+    "RTL_HDLS",
+    "RTL_PROTOCOLS",
+    "RTL_WRAPS",
     "bind_dump_to_dot",
     "binding_to_dot",
     "SGUScheduleResult",
@@ -54,14 +68,21 @@ __all__ = [
     "create_builtin_binder",
     "create_builtin_scheduler",
     "dummy_executability_graph",
+    "emit_uglir_to_verilog",
     "executability_graph_from_uhir",
     "fsm_to_dot",
     "format_bind_dump",
     "lower_alloc_to_sched",
     "lower_bind_to_fsm",
     "lower_fsm_to_uglir",
+    "validate_uglir_for_rtl",
+    "lower_uglir_to_rtl",
     "lower_module_to_seq",
     "lower_sched_to_bind",
     "lower_seq_to_alloc",
     "parse_bind_dump_spec",
+    "plan_master_wrapper",
+    "plan_obi_slave_protocol",
+    "plan_slave_wrapper",
+    "plan_wishbone_slave_protocol",
 ]

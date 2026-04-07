@@ -1,0 +1,457 @@
+= µhLS RTL Lowering and Wrapper Specification
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Overview
+
+This document specifies the intended role and interface contract of the `rtl`
+lowering stage in *µhLS*.
+
+The `rtl` stage consumes `uglir` and emits one target hardware description
+language.
+
+The driving design rule is:
+
+____
+µhLS should remain HDL-agnostic up to `uglir`, and only commit to one concrete
+HDL at the final `rtl` lowering boundary.
+____
+
+This is why the flow lowers:
+
+[source,text]
+----
+fsm.uhir
+  -> .uglir
+  -> rtl
+  -> Verilog / VHDL / SystemC / ...
+----
+
+instead of lowering directly from FSMD to one HDL syntax.
+
+== Goals
+
+The `rtl` stage should:
+
+* remain HDL-agnostic at the interface level
+* offer concrete `--hdl` backends
+* emit integration-friendly wrappers around the generated core
+* keep wrapper behavior protocol-agnostic at the semantic level
+* separate:
+  * core datapath/controller generation
+  * system integration / HW-SW interface adaptation
+
+The first implemented HDL target is:
+
+* `verilog`
+
+Other intended targets include:
+
+* `vhdl`
+* `systemc`
+
+but they are not yet implemented.
+
+== Why `uglir` Is The RTL Input
+
+The purpose of `uglir` is to describe:
+
+* registers
+* nets
+* muxes
+* component instances
+* controller state storage
+* explicit structural connectivity
+
+That makes it the correct input to `rtl`, because by that point the design is:
+
+* already structural
+* already signal-oriented
+* already explicit about controller/datapath glue
+
+The `rtl` stage should therefore focus on:
+
+* HDL syntax
+* wrapper generation
+* protocol adaptation
+
+and not on rediscovering scheduling or binding.
+
+== CLI Surface
+
+The intended generic entrypoint is:
+
+[source,text]
+----
+uhls rtl input.uglir --hdl=<target>
+----
+
+with wrapper options:
+
+[source,text]
+----
+uhls rtl input.uglir --hdl=<target> --wrapper=<kind> --protocol=<kind>
+----
+
+Short options should also be available:
+
+* `--wrapper` / `--wrap`
+* `--protocol` / `--prot`
+
+The `--hdl` option is mandatory.
+
+== HDL Targets
+
+The stage is intentionally generic.
+
+The common contract is:
+
+* `rtl` decides *which HDL* to emit
+* `uglir` stays independent of HDL syntax
+
+The first implemented target is:
+
+* `verilog`
+
+Planned targets are:
+
+* `vhdl`
+* `systemc`
+
+== Wrapper Model
+
+The `rtl` stage should offer integration wrappers for ease of:
+
+* SoC integration
+* HW-SW interfacing
+* software-driven memory initialization
+* software-driven accelerator control/status interaction
+
+The wrapper model should expose the core as one of:
+
+* slave-only
+* slave/master mixed
+* no wrapper / bare core
+
+=== `--wrapper` / `--wrap` = `slave`
+
+Slave-only means:
+
+* all memories are synthesized in the wrapper module
+* those memories are expected to be initialized by the software driver
+* the wrapper exposes:
+  * control registers
+  * status registers
+  * memory regions or memory-like windows for design parameters
+
+In this mode, the wrapped HLS core behaves as one slave-oriented accelerator:
+
+* software configures it
+* software preloads any required memory contents
+* software starts execution
+* software polls or interrupts on completion
+
+This is the recommended first integration-oriented wrapper style.
+
+=== `--wrapper` / `--wrap` = `master`
+
+Master mode means the wrapper synthesizes a minimal direct-memory-access style
+access layer around the core.
+
+In this mode:
+
+* software passes addresses/pointers rather than memory contents
+* the wrapped HLS design fetches and writes data through the wrapper
+* control and status registers still exist similarly to slave-only mode
+
+So this mode is not a pure standalone bus master.
+
+It is better described as:
+
+* a hybrid or reactive slave component
+* with control/status programming as a slave
+* and memory traffic initiated through a wrapper-managed master path
+
+=== `--wrapper` / `--wrap` = `none`
+
+No wrapper means the generated result is the bare core.
+
+In this mode:
+
+* the user integrates the generated design directly
+* scalar I/O, handshake, and memory interfaces are exposed directly
+* no protocol-specific wrapper is synthesized
+
+This mode corresponds to the pure core-facing interface.
+
+== Protocol Model
+
+Wrapper functionality should be protocol-agnostic at the semantic level.
+
+That means the wrapper contract should be described in abstract terms such as:
+
+* slave-side control/status access
+* master-side memory access
+* raw memory/slave/master interface roles
+
+Only after that semantic choice is made should `rtl` pick a concrete transport
+protocol with `--protocol`.
+
+=== `--protocol` / `--prot`
+
+For wrapped designs, the first targeted protocols are:
+
+* `wishbone`
+* `obi`
+
+where:
+
+* `wishbone` means Wishbone-compatible slave/master interfacing
+  * reference: https://opencores.org/projects/wishbone
+  * targeted version: Wishbone `B3`
+* `obi` means Open Bus Interface (OpenHW Group)
+  * reference: https://github.com/openhwgroup/obi
+  * targeted version: `1.6.0`
+
+The wrapper should therefore be interpreted as:
+
+* semantic role first
+* bus protocol second
+
+=== Protocol Requirement Rules
+
+If `--wrapper` / `--wrap` is:
+
+* `slave`
+* `master`
+
+then `--protocol` must also be specified.
+
+If `--wrapper` / `--wrap` is:
+
+* `none`
+
+then the first explicit protocol is:
+
+* `memory`
+
+which means the raw core-facing fixed-latency memory/scalar/handshake interface
+is exposed directly without an integration bus wrapper.
+
+== First Implementation Plan
+
+The staged implementation should be:
+
+1. plain `rtl` emission from `uglir` with `--hdl=verilog`
+2. wrapper stubs for:
+   * `slave + wishbone`
+3. explicit raw-core mode:
+   * `none`
+4. later:
+   * `master + wishbone`
+   * `slave + obi`
+   * `master + obi`
+
+The first wrapper implementations may remain stubs as long as they:
+
+* establish the interface surface
+* establish the wrapper/core boundary
+* document the missing register-map and memory-map details clearly
+
+== Core Versus Wrapper Responsibilities
+
+The bare core should be responsible for:
+
+* request/response handshake
+* scalar inputs/outputs
+* raw memory-style access ports
+* internal datapath/controller logic
+
+The generated core follows the same role-oriented naming convention as `uglir`:
+
+* stored state and bound registers use `_q`
+* combinational and interconnect signals use `_n`
+
+Examples:
+
+* `state_q`
+* `next_state_n`
+* `r_i32_0_q`
+* `mx_r_i32_0_n`
+* `req_fire_n`
+
+The wrapper should be responsible for:
+
+* system bus adaptation
+* register-map generation
+* software-visible control/status mapping
+* software-visible memory exposure
+* optional wrapper-local memories in slave-only mode
+* optional wrapper-local DMA/master access logic in master mode
+
+This keeps the HLS-generated core reusable and integration-independent.
+
+== First Wishbone Slave Wrapper Contract
+
+The first non-stub wrapper implementation targets:
+
+* `--wrap=slave`
+* `--protocol=wishbone`
+
+This wrapper currently provides:
+
+* a wrapper-owned control/status register
+* wrapper-owned scalar input registers
+* wrapper-owned scalar output registers
+* wrapper-owned memory arrays for each raw core memory bundle
+* a simple start/busy/done protocol around the core request/response handshake
+* wrapper module parameter `WB_BASE_ADDR`, default `32'h0000_0000`
+  * all software-visible register and memory offsets are relative to `WB_BASE_ADDR`
+
+The initial register map is:
+
+* `0x0000`
+  * control/status
+  * write bit 0: request start
+  * read bit 0: done
+  * read bit 1: busy
+  * read bit 2: start pending
+  * read bit 3: core `req_ready`
+* `0x0100 + 4*i`
+  * scalar input register `i`
+* `0x0200 + 4*i`
+  * scalar output register `i`
+* `0x1000 + 0x1000*i`
+  * memory window for memory interface `i`
+  * 4 KiB per memory window
+  * word-addressed from the Wishbone side
+
+Current simplifications:
+
+* `wb_ack_o` is asserted for each request without wait states
+* wrapper-owned memories are fixed-size local arrays
+* the wrapper assumes software does not intentionally race the core on one
+  memory window while the core is active
+* the wrapper always accepts core completion immediately and latches scalar
+  outputs into wrapper registers
+
+This is intentionally a first useful implementation, not yet a full
+integration-grade bus subsystem.
+
+== Memory Interface Interpretation
+
+The current state of the design does not yet require a fixed system-level memory
+ownership contract, because the FSMD/core does not care who provides the memory
+behind a read/write interface.
+
+That means:
+
+* the core only requires memory access interfaces
+* the wrapper decides how those interfaces are realized for a particular SoC
+  integration style
+
+This is exactly why wrapper generation belongs in `rtl`, not earlier in the
+pipeline.
+
+== Bare Core Memory Semantics
+
+For `--wrap=none --protocol=memory`, the RTL result is the bare core.
+
+In this mode, top-level `memref<T>` objects are exposed as raw memory bundles.
+
+For a memory `A`, the first-version bare core interface is:
+
+* input `A_rdata`
+* output `A_addr`
+* output `A_wdata` when stores exist
+* output `A_we` when stores exist
+
+The intended semantics are:
+
+* the core does not instantiate the storage backing `A`
+* the system integrator provides the storage or memory adapter externally
+* the core drives:
+  * address
+  * write data
+  * write enable
+* the external environment drives read data back into the core
+
+So the bare core contract is:
+
+* storage lives outside the generated core
+* the generated core only emits and consumes memory access signals
+
+=== Single-Port Assumption
+
+The first bare-core memory contract remains intentionally simple:
+
+* one visible memory bundle per top-level memory
+* one access per memory bundle per FSMD state
+* multiple accesses are allowed only when they are multiplexed over time by the
+  schedule / bind / FSMD
+
+This matches the existing single-interface assumption already used in `uglir`.
+
+=== Timing Contract
+
+The first bare-core memory interface is fixed-latency and non-handshaked.
+
+That means:
+
+* no per-memory ready/valid handshake is synthesized in bare mode
+* the external environment must satisfy the latency expected by the scheduled
+  memory component
+* for the current simple `MEM` examples, that means the read/write timing is
+  the fixed timing assumed by the resource library and scheduler
+
+So the first bare-core memory contract is intentionally:
+
+* raw
+* fixed-latency
+* single-port
+* externally implemented
+
+This is sufficient for the current core-finalization work, while richer memory
+protocols can later be provided through wrapper modes.
+
+== Summary
+
+The `rtl` stage should be understood as:
+
+* HDL lowering from `uglir`
+* plus optional integration wrapper synthesis
+
+with the following design principles:
+
+* HDL agnostic before `rtl`
+* wrapper-role agnostic before `rtl`
+* protocol agnostic before `rtl`
+* core generation separate from integration concerns
+
+The intended wrapper modes are:
+
+* `slave`
+* `master`
+* `none`
+
+The intended wrapped protocols are:
+
+* `wishbone`
+* `obi`
+
+Targeted external protocol references:
+
+* `wishbone`
+  * https://opencores.org/projects/wishbone
+  * target: Wishbone `B3`
+* `obi`
+  * https://github.com/openhwgroup/obi
+  * target: `1.6.0`
+
+And the first practical roadmap is:
+
+* `verilog`
+* raw core
+* slave wrapper
+* Wishbone first

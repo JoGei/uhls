@@ -218,6 +218,55 @@ class UHIRParserTests(unittest.TestCase):
         self.assertIn("state IDLE code=0", rendered)
         self.assertIn("emit T0 issue=[ewms0<-v1]", rendered)
 
+    def test_parse_fsm_emit_preserves_issue_and_latch_lists(self) -> None:
+        design = parse_uhir(
+            """
+            design add1
+            stage fsm
+            schedule kind=control_steps
+            resources {
+              fu ewms0 : EWMS
+              reg r0 : i32
+              reg r1 : i32
+            }
+            controller C0 encoding=binary protocol=req_resp completion_order=in_order overlap=true {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=0
+              state T0 code=1
+              state DONE code=2
+              transition IDLE -> T0 when=req_valid&&req_ready
+              transition T0 -> DONE
+              transition DONE -> IDLE when=resp_valid&&resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[ewms0<-v1, ewms0<-v2] latch=[r0, r1]
+              emit DONE resp_valid=true
+            }
+
+            region proc_add1 kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+              node v2 = add x, 2:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+              node v3 = ret v2 class=CTRL ii=0 delay=0 start=1 end=1
+              node v4 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+              edge data v0 -> v1
+              edge data v0 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+              steps [0:1]
+              latency 2
+              value v1 -> r0 live=[1:1]
+              value v2 -> r1 live=[1:1]
+            }
+            """
+        )
+
+        emit = design.controllers[0].emits[1]
+        self.assertEqual(emit.attributes["issue"], ("ewms0<-v1", "ewms0<-v2"))
+        self.assertEqual(emit.attributes["latch"], ("r0", "r1"))
+
     def test_parse_bind_uhir_accepts_symbolic_fu_only_compat_timing(self) -> None:
         design = parse_uhir(
             """

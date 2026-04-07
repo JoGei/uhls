@@ -18,6 +18,9 @@ from uhls.backend.hls import (
     BIND_DUMP_KINDS,
     CallableSGUScheduler,
     FSM_ENCODINGS,
+    RTL_HDLS,
+    RTL_PROTOCOLS,
+    RTL_WRAPS,
     bind_dump_to_dot,
     binding_to_dot,
     builtin_binder_names,
@@ -28,9 +31,10 @@ from uhls.backend.hls import (
     format_bind_dump,
     lower_bind_to_fsm,
     lower_fsm_to_uglir,
+    lower_uglir_to_rtl,
     parse_bind_dump_spec,
 )
-from uhls.backend.uhir import (
+from uhls.backend.hls.uhir import (
     ExecutabilityGraph,
     GOptPassSpec,
     UHIRParseError,
@@ -958,14 +962,54 @@ def uglir_cmd(input_path: Path, resources_path: Path | None, output: Path | None
     _write_or_print_text(format_uhir(lowered), output)
 
 
-@cli.command("hls-emit")
-@click.argument("binding")
-@click.argument("schedule")
-@click.option("-o", "--output")
-def hls_emit_cmd(binding: str, schedule: str, output: str | None) -> None:
-    """Placeholder for RTL emission flows."""
-    del binding, schedule, output
-    raise NotImplementedError("'hls-emit' is not implemented yet")
+@cli.command(
+    "rtl",
+    help=(
+        "Lower uglir to one concrete RTL language.\n"
+        "\n"
+        "Examples:\n"
+        "\n"
+        "\b\n"
+        "  uhls rtl input.uglir --hdl=verilog\n"
+        "\n"
+        "\b\n"
+        "  uhls rtl input.uglir --hdl=verilog -o output.v\n"
+        "\n"
+        "\b\n"
+        "  uhls rtl input.uglir --hdl=verilog --wrap=none --protocol=memory -o output.v\n"
+        "\n"
+        "\b\n"
+        "  uhls rtl input.uglir --hdl=verilog --wrap=slave --protocol=wishbone -o output.v\n"
+    ),
+)
+@click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--hdl",
+    required=True,
+    type=click.Choice(RTL_HDLS, case_sensitive=False),
+    help="Target RTL language.",
+)
+@click.option(
+    "--wrap",
+    type=click.Choice(RTL_WRAPS, case_sensitive=False),
+    help="Optional external wrapping style for the generated RTL.",
+)
+@click.option(
+    "--protocol",
+    type=click.Choice(RTL_PROTOCOLS, case_sensitive=False),
+    help="Optional interface/bus protocol for the generated wrapper.",
+)
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
+def rtl_cmd(input_path: Path, hdl: str, wrap: str | None, protocol: str | None, output: Path | None) -> None:
+    """Lower uglir to one textual RTL artifact."""
+    design = parse_uhir_file(input_path)
+    if design.stage != "uglir":
+        raise CLIError(f"'rtl' expects uglir input, got stage '{design.stage}'")
+    try:
+        lowered = lower_uglir_to_rtl(design, hdl=hdl, wrap=wrap, protocol=protocol)
+    except (NotImplementedError, ValueError) as exc:
+        raise CLIError(str(exc)) from exc
+    _write_or_print_text(lowered, output)
 
 
 def _load_ir_file(path: Path) -> object:

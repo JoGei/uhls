@@ -564,9 +564,9 @@ def _split_node_type(text: str) -> tuple[str, str | None]:
     depth = 0
     split_index: int | None = None
     for index, char in enumerate(text):
-        if char in "([<":
+        if _is_nesting_open(text, index):
             depth += 1
-        elif char in ")]>":
+        elif _is_nesting_close(text, index):
             depth -= 1
         elif char == ":" and depth == 0:
             split_index = index
@@ -591,10 +591,10 @@ def _split_attr_suffix(text: str) -> tuple[str, dict[str, AttributeValue]]:
             continue
         if in_string:
             continue
-        if char in "([<":
+        if _is_nesting_open(text, index):
             depth += 1
             continue
-        if char in ")]>":
+        if _is_nesting_close(text, index):
             depth -= 1
             continue
         if char.isspace() and depth == 0:
@@ -639,9 +639,9 @@ def _parse_attrs(text: str) -> dict[str, AttributeValue]:
             if in_string:
                 index += 1
                 continue
-            if char in "([<":
+            if _is_nesting_open(text, index):
                 depth += 1
-            elif char in ")]>":
+            elif _is_nesting_close(text, index):
                 depth -= 1
             elif char.isspace() and depth == 0:
                 next_index = _skip_spaces(text, index)
@@ -695,15 +695,33 @@ def _split_top_level(text: str) -> list[str]:
     start = 0
     depth = 0
     for index, char in enumerate(text):
-        if char in "([<":
+        if _is_nesting_open(text, index):
             depth += 1
-        elif char in ")]>":
+        elif _is_nesting_close(text, index):
             depth -= 1
         elif char == "," and depth == 0:
             items.append(text[start:index].strip())
             start = index + 1
     items.append(text[start:].strip())
     return items
+
+
+def _is_nesting_open(text: str, index: int) -> bool:
+    char = text[index]
+    if char in "([":
+        return True
+    if char == "<":
+        return index + 1 >= len(text) or text[index + 1] != "-"
+    return False
+
+
+def _is_nesting_close(text: str, index: int) -> bool:
+    char = text[index]
+    if char in ")]":
+        return True
+    if char == ">":
+        return index == 0 or text[index - 1] != "-"
+    return False
 
 
 def _split_range(text: str, line_number: int) -> tuple[str, str]:

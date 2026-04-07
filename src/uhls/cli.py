@@ -341,7 +341,7 @@ def cli() -> None:
 @click.argument("source", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def parse_cmd(source: Path, output: Path | None) -> None:
-    """Parse µC and lower to canonical µIR."""
+    """Lower µC source to canonical µIR."""
     module = lower_source_to_uir(source.read_text(encoding="utf-8"))
     _write_or_print_text(format_module(module), output)
 
@@ -349,111 +349,52 @@ def parse_cmd(source: Path, output: Path | None) -> None:
 @cli.command("lint")
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 def lint_cmd(input_path: Path) -> None:
-    """Run basic syntax and static validation for µIR, µhIR, µglIR, and res.json artifacts."""
+    """Lint µIR, µhIR, µglIR, and res.json exchange artifacts."""
     _lint_exchange_file(input_path)
     click.echo("ok")
 
 
-@cli.command("cfg")
+@cli.command("view")
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--function", "function_name")
-@click.option("--dot", "emit_dot", is_flag=True, help="Render Graphviz DOT.")
+@click.option("--what", "what_name", help="Optional view kind. Inferred when the input artifact has one obvious view.")
+@click.option("--pretty", "emit_pretty", is_flag=True, help="Render a textual view.")
+@click.option("--dot", "emit_dot", is_flag=True, help="Render a Graphviz DOT view.")
+@click.option("--compact", is_flag=True, help="Use compact labels when the selected view supports them.")
+@click.option("--function", "function_name", help="Restrict canonical-µIR views to one function.")
+@click.option("--block", "block_name", help="Restrict canonical-µIR DFG views to one basic block.")
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
-def cfg_cmd(input_path: Path, function_name: str | None, emit_dot: bool, output: Path | None) -> None:
-    """Inspect CFG structure."""
-    module = _load_ir_file(input_path)
-    functions = _selected_functions(module, function_name)
-    if emit_dot:
-        if function_name is None and len(functions) > 1:
-            text = to_dot(module)
-        else:
-            text = "\n\n".join(to_dot(function) for function in functions)
-    else:
-        text = "\n\n".join(_format_cfg_summary(function) for function in functions)
-    _write_or_print_text(text, output)
-
-
-@cli.command("dfg")
-@click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--function", "function_name")
-@click.option("--block", "block_name", help="Restrict DFG output to one basic block.")
-@click.option("--dot", "emit_dot", is_flag=True, help="Render Graphviz DOT.")
-@click.option("--compact", is_flag=True, help="Use compact DOT labels for DFG nodes and edges.")
-@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
-def dfg_cmd(
+def view_cmd(
     input_path: Path,
+    what_name: str | None,
+    emit_pretty: bool,
+    emit_dot: bool,
+    compact: bool,
     function_name: str | None,
     block_name: str | None,
-    emit_dot: bool,
-    compact: bool,
     output: Path | None,
 ) -> None:
-    """Inspect block-local DFG structure."""
-    module = _load_ir_file(input_path)
-    functions = _selected_functions(module, function_name)
-    if emit_dot:
-        if function_name is None and block_name is None and len(functions) > 1:
-            text = to_module_dfg_dot(module, compact=compact)
-        else:
-            text = "\n\n".join(_render_dfg_dot(function, block_name, compact=compact) for function in functions)
-    else:
-        text = "\n\n".join(_format_dfg_summary(function, block_name) for function in functions)
-    _write_or_print_text(text, output)
-
-
-@cli.command("cdfg")
-@click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--function", "function_name")
-@click.option("--dot", "emit_dot", is_flag=True, help="Render Graphviz DOT.")
-@click.option("--compact", is_flag=True, help="Use compact DOT labels for embedded DFGs.")
-@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
-def cdfg_cmd(
-    input_path: Path,
-    function_name: str | None,
-    emit_dot: bool,
-    compact: bool,
-    output: Path | None,
-) -> None:
-    """Inspect combined control/data-flow graph structure."""
-    module = _load_ir_file(input_path)
-    functions = _selected_functions(module, function_name)
-    if emit_dot:
-        if function_name is None and len(functions) > 1:
-            text = to_module_cdfg_dot(module, compact=compact)
-        else:
-            text = "\n\n".join(to_cdfg_dot(function, compact=compact) for function in functions)
-    else:
-        text = "\n\n".join(_format_cdfg_summary(function) for function in functions)
-    _write_or_print_text(text, output)
-
+    """Render views over µIR, µhIR, µglIR, and res.json exchange artifacts."""
+    backend = _resolve_view_backend(emit_pretty=emit_pretty, emit_dot=emit_dot)
+    rendered = _render_view(
+        input_path,
+        backend=backend,
+        what_name=what_name,
+        compact=compact,
+        function_name=function_name,
+        block_name=block_name,
+    )
+    _write_or_print_text(rendered, output)
 
 @cli.command("seq")
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--top", "top_name", help="Root function to lower when the input µIR module has multiple functions.")
-@click.option("--dot", "emit_dot", is_flag=True, help="Render Graphviz DOT from one .seq.uhir file.")
-@click.option("--compact", is_flag=True, help="Use compact DOT labels for sequencing-graph nodes.")
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def seq_cmd(
     input_path: Path,
     top_name: str | None,
-    emit_dot: bool,
-    compact: bool,
     output: Path | None,
 ) -> None:
-    """Build or visualize hierarchical HLS sequencing graphs."""
-    if emit_dot:
-        if input_path.suffix == ".uir":
-            module = _load_ir_file(input_path)
-            if not hasattr(module, "functions"):
-                raise CLIError(f"'seq --dot' expects canonical µIR input, got {type(module).__name__}")
-            design = lower_module_to_seq(module, top=top_name)
-        else:
-            design = parse_uhir_file(input_path)
-            if design.stage != "seq":
-                raise CLIError(f"'seq --dot' expects a seq-stage µhIR file, got stage '{design.stage}'")
-        _write_or_print_text(to_uhir_dot(design, compact=compact), output)
-        return
-
+    """Lower canonical µIR to seq-stage µhIR."""
     module = _load_ir_file(input_path)
     if not hasattr(module, "functions"):
         raise CLIError(f"'seq' expects canonical µIR input, got {type(module).__name__}")
@@ -464,8 +405,8 @@ def seq_cmd(
 @cli.command(
     "alloc",
     help=(
-        "Lower seq-stage µhIR with -exg, inspect an executability graph when no input is given, "
-        "or emit a starter graph with --gen_dummy_exg.\n"
+        "Lower seq-stage µhIR to alloc-stage µhIR with -exg, or emit a starter graph with "
+        "--gen_dummy_exg.\n"
         "\n"
         "Examples:\n"
         "\n"
@@ -474,15 +415,6 @@ def seq_cmd(
         "\n"
         "\b\n"
         "  uhls alloc input.seq.uhir -exg graph.uhir\n"
-        "\n"
-        "\b\n"
-        "  uhls alloc input.seq.uhir -exg graph.json --dot\n"
-        "\n"
-        "\b\n"
-        "  uhls alloc -exg graph.json\n"
-        "\n"
-        "\b\n"
-        "  uhls alloc -exg graph.uhir --dot\n"
         "\n"
         "\b\n"
         "  uhls alloc --gen_dummy_exg\n"
@@ -494,20 +426,14 @@ def seq_cmd(
     "--executability-graph",
     "executability_graph_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Executability graph in JSON or exg-stage µhIR form, used for alloc lowering or inspected directly when no input file is given.",
+    help="Executability graph in JSON or exg-stage µhIR form, used for alloc lowering.",
 )
 @click.option(
     "-dummy_exg",
     "--gen_dummy_exg",
     "gen_dummy_exg",
     is_flag=True,
-    help="Emit a starter executability graph and exit; with --dot, render that starter graph as DOT.",
-)
-@click.option(
-    "--dot",
-    "emit_dot",
-    is_flag=True,
-    help="Render Graphviz DOT for the alloc result, or for the executability graph when no input file is given.",
+    help="Emit a starter executability graph and exit.",
 )
 @click.option(
     "--algo",
@@ -517,43 +443,26 @@ def seq_cmd(
     show_default=True,
     help="Allocation strategy used when choosing one FU candidate per opcode.",
 )
-@click.option("--compact", is_flag=True, help="Use compact DOT labels for alloc-region rendering.")
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def alloc_cmd(
     input_path: Path | None,
     executability_graph_path: Path | None,
     gen_dummy_exg: bool,
-    emit_dot: bool,
     allocation_algorithm: str,
-    compact: bool,
     output: Path | None,
 ) -> None:
-    """Allocate seq-stage µhIR or inspect executability graphs."""
+    """Lower seq-stage µhIR to alloc-stage µhIR."""
     if gen_dummy_exg:
         graph = dummy_executability_graph()
-        _write_or_print_text(executability_graph_to_dot(graph) if emit_dot else _format_executability_graph_json(graph), output)
+        _write_or_print_text(_format_executability_graph_json(graph), output)
         return
 
     if executability_graph_path is None:
         raise CLIError("'alloc' requires -exg/--executability-graph unless -dummy_exg/--gen_dummy_exg is used")
     if input_path is None:
-        graph = _load_executability_graph(executability_graph_path)
-        _write_or_print_text(executability_graph_to_dot(graph) if emit_dot else format_executability_graph(graph), output)
-        return
+        raise CLIError("'alloc' expects seq-stage µhIR input; use 'uhls view' to inspect executability graphs")
 
     design = parse_uhir_file(input_path)
-    if emit_dot:
-        if design.stage == "seq":
-            design = lower_seq_to_alloc(
-                design,
-                executability_graph=_load_executability_graph(executability_graph_path),
-                algorithm=allocation_algorithm,
-            )
-        elif design.stage != "alloc":
-            raise CLIError(f"'alloc --dot' expects seq/alloc-stage µhIR input, got stage '{design.stage}'")
-        _write_or_print_text(to_uhir_dot(design, compact=compact), output)
-        return
-
     if design.stage != "seq":
         raise CLIError(f"'alloc' expects seq-stage µhIR input, got stage '{design.stage}'")
     allocated = lower_seq_to_alloc(
@@ -605,7 +514,7 @@ def alloc_cmd(
 )
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def opt_cmd(input_path: Path, passes: str, pass_args: tuple[str, ...], output: Path | None) -> None:
-    """Run optimization pass pipelines."""
+    """Run canonical µIR optimization pass pipelines."""
     module = _load_ir_file(input_path)
     pipeline = [_lookup_opt_pass(name, pass_args) for name in passes.split(",") if name.strip()]
     if not pipeline:
@@ -650,9 +559,6 @@ def opt_cmd(input_path: Path, passes: str, pass_args: tuple[str, ...], output: P
         "  uhls gopt input.seq.uhir -p infer_loops,translate_loop_dialect,infer_static,simplify_static_control -o output.seq.uhir\n"
         "\n"
         "\b\n"
-        "  uhls gopt input.seq.uhir -p infer_loops,translate_loop_dialect,infer_static,simplify_static_control --dot -o output.dot\n"
-        "\n"
-        "\b\n"
         "  uhls gopt input.seq.uhir -p /path/to/pass.py:Symbol -o output.seq.uhir\n"
     ),
 )
@@ -673,15 +579,11 @@ def opt_cmd(input_path: Path, passes: str, pass_args: tuple[str, ...], output: P
     multiple=True,
     help="Shared pass argument forwarded to every pass in the pipeline. Repeat to pass multiple values.",
 )
-@click.option("--dot", "emit_dot", is_flag=True, help="Render Graphviz DOT for the optimized µhIR.")
-@click.option("--compact", is_flag=True, help="Use compact DOT labels for µhIR rendering.")
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def gopt_cmd(
     input_path: Path,
     passes: str,
     pass_args: tuple[str, ...],
-    emit_dot: bool,
-    compact: bool,
     output: Path | None,
 ) -> None:
     """Run µhIR graph-optimization pass pipelines."""
@@ -703,7 +605,7 @@ def gopt_cmd(
         raise
     except Exception as exc:
         raise CLIError(f"graph optimization pipeline failed: {exc}") from exc
-    _write_or_print_text(to_uhir_dot(optimized, compact=compact) if emit_dot else format_uhir(optimized), output)
+    _write_or_print_text(format_uhir(optimized), output)
 
 
 @cli.command(
@@ -737,7 +639,7 @@ def run_cmd(
     legacy_arrays: tuple[str, ...],
     trace: bool,
 ) -> None:
-    """Execute IR with the interpreter."""
+    """Execute canonical µIR with the interpreter."""
     module = _load_ir_file(input_path)
     function = _select_function_for_run(module, function_name)
     raw_arguments = _parse_run_argument_items(list(legacy_arrays))
@@ -771,7 +673,7 @@ def run_cmd(
 )
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def sched_cmd(input_path: Path, algo: str | None, sgu_latency_max: str | None, output: Path | None) -> None:
-    """Schedule alloc-stage µhIR hierarchically."""
+    """Lower alloc-stage µhIR to sched-stage µhIR."""
     design = parse_uhir_file(input_path)
     if design.stage != "alloc":
         raise CLIError(f"'sched' expects alloc-stage µhIR input, got stage '{design.stage}'")
@@ -804,18 +706,6 @@ def sched_cmd(input_path: Path, algo: str | None, sgu_latency_max: str | None, o
         "\n"
         "\b\n"
         "  uhls bind input.sched.uhir --algo compat -o output.bind.uhir\n"
-        "\n"
-        "\b\n"
-        "  uhls bind input.bind.uhir --dump conflict\n"
-        "\n"
-        "\b\n"
-        "  uhls bind input.sched.uhir --algo left_edge --dump conflict --dot\n"
-        "\n"
-        "\b\n"
-        "  uhls bind input.bind.uhir --dump trp,trp_unroll --dot --compact\n"
-        "\n"
-        "\b\n"
-        "  uhls bind input.bind.uhir --dump dfgsb,dfgsb_unroll --dot\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -832,56 +722,20 @@ def sched_cmd(input_path: Path, algo: str | None, sgu_latency_max: str | None, o
     is_flag=True,
     help="Flatten fully static hierarchical schedules into one global occurrence space before binding. Errors on non-static loop timing.",
 )
-@click.option(
-    "--dump",
-    "dump_spec",
-    help=(
-        "Bind analysis dump(s): "
-        + ", ".join(BIND_DUMP_KINDS)
-        + ". Pass one kind or a comma-separated list."
-    ),
-)
-@click.option("--dot", is_flag=True, help="Render bind dump(s) as DOT. Without --dump, acts like --dump=conflict.")
-@click.option("--compact", is_flag=True, help="Use compact labels for bind dump rendering.")
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def bind_cmd(
     input_path: Path,
     algo: str | None,
     flatten: bool,
-    dump_spec: str | None,
-    dot: bool,
-    compact: bool,
     output: Path | None,
 ) -> None:
-    """Bind sched-stage µhIR operations to concrete resources."""
+    """Lower sched-stage µhIR to bind-stage µhIR."""
     design = parse_uhir_file(input_path)
     if flatten and algo is not None and algo.strip().lower().replace("-", "_") == "compat":
         raise CLIError("'compat' does not support --flatten; use 'left_edge' for fully static flattened binding")
 
-    dump_kinds: tuple[str, ...] = ()
-    if dump_spec is not None:
-        try:
-            dump_kinds = parse_bind_dump_spec(dump_spec)
-        except ValueError as exc:
-            raise CLIError(str(exc)) from exc
-    elif dot:
-        dump_kinds = ("conflict",)
-
-    if dump_kinds:
-        if design.stage == "bind":
-            bound = design
-        elif design.stage == "sched":
-            if algo is None:
-                raise CLIError("'bind' requires --algo when dumping from sched-stage µhIR input")
-            bound = lower_sched_to_bind(design, binder=_lookup_operation_binder(algo, binder_kwargs={"flatten": flatten}))
-        else:
-            raise CLIError(f"'bind --dump' expects sched/bind-stage µhIR input, got stage '{design.stage}'")
-        rendered = bind_dump_to_dot(bound, dump_kinds, compact=compact) if dot else format_bind_dump(bound, dump_kinds, compact=compact)
-        _write_or_print_text(rendered, output)
-        return
-
     if design.stage != "sched":
-        raise CLIError(f"'bind' expects sched-stage µhIR input unless --dump is used, got stage '{design.stage}'")
+        raise CLIError(f"'bind' expects sched-stage µhIR input, got stage '{design.stage}'")
     bound = lower_sched_to_bind(design, binder=_lookup_operation_binder(algo, binder_kwargs={"flatten": flatten}))
     rendered = format_uhir(bound)
     _write_or_print_text(rendered, output)
@@ -902,9 +756,6 @@ def bind_cmd(
         "\n"
         "\b\n"
         "  uhls fsm input.bind.uhir --encoding=one_hot -o output.fsm.uhir\n"
-        "\n"
-        "\b\n"
-        "  uhls fsm input.bind.uhir --encoding=binary --dot -o output.dot\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -915,15 +766,14 @@ def bind_cmd(
     show_default=True,
     help="Controller-state encoding.",
 )
-@click.option("--dot", "emit_dot", is_flag=True, help="Render the synthesized controller as a Graphviz state diagram.")
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
-def fsm_cmd(input_path: Path, encoding: str, emit_dot: bool, output: Path | None) -> None:
-    """Lower bind-stage µhIR to the fsm/FSMD stage."""
+def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
+    """Lower bind-stage µhIR to fsm-stage µhIR."""
     design = parse_uhir_file(input_path)
     if design.stage != "bind":
         raise CLIError(f"'fsm' expects bind-stage µhIR input, got stage '{design.stage}'")
     lowered = lower_bind_to_fsm(design, encoding=encoding)
-    _write_or_print_text(fsm_to_dot(lowered) if emit_dot else format_uhir(lowered), output)
+    _write_or_print_text(format_uhir(lowered), output)
 
 
 @cli.command(
@@ -940,7 +790,7 @@ def fsm_cmd(input_path: Path, encoding: str, emit_dot: bool, output: Path | None
         "  uhls uglir input.fsm.uhir -o output.uglir\n"
         "\n"
         "\b\n"
-        "  uhls uglir input.fsm.uhir --ressources ressources.json -o output.uglir\n"
+        "  uhls uglir input.fsm.uhir --resources ressources.json -o output.uglir\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -954,7 +804,7 @@ def fsm_cmd(input_path: Path, encoding: str, emit_dot: bool, output: Path | None
 )
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def uglir_cmd(input_path: Path, resources_path: Path | None, output: Path | None) -> None:
-    """Lower fsm-stage µhIR to uglir."""
+    """Lower fsm-stage µhIR to uglir-stage µhIR."""
     design = parse_uhir_file(input_path)
     if design.stage != "fsm":
         raise CLIError(f"'uglir' expects fsm-stage µhIR input, got stage '{design.stage}'")
@@ -966,7 +816,7 @@ def uglir_cmd(input_path: Path, resources_path: Path | None, output: Path | None
 @cli.command(
     "rtl",
     help=(
-        "Lower uglir to one concrete RTL language.\n"
+        "Lower uglir-stage µhIR to one concrete RTL language.\n"
         "\n"
         "Examples:\n"
         "\n"
@@ -1002,7 +852,7 @@ def uglir_cmd(input_path: Path, resources_path: Path | None, output: Path | None
 )
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def rtl_cmd(input_path: Path, hdl: str, wrap: str | None, protocol: str | None, output: Path | None) -> None:
-    """Lower uglir to one textual RTL artifact."""
+    """Lower uglir-stage µhIR to one textual RTL artifact."""
     design = parse_uhir_file(input_path)
     if design.stage != "uglir":
         raise CLIError(f"'rtl' expects uglir input, got stage '{design.stage}'")
@@ -1015,6 +865,192 @@ def rtl_cmd(input_path: Path, hdl: str, wrap: str | None, protocol: str | None, 
 
 def _load_ir_file(path: Path) -> object:
     return parse_module(path.read_text(encoding="utf-8"))
+
+
+def _resolve_view_backend(*, emit_pretty: bool, emit_dot: bool) -> str:
+    if emit_pretty and emit_dot:
+        raise CLIError("'view' accepts only one backend at a time; choose one of --pretty or --dot")
+    if emit_dot:
+        return "dot"
+    return "pretty"
+
+
+def _render_view(
+    input_path: Path,
+    *,
+    backend: str,
+    what_name: str | None,
+    compact: bool,
+    function_name: str | None,
+    block_name: str | None,
+) -> str:
+    suffix = input_path.suffix.lower()
+    if suffix == ".uir":
+        return _render_uir_view(
+            _load_ir_file(input_path),
+            backend=backend,
+            what_name=what_name,
+            compact=compact,
+            function_name=function_name,
+            block_name=block_name,
+        )
+    if suffix in {".uhir", ".uglir"}:
+        return _render_uhir_view(
+            parse_uhir_file(input_path),
+            backend=backend,
+            what_name=what_name,
+            compact=compact,
+            function_name=function_name,
+            block_name=block_name,
+        )
+    if suffix == ".json":
+        return _render_json_view(input_path, backend=backend, what_name=what_name)
+    raise CLIError(
+        f"'view' does not support '{input_path.suffix or '<no suffix>'}'; expected one of: .uir, .uhir, .uglir, .json"
+    )
+
+
+def _render_uir_view(
+    module: object,
+    *,
+    backend: str,
+    what_name: str | None,
+    compact: bool,
+    function_name: str | None,
+    block_name: str | None,
+) -> str:
+    supported = ("uir", "cfg", "dfg", "cdfg", "seq")
+    view_name = _select_view_name("µIR", backend, what_name, supported, default_pretty="uir")
+    functions = _selected_functions(module, function_name)
+    if view_name == "uir":
+        if backend != "pretty":
+            raise _unsupported_view_backend("µIR", view_name, backend, ("pretty",))
+        if block_name is not None:
+            raise CLIError("'view --what=uir' does not support --block")
+        return format_module(module)
+    if view_name == "cfg":
+        if block_name is not None:
+            raise CLIError("'view --what=cfg' does not support --block")
+        if backend == "dot":
+            if function_name is None and len(functions) > 1:
+                return to_dot(module)
+            return "\n\n".join(to_dot(function) for function in functions)
+        return "\n\n".join(_format_cfg_summary(function) for function in functions)
+    if view_name == "dfg":
+        if backend == "dot":
+            if function_name is None and block_name is None and len(functions) > 1:
+                return to_module_dfg_dot(module, compact=compact)
+            return "\n\n".join(_render_dfg_dot(function, block_name, compact=compact) for function in functions)
+        return "\n\n".join(_format_dfg_summary(function, block_name) for function in functions)
+    if view_name == "cdfg":
+        if block_name is not None:
+            raise CLIError("'view --what=cdfg' does not support --block")
+        if backend == "dot":
+            if function_name is None and len(functions) > 1:
+                return to_module_cdfg_dot(module, compact=compact)
+            return "\n\n".join(to_cdfg_dot(function, compact=compact) for function in functions)
+        return "\n\n".join(_format_cdfg_summary(function) for function in functions)
+    if view_name == "seq":
+        if block_name is not None:
+            raise CLIError("'view --what=seq' does not support --block")
+        design = lower_module_to_seq(module, top=function_name)
+        if backend == "dot":
+            return to_uhir_dot(design, compact=compact)
+        return format_uhir(design)
+    raise CLIError(f"internal error: unhandled µIR view '{view_name}'")
+
+
+def _render_uhir_view(
+    design,
+    *,
+    backend: str,
+    what_name: str | None,
+    compact: bool,
+    function_name: str | None,
+    block_name: str | None,
+) -> str:
+    if function_name is not None or block_name is not None:
+        raise CLIError("'view' only supports --function/--block for canonical µIR inputs")
+    stage = design.stage
+    if stage == "bind":
+        supported = ("bind", *BIND_DUMP_KINDS)
+        view_name = _select_view_name("bind µhIR", backend, what_name, supported, default_pretty="bind", default_dot="bind")
+        if view_name == "bind":
+            if backend == "pretty":
+                return format_uhir(design)
+            return binding_to_dot(design, compact=compact)
+        dump_kinds = (view_name,)
+        return bind_dump_to_dot(design, dump_kinds, compact=compact) if backend == "dot" else format_bind_dump(design, dump_kinds, compact=compact)
+    if stage == "fsm":
+        supported = ("fsm",)
+        view_name = _select_view_name("fsm µhIR", backend, what_name, supported, default_pretty="fsm", default_dot="fsm")
+        if backend == "dot":
+            return fsm_to_dot(design)
+        return format_uhir(design)
+    if stage == "uglir":
+        supported = ("uglir",)
+        view_name = _select_view_name("uglir µhIR", backend, what_name, supported, default_pretty="uglir")
+        if backend != "pretty":
+            raise _unsupported_view_backend("uglir µhIR", view_name, backend, ("pretty",))
+        return format_uhir(design)
+    if stage == "exg":
+        supported = ("exg",)
+        view_name = _select_view_name("exg µhIR", backend, what_name, supported, default_pretty="exg", default_dot="exg")
+        graph = executability_graph_from_uhir(design)
+        return executability_graph_to_dot(graph) if backend == "dot" else format_executability_graph(graph)
+    supported = (stage,)
+    view_name = _select_view_name(f"{stage} µhIR", backend, what_name, supported, default_pretty=stage, default_dot=stage)
+    if view_name != stage:
+        raise CLIError(f"internal error: unhandled µhIR view '{view_name}'")
+    return to_uhir_dot(design, compact=compact) if backend == "dot" else format_uhir(design)
+
+
+def _render_json_view(input_path: Path, *, backend: str, what_name: str | None) -> str:
+    supported = ("exg",)
+    view_name = _select_view_name("JSON exchange artifact", backend, what_name, supported, default_pretty="exg", default_dot="exg")
+    if view_name != "exg":
+        raise CLIError(f"internal error: unhandled JSON view '{view_name}'")
+    graph = _load_executability_graph(input_path)
+    return executability_graph_to_dot(graph) if backend == "dot" else format_executability_graph(graph)
+
+
+def _select_view_name(
+    artifact_label: str,
+    backend: str,
+    requested: str | None,
+    supported: tuple[str, ...],
+    *,
+    default_pretty: str | None = None,
+    default_dot: str | None = None,
+) -> str:
+    normalized_supported = tuple(dict.fromkeys(item for item in supported if item))
+    if requested is not None:
+        normalized = requested.strip().lower().replace("-", "_")
+        if normalized not in normalized_supported:
+            supported_text = ", ".join(normalized_supported)
+            raise CLIError(
+                f"unsupported --what='{requested}' for {artifact_label}; supported --what values: {supported_text}"
+            )
+        return normalized
+    default = default_dot if backend == "dot" else default_pretty
+    if default is not None:
+        return default
+    supported_text = ", ".join(normalized_supported)
+    raise CLIError(
+        f"{artifact_label} supports multiple {backend} views; pass --what={{" + supported_text + "}}"
+    )
+
+
+def _unsupported_view_backend(
+    artifact_label: str,
+    view_name: str,
+    backend: str,
+    supported_backends: tuple[str, ...],
+) -> CLIError:
+    supported = ", ".join(f"--{item}" for item in supported_backends)
+    return CLIError(
+        f"{artifact_label} view '{view_name}' does not support --{backend}; supported backends: {supported}"
+    )
 
 
 def _lint_exchange_file(path: Path) -> None:

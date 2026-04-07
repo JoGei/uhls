@@ -14,7 +14,7 @@ from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 class CLITests(unittest.TestCase):
     """End-to-end coverage for the µhLS CLI surface."""
 
-    def test_parse_verify_cfg_dfg_and_cdfg_commands_round_trip(self) -> None:
+    def test_parse_lint_and_view_cfg_dfg_cdfg_round_trip(self) -> None:
         source = """
         int32_t add1(int32_t x) {
             return x + 1;
@@ -36,40 +36,40 @@ class CLITests(unittest.TestCase):
 
             cfg_out = io.StringIO()
             with redirect_stdout(cfg_out):
-                self.assertEqual(main(["cfg", str(uir_path), "--dot"]), 0)
+                self.assertEqual(main(["view", str(uir_path), "--what", "cfg", "--dot"]), 0)
             self.assertIn('digraph "add1"', cfg_out.getvalue())
 
             dfg_out = io.StringIO()
             with redirect_stdout(dfg_out):
-                self.assertEqual(main(["dfg", str(uir_path), "--dot"]), 0)
+                self.assertEqual(main(["view", str(uir_path), "--what", "dfg", "--dot"]), 0)
             self.assertIn('digraph "add1.dfg"', dfg_out.getvalue())
             self.assertIn('"entry:0" [label="t0_0:i32 = add x_0, 1:i32"];', dfg_out.getvalue())
 
             compact_dfg_out = io.StringIO()
             with redirect_stdout(compact_dfg_out):
-                self.assertEqual(main(["dfg", str(uir_path), "--dot", "--compact"]), 0)
+                self.assertEqual(main(["view", str(uir_path), "--what", "dfg", "--dot", "--compact"]), 0)
             self.assertIn('"entry:0" [label="+"];', compact_dfg_out.getvalue())
             self.assertIn('"entry:0" -> "entry:term" [label="t0_0"];', compact_dfg_out.getvalue())
 
             cdfg_out = io.StringIO()
             with redirect_stdout(cdfg_out):
-                self.assertEqual(main(["cdfg", str(uir_path)]), 0)
+                self.assertEqual(main(["view", str(uir_path), "--what", "cdfg"]), 0)
             self.assertIn("func add1: blocks=1 control_edges=0", cdfg_out.getvalue())
             self.assertIn("block entry: dfg_nodes=2 dfg_edges=1", cdfg_out.getvalue())
 
             cdfg_dot_out = io.StringIO()
             with redirect_stdout(cdfg_dot_out):
-                self.assertEqual(main(["cdfg", str(uir_path), "--dot"]), 0)
+                self.assertEqual(main(["view", str(uir_path), "--what", "cdfg", "--dot"]), 0)
             self.assertIn('digraph "add1.cdfg"', cdfg_dot_out.getvalue())
             self.assertIn('subgraph "cluster_entry"', cdfg_dot_out.getvalue())
 
             compact_cdfg_dot_out = io.StringIO()
             with redirect_stdout(compact_cdfg_dot_out):
-                self.assertEqual(main(["cdfg", str(uir_path), "--dot", "--compact"]), 0)
+                self.assertEqual(main(["view", str(uir_path), "--what", "cdfg", "--dot", "--compact"]), 0)
             self.assertIn('"entry:0" [label="+"];', compact_cdfg_dot_out.getvalue())
             self.assertIn('"entry:0" -> "entry:term" [label="t0_0"', compact_cdfg_dot_out.getvalue())
 
-    def test_seq_command_lowers_uir_to_seq_uhir_and_renders_dot(self) -> None:
+    def test_seq_command_lowers_uir_and_view_renders_seq_dot(self) -> None:
         uir = """func add1(x:i32) -> i32
 
 block entry:
@@ -89,7 +89,7 @@ block entry:
             self.assertIn("region proc_add1 kind=procedure {", seq_text)
             self.assertIn("nop", seq_text)
 
-            self.assertEqual(main(["seq", str(seq_path), "--dot", "-o", str(dot_path)]), 0)
+            self.assertEqual(main(["view", str(seq_path), "--dot", "-o", str(dot_path)]), 0)
             dot_text = dot_path.read_text(encoding="utf-8")
             self.assertIn('digraph "add1.seq"', dot_text)
             self.assertIn('cluster_proc_add1', dot_text)
@@ -234,7 +234,7 @@ class ExternalGOptPass:
                 self.assertEqual(main(["gopt", str(dot_path), "-p", "infer_static"]), 1)
             self.assertIn("expects one µhIR input file, not Graphviz DOT", stderr.getvalue())
 
-    def test_gopt_command_supports_dot_output(self) -> None:
+    def test_view_command_renders_gopt_dot(self) -> None:
         seq = """design add1
 stage seq
 
@@ -255,7 +255,8 @@ region proc_add1 kind=procedure {
             dot_path = root / "add1.gopt.dot"
             seq_path.write_text(seq, encoding="utf-8")
 
-            self.assertEqual(main(["gopt", str(seq_path), "-p", "infer_loops,translate_loop_dialect,infer_static", "--dot", "-o", str(dot_path)]), 0)
+            self.assertEqual(main(["gopt", str(seq_path), "-p", "infer_loops,translate_loop_dialect,infer_static", "-o", str(root / "add1.gopt.seq.uhir")]), 0)
+            self.assertEqual(main(["view", str(root / "add1.gopt.seq.uhir"), "--dot", "-o", str(dot_path)]), 0)
 
             dot_text = dot_path.read_text(encoding="utf-8")
             self.assertIn('digraph "add1.seq"', dot_text)
@@ -354,7 +355,7 @@ region proc_add1 kind=procedure {
             self.assertNotIn("start=0", optimized_text)
             self.assertNotIn("value t0_0 ->", optimized_text)
 
-    def test_alloc_command_lowers_seq_to_alloc_uhir_and_renders_dot(self) -> None:
+    def test_alloc_command_lowers_seq_to_alloc_uhir_and_view_renders_dot(self) -> None:
         seq = """design add1
 stage seq
 
@@ -431,10 +432,7 @@ region proc_add1 kind=procedure {
             self.assertIn("edge exg FU_FAST_ADD -- add ii=1 d=1", alloc_text)
             self.assertIn("edge exg CTRL -- nop ii=0 d=0", alloc_text)
 
-            self.assertEqual(
-                main(["alloc", str(seq_path), "-exg", str(graph_path), "--dot", "-o", str(dot_path)]),
-                0,
-            )
+            self.assertEqual(main(["view", str(alloc_path), "--dot", "-o", str(dot_path)]), 0)
             dot_text = dot_path.read_text(encoding="utf-8")
             self.assertIn('digraph "add1.alloc"', dot_text)
             self.assertIn('cluster_proc_add1', dot_text)
@@ -967,7 +965,7 @@ region proc_chain kind=procedure {
             self.assertIn('"ii": 1', dummy_text)
             self.assertIn('"d": 1', dummy_text)
 
-    def test_alloc_command_can_pretty_print_executability_graph_without_input(self) -> None:
+    def test_view_command_can_pretty_print_executability_graph_without_input(self) -> None:
         graph = """
 {
   "functional_units": ["fu_generic"],
@@ -984,7 +982,7 @@ region proc_chain kind=procedure {
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["alloc", "-exg", str(graph_path)]), 0)
+                self.assertEqual(main(["view", str(graph_path)]), 0)
 
             rendered = stdout.getvalue()
             self.assertIn("executability_graph {", rendered)
@@ -1042,7 +1040,7 @@ region G0 kind=executability {
             self.assertIn("delay=1", alloc_text)
             self.assertIn("region executability_graph kind=executability {", alloc_text)
 
-    def test_alloc_command_can_render_executability_graph_dot_without_input(self) -> None:
+    def test_view_command_can_render_executability_graph_dot_from_json(self) -> None:
         graph = """
 {
   "functional_units": ["fu_generic"],
@@ -1059,7 +1057,7 @@ region G0 kind=executability {
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["alloc", "-exg", str(graph_path), "--dot"]), 0)
+                self.assertEqual(main(["view", str(graph_path), "--dot"]), 0)
 
             rendered = stdout.getvalue()
             self.assertIn('graph "executability_graph"', rendered)
@@ -1093,7 +1091,7 @@ block entry:
             self.assertIn("region proc_top kind=procedure {", rendered)
             self.assertIn("region proc_helper kind=procedure {", rendered)
 
-    def test_seq_command_can_render_dot_directly_from_uir_input(self) -> None:
+    def test_view_command_can_render_seq_dot_from_uir_input(self) -> None:
         uir = """func dot4(A:i32[], B:i32[]) -> i32
 
 block entry:
@@ -1106,13 +1104,13 @@ block entry:
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["seq", str(path), "--top", "dot4", "--dot"]), 0)
+                self.assertEqual(main(["view", str(path), "--what", "seq", "--dot"]), 0)
 
             rendered = stdout.getvalue()
             self.assertIn('digraph "dot4.seq"', rendered)
             self.assertIn('cluster_proc_dot4', rendered)
 
-    def test_seq_command_supports_compact_dot_labels(self) -> None:
+    def test_view_command_supports_compact_seq_dot_labels(self) -> None:
         uir = """func dot4(A:i32[], B:i32[]) -> i32
 
 block entry:
@@ -1125,7 +1123,7 @@ block entry:
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["seq", str(path), "--top", "dot4", "--dot", "--compact"]), 0)
+                self.assertEqual(main(["view", str(path), "--what", "seq", "--dot", "--compact"]), 0)
 
             rendered = stdout.getvalue()
             self.assertIn('"v0" [label="v0: nop"', rendered)
@@ -1153,14 +1151,14 @@ block else_blk:
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["dfg", str(path), "--block", "then_blk", "--dot"]), 0)
+                self.assertEqual(main(["view", str(path), "--what", "dfg", "--block", "then_blk", "--dot"]), 0)
 
             rendered = stdout.getvalue()
             self.assertIn('digraph "select.then_blk.dfg"', rendered)
             self.assertIn("node [shape=ellipse];", rendered)
             self.assertNotIn('cluster_else_blk', rendered)
 
-    def test_dfg_dot_without_function_merges_multiple_function_graphs(self) -> None:
+    def test_view_dfg_dot_without_function_merges_multiple_function_graphs(self) -> None:
         uir = """func add1(x:i32) -> i32
 
 block entry:
@@ -1179,7 +1177,7 @@ block entry:
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["dfg", str(path), "--dot"]), 0)
+                self.assertEqual(main(["view", str(path), "--what", "dfg", "--dot"]), 0)
 
             rendered = stdout.getvalue()
             self.assertEqual(rendered.count("digraph "), 1)
@@ -1190,7 +1188,7 @@ block entry:
             self.assertIn('"sub1:entry:0"', rendered)
             self.assertIn("node [shape=ellipse];", rendered)
 
-    def test_cfg_dot_without_function_merges_multiple_function_cfgs(self) -> None:
+    def test_view_cfg_dot_without_function_merges_multiple_function_cfgs(self) -> None:
         uir = """func add1(x:i32) -> i32
 
 block entry:
@@ -1209,7 +1207,7 @@ block entry:
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["cfg", str(path), "--dot"]), 0)
+                self.assertEqual(main(["view", str(path), "--what", "cfg", "--dot"]), 0)
 
             rendered = stdout.getvalue()
             self.assertEqual(rendered.count("digraph "), 1)
@@ -1219,7 +1217,7 @@ block entry:
             self.assertIn('"add1:entry"', rendered)
             self.assertIn('"sub1:entry"', rendered)
 
-    def test_cdfg_without_function_merges_multiple_function_graphs(self) -> None:
+    def test_view_cdfg_without_function_merges_multiple_function_graphs(self) -> None:
         uir = """func add1(x:i32) -> i32
 
 block entry:
@@ -1238,7 +1236,7 @@ block entry:
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["cdfg", str(path), "--dot"]), 0)
+                self.assertEqual(main(["view", str(path), "--what", "cdfg", "--dot"]), 0)
 
             rendered = stdout.getvalue()
             self.assertEqual(rendered.count("digraph "), 1)
@@ -1428,6 +1426,62 @@ seq clk {
             with redirect_stdout(stdout):
                 self.assertEqual(main(["lint", str(path)]), 0)
             self.assertEqual(stdout.getvalue().strip(), "ok")
+
+    def test_view_command_renders_cfg_dot_for_uir(self) -> None:
+        uir = """func add1(x:i32) -> i32
+
+block entry:
+    y:i32 = add x, 1
+    ret y
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "add1.uir"
+            path.write_text(uir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["view", str(path), "--what", "cfg", "--dot"]), 0)
+            self.assertIn('digraph "add1"', stdout.getvalue())
+
+    def test_view_command_infers_seq_dot_for_seq_uhir(self) -> None:
+        seq = """design add1
+stage seq
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "add1.seq.uhir"
+            path.write_text(seq, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["view", str(path), "--dot"]), 0)
+            self.assertIn('digraph "add1.seq"', stdout.getvalue())
+
+    def test_view_command_lists_supported_whats_for_invalid_request(self) -> None:
+        uir = """func add1(x:i32) -> i32
+
+block entry:
+    y:i32 = add x, 1
+    ret y
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "add1.uir"
+            path.write_text(uir, encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["view", str(path), "--what", "sched", "--dot"]), 1)
+            self.assertIn("supported --what values: uir, cfg, dfg, cdfg", stderr.getvalue())
 
     def test_opt_command_runs_constprop_pipeline(self) -> None:
         uir = """func add1(x:i32) -> i32
@@ -1894,7 +1948,7 @@ region proc_add1 kind=procedure {
             self.assertIn("emit T0 issue=[ewms0<-v1]", fsm_text)
             self.assertIn("emit T1 latch=[r_i32_0]", fsm_text)
 
-    def test_fsm_command_supports_dot_output(self) -> None:
+    def test_view_command_supports_fsm_dot_output(self) -> None:
         bind = """design add1
 stage bind
 schedule kind=control_steps
@@ -1921,10 +1975,12 @@ region proc_add1 kind=procedure {
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             bind_path = root / "add1.bind.uhir"
+            fsm_path = root / "add1.fsm.uhir"
             dot_path = root / "add1.fsm.dot"
             bind_path.write_text(bind, encoding="utf-8")
 
-            self.assertEqual(main(["fsm", str(bind_path), "--encoding", "one_hot", "--dot", "-o", str(dot_path)]), 0)
+            self.assertEqual(main(["fsm", str(bind_path), "--encoding", "one_hot", "-o", str(fsm_path)]), 0)
+            self.assertEqual(main(["view", str(fsm_path), "--dot", "-o", str(dot_path)]), 0)
 
             dot_text = dot_path.read_text(encoding="utf-8")
             self.assertIn('digraph "add1.fsm"', dot_text)
@@ -2613,7 +2669,7 @@ seq clk {
             self.assertIn("input req_valid,", verilog_text)
             self.assertIn("output resp_valid,", verilog_text)
 
-    def test_bind_command_can_render_conflict_dot(self) -> None:
+    def test_view_command_can_render_bind_conflict_dot(self) -> None:
         sched = """design add_pair
 stage sched
 schedule kind=control_steps
@@ -2637,9 +2693,12 @@ region proc_add_pair kind=procedure {
             sched_path = root / "add_pair.sched.uhir"
             sched_path.write_text(sched, encoding="utf-8")
 
+            bind_path = root / "add_pair.bind.uhir"
+            self.assertEqual(main(["bind", str(sched_path), "--algo", "left_edge", "-o", str(bind_path)]), 0)
+
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["bind", str(sched_path), "--algo", "left_edge", "--dump", "conflict", "--dot"]), 0)
+                self.assertEqual(main(["view", str(bind_path), "--what", "conflict", "--dot"]), 0)
 
             rendered = stdout.getvalue()
             self.assertIn('digraph "add_pair.bind.dump"', rendered)
@@ -2650,7 +2709,38 @@ region proc_add_pair kind=procedure {
             self.assertIn('"v1" [label="v1 add ewms0"', rendered)
             self.assertIn('"reg_v1" [label="reg_v1 reg r_i32_0"', rendered)
 
-    def test_bind_command_supports_compact_dot_labels(self) -> None:
+    def test_view_command_supports_compact_bind_conflict_dot_labels(self) -> None:
+        sched = """design add1
+stage sched
+schedule kind=control_steps
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sched_path = root / "add1.sched.uhir"
+            sched_path.write_text(sched, encoding="utf-8")
+
+            bind_path = root / "add1.bind.uhir"
+            self.assertEqual(main(["bind", str(sched_path), "--algo", "left_edge", "-o", str(bind_path)]), 0)
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["view", str(bind_path), "--what", "conflict", "--dot", "--compact"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn('"v1" [label="v1 + ewms0"', rendered)
+
+    def test_bind_command_defaults_to_left_edge_when_algo_is_omitted(self) -> None:
         sched = """design add1
 stage sched
 schedule kind=control_steps
@@ -2673,38 +2763,10 @@ region proc_add1 kind=procedure {
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["bind", str(sched_path), "--algo", "left_edge", "--dump", "conflict", "--dot", "--compact"]), 0)
+                self.assertEqual(main(["bind", str(sched_path)]), 0)
+            self.assertIn("stage bind", stdout.getvalue())
 
-            rendered = stdout.getvalue()
-            self.assertIn('"v1" [label="v1 + ewms0"', rendered)
-
-    def test_bind_command_requires_algo_for_sched_dump(self) -> None:
-        sched = """design add1
-stage sched
-schedule kind=control_steps
-
-region proc_add1 kind=procedure {
-  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
-  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
-  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
-  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
-
-  edge data v0 -> v1
-  edge data v1 -> v2
-  edge data v2 -> v3
-}
-"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            sched_path = root / "add1.sched.uhir"
-            sched_path.write_text(sched, encoding="utf-8")
-
-            stderr = io.StringIO()
-            with redirect_stderr(stderr):
-                self.assertEqual(main(["bind", str(sched_path), "--dump", "trp"]), 1)
-            self.assertIn("requires --algo", stderr.getvalue())
-
-    def test_bind_command_can_dump_from_bind_input_without_algo(self) -> None:
+    def test_view_command_can_dump_trp_from_bind_input(self) -> None:
         bind = """design add1
 stage bind
 schedule kind=control_steps
@@ -2734,13 +2796,13 @@ region proc_add1 kind=procedure {
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["bind", str(bind_path), "--dump", "trp"]), 0)
+                self.assertEqual(main(["view", str(bind_path), "--what", "trp"]), 0)
             rendered = stdout.getvalue()
             self.assertIn("bind_dump trp", rendered)
             self.assertIn("region proc_add1 (time-resource plane)", rendered)
             self.assertIn("r_i32_0", rendered)
 
-    def test_bind_command_can_dump_dfgsb_unroll(self) -> None:
+    def test_view_command_can_dump_dfgsb_unroll(self) -> None:
         bind = """design add1
 stage bind
 schedule kind=control_steps
@@ -2771,7 +2833,7 @@ region proc_add1 kind=procedure {
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["bind", str(bind_path), "--dump", "dfgsb_unroll"]), 0)
+                self.assertEqual(main(["view", str(bind_path), "--what", "dfgsb_unroll"]), 0)
             rendered = stdout.getvalue()
             self.assertIn("bind_dump dfgsb_unroll", rendered)
             self.assertIn("global (dataflow graph with schedule and binding, unrolled)", rendered)

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from uhls.backend.hls.uhir.model import UHIRDesign
-
 from ..rtl.protocol import (
     build_wishbone_slave_wrapper_uglir,
     parse_protocol_spec,
@@ -11,13 +9,14 @@ from ..rtl.protocol import (
     plan_wishbone_slave_protocol,
 )
 from ..rtl.wrap import plan_master_wrapper, plan_slave_wrapper
+from .model import UGLIRDesign, to_uglir_design
 from .validate import validate_uglir_for_rtl
 
 GLUE_WRAPS: tuple[str, ...] = ("none", "slave", "master")
 GLUE_PROTOCOLS: tuple[str, ...] = ("memory", "wishbone", "obi")
 
 
-def wrap_uglir_design(design: UHIRDesign, wrap: str | None = None, protocol: str | None = None) -> UHIRDesign:
+def wrap_uglir_design(design: UGLIRDesign, wrap: str | None = None, protocol: str | None = None) -> UGLIRDesign:
     """Apply one optional wrapper/protocol composition to one µglIR design."""
     if design.stage != "uglir":
         raise ValueError(f"µglIR wrapping expects µglIR input, got stage '{design.stage}'")
@@ -27,13 +26,13 @@ def wrap_uglir_design(design: UHIRDesign, wrap: str | None = None, protocol: str
     if (normalized_wrap is None) != (normalized_protocol is None):
         raise ValueError("µglIR wrapping requires --wrap and --protocol together")
     if normalized_wrap is None:
-        return design
+        return to_uglir_design(design)
     if normalized_wrap == "none" and normalized_protocol.base == "memory" and not normalized_protocol.features:
-        return design
+        return to_uglir_design(design)
     if normalized_wrap == "slave" and normalized_protocol.base == "wishbone":
         wrapper_plan = plan_slave_wrapper(design, normalized_protocol.base)
         protocol_plan = plan_wishbone_slave_protocol(wrapper_plan, features=normalized_protocol.features)
-        wrapped = build_wishbone_slave_wrapper_uglir(design, wrapper_plan, protocol_plan)
+        wrapped = to_uglir_design(build_wishbone_slave_wrapper_uglir(design, wrapper_plan, protocol_plan))
         validate_uglir_for_rtl(wrapped)
         return wrapped
     if normalized_wrap == "slave" and normalized_protocol.base == "obi":

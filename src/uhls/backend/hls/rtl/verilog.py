@@ -5,9 +5,7 @@ from __future__ import annotations
 from math import ceil, log2
 import re
 
-from uhls.backend.hls.uhir.model import UHIRDesign, UHIRGlueMux, UHIRPort, UHIRResource, UHIRSeqBlock, UHIRSeqUpdate
-from .protocol import WishboneSlaveProtocolPlan, plan_wishbone_slave_protocol
-from .wrap import SlaveWrapperPlan, plan_master_wrapper, plan_slave_wrapper, wrapper_core_signal
+from uhls.backend.hls.uglir.model import UGLIRDesign, UGLIRMux, UGLIRPort, UGLIRResource, UGLIRSeqBlock, UGLIRSeqUpdate
 
 _TYPED_INT_RE = re.compile(r"(?<![\w$])(-?\d+):(i|u)(\d+)\b")
 _IDENT_RE = re.compile(r"\b[A-Za-z_][\w$]*\b")
@@ -33,7 +31,7 @@ _VERILOG_KEYWORDS = frozenset({
 
 
 def emit_uglir_to_verilog(
-    design: UHIRDesign,
+    design: UGLIRDesign,
     module_name: str | None = None,
     module_parameters: list[str] | None = None,
 ) -> str:
@@ -109,9 +107,9 @@ def emit_uglir_to_verilog(
     if design.assigns:
         lines.append("")
 
-    for glue_mux in design.glue_muxes:
-        lines.append(f"  assign {glue_mux.name} = {_mux_expr(glue_mux, ctrl_enums)};")
-    if design.glue_muxes:
+    for mux in design.muxes:
+        lines.append(f"  assign {mux.name} = {_mux_expr(mux, ctrl_enums)};")
+    if design.muxes:
         lines.append("")
 
     attachments_by_instance: dict[str, list[tuple[str, str]]] = {}
@@ -138,56 +136,18 @@ def emit_uglir_to_verilog(
     return "\n".join(lines)
 
 
-def emit_uglir_to_verilog_wrapped(design: UHIRDesign, wrap: str, protocol: str) -> str:
-    """Render one uglir design plus one protocol wrapper."""
-    if wrap == "slave" and protocol == "wishbone":
-        wrapper_plan = plan_slave_wrapper(design, protocol)
-        protocol_plan = plan_wishbone_slave_protocol(wrapper_plan)
-    elif wrap == "master":
-        plan_master_wrapper(design, protocol)
-        raise NotImplementedError(f"verilog wrapper stub for wrap='{wrap}' protocol='{protocol}' is not implemented yet")
-    else:
-        raise NotImplementedError(f"verilog wrapper stub for wrap='{wrap}' protocol='{protocol}' is not implemented yet")
-
-    core_module_name = f"{design.name}_core"
-    wrapper_lines = [
-        f"// Wrapper for wrap={wrap} protocol={protocol}.",
-        "// Register map:",
-        "//   0x0000 control/status: write bit0=start, read bit0=done bit1=busy bit2=start_pending bit3=req_ready",
-        "//   0x0100.. scalar input registers (4-byte stride)",
-        "//   0x0200.. scalar output registers (4-byte stride)",
-        "//   0x1000.. memory windows (4 KiB per memory, word addressed)",
-        emit_uglir_to_verilog(design, module_name=core_module_name),
-        "",
-    ]
-    from .protocol import build_wishbone_slave_wrapper_uglir
-
-    wrapper_design = build_wishbone_slave_wrapper_uglir(design, core_module_name, wrapper_plan, protocol_plan)
-    from ..uglir import validate_uglir_for_rtl
-
-    validate_uglir_for_rtl(wrapper_design)
-    wrapper_lines.append(
-        emit_uglir_to_verilog(
-            wrapper_design,
-            module_name=design.name,
-            module_parameters=["parameter [31:0] WB_BASE_ADDR = 32'h0000_0000"],
-        )
-    )
-    return "\n".join(wrapper_lines)
-
-
-def _infer_module_parameters(design: UHIRDesign) -> list[str] | None:
+def _infer_module_parameters(design: UGLIRDesign) -> list[str] | None:
     parameters: list[str] = []
     if any(re.search(r"\bWB_BASE_ADDR\b", str(const_decl.value)) for const_decl in design.constants):
         parameters.append("parameter [31:0] WB_BASE_ADDR = 32'h0000_0000")
     return parameters or None
 
 
-def _format_port_decl(port: UHIRPort, ctrl_widths: dict[str, int]) -> str:
+def _format_port_decl(port: UGLIRPort, ctrl_widths: dict[str, int]) -> str:
     return _join_decl_tokens(port.direction, _format_decl_type(port.type, ctrl_widths, port.name), port.name)
 
 
-def _signal_types(design: UHIRDesign) -> dict[str, str]:
+def _signal_types(design: UGLIRDesign) -> dict[str, str]:
     signal_types: dict[str, str] = {}
     for port in [*design.inputs, *design.outputs]:
         signal_types[port.name] = port.type
@@ -197,27 +157,27 @@ def _signal_types(design: UHIRDesign) -> dict[str, str]:
     return signal_types
 
 
-def _ctrl_widths(design: UHIRDesign) -> dict[str, int]:
+def _ctrl_widths(design: UGLIRDesign) -> dict[str, int]:
     widths: dict[str, int] = {}
-    for glue_mux in design.glue_muxes:
-        widths[glue_mux.select] = max(1, ceil(log2(max(len(glue_mux.cases), 1))))
+    for mux in design.muxes:
+        widths[mux.select] = max(1, ceil(log2(max(len(mux.cases), 1))))
     return widths
 
 
-def _ctrl_keys_for_signal(design: UHIRDesign, select_signal: str) -> list[str]:
-    for glue_mux in design.glue_muxes:
-        if glue_mux.select == select_signal:
-            return [case.key for case in glue_mux.cases]
+def _ctrl_keys_for_signal(design: UGLIRDesign, select_signal: str) -> list[str]:
+    for mux in design.muxes:
+        if mux.select == select_signal:
+            return [case.key for case in mux.cases]
     return []
 
 
-def _ctrl_enum_symbols(design: UHIRDesign) -> dict[str, dict[str, str]]:
+def _ctrl_enum_symbols(design: UGLIRDesign) -> dict[str, dict[str, str]]:
     mappings: dict[str, dict[str, str]] = {}
-    for glue_mux in design.glue_muxes:
+    for mux in design.muxes:
         signal_map: dict[str, str] = {}
-        for case in glue_mux.cases:
-            signal_map[case.key] = f"{_sanitize_identifier(glue_mux.select)}_{_sanitize_identifier(case.key)}"
-        mappings[glue_mux.select] = signal_map
+        for case in mux.cases:
+            signal_map[case.key] = f"{_sanitize_identifier(mux.select)}_{_sanitize_identifier(case.key)}"
+        mappings[mux.select] = signal_map
     return mappings
 
 
@@ -279,18 +239,18 @@ def _translate_expr(expr: str, ctrl_enums: dict[str, dict[str, str]], ctrl_targe
     return translated
 
 
-def _mux_expr(glue_mux: UHIRGlueMux, ctrl_enums: dict[str, dict[str, str]]) -> str:
-    symbol_map = ctrl_enums.get(glue_mux.select, {})
-    translated_sources = [_translate_expr(case.source, ctrl_enums, None) for case in glue_mux.cases]
-    if not glue_mux.cases:
-        raise ValueError(f"uglir mux '{glue_mux.name}' must declare at least one case")
+def _mux_expr(mux: UGLIRMux, ctrl_enums: dict[str, dict[str, str]]) -> str:
+    symbol_map = ctrl_enums.get(mux.select, {})
+    translated_sources = [_translate_expr(case.source, ctrl_enums, None) for case in mux.cases]
+    if not mux.cases:
+        raise ValueError(f"uglir mux '{mux.name}' must declare at least one case")
     expr = translated_sources[-1]
-    for case, source in reversed(list(zip(glue_mux.cases[:-1], translated_sources[:-1], strict=False))):
-        expr = f"({glue_mux.select} == {symbol_map[case.key]}) ? {source} : {expr}"
+    for case, source in reversed(list(zip(mux.cases[:-1], translated_sources[:-1], strict=False))):
+        expr = f"({mux.select} == {symbol_map[case.key]}) ? {source} : {expr}"
     return expr
 
 
-def _format_seq_block(seq_block: UHIRSeqBlock, ctrl_enums: dict[str, dict[str, str]]) -> list[str]:
+def _format_seq_block(seq_block: UGLIRSeqBlock, ctrl_enums: dict[str, dict[str, str]]) -> list[str]:
     lines = [f"  always @(posedge {seq_block.clock}) begin"]
     if seq_block.reset is not None:
         lines.append(f"    if ({_translate_expr(seq_block.reset, ctrl_enums, None)}) begin")
@@ -305,19 +265,19 @@ def _format_seq_block(seq_block: UHIRSeqBlock, ctrl_enums: dict[str, dict[str, s
     return lines
 
 
-def _format_seq_updates(updates: list[UHIRSeqUpdate], ctrl_enums: dict[str, dict[str, str]], indent: str) -> list[str]:
+def _format_seq_updates(updates: list[UGLIRSeqUpdate], ctrl_enums: dict[str, dict[str, str]], indent: str) -> list[str]:
     lines: list[str] = []
     for update in updates:
         if update.enable is None:
             lines.append(f"{indent}{_format_seq_update(update, ctrl_enums)}")
             continue
         lines.append(f"{indent}if ({_translate_expr(update.enable, ctrl_enums, None)}) begin")
-        lines.append(f"{indent}  {_format_seq_update(UHIRSeqUpdate(update.target, update.value), ctrl_enums)}")
+        lines.append(f"{indent}  {_format_seq_update(UGLIRSeqUpdate(update.target, update.value), ctrl_enums)}")
         lines.append(f"{indent}end")
     return lines
 
 
-def _format_seq_update(update: UHIRSeqUpdate, ctrl_enums: dict[str, dict[str, str]]) -> str:
+def _format_seq_update(update: UGLIRSeqUpdate, ctrl_enums: dict[str, dict[str, str]]) -> str:
     return f"{update.target} <= {_translate_expr(update.value, ctrl_enums, None)};"
 
 
@@ -363,7 +323,7 @@ def _memory_depth(interface) -> int:
     return 1024
 
 
-def _format_mem_decl(resource: UHIRResource) -> str:
+def _format_mem_decl(resource: UGLIRResource) -> str:
     type_hint, depth = _parse_mem_type(resource.value)
     return f"{_join_decl_tokens('reg', _format_decl_type(type_hint, {}, resource.id), f'{resource.id} [0:{depth - 1}]')};"
 

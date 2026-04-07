@@ -3,10 +3,6 @@
 from typing import TYPE_CHECKING
 
 from .model import (
-    UHIRAddressMap,
-    UHIRAddressMapEntry,
-    UHIRAssign,
-    UHIRAttach,
     UHIRConstant,
     UHIRController,
     UHIRControllerEmit,
@@ -15,8 +11,6 @@ from .model import (
     UHIRControllerTransition,
     UHIRDesign,
     UHIREdge,
-    UHIRGlueMux,
-    UHIRGlueMuxCase,
     UHIRMux,
     UHIRNode,
     UHIRPort,
@@ -24,8 +18,6 @@ from .model import (
     UHIRRegionRef,
     UHIRResource,
     UHIRSchedule,
-    UHIRSeqBlock,
-    UHIRSeqUpdate,
     UHIRSourceMap,
     UHIRValueBinding,
 )
@@ -86,15 +78,6 @@ def lower_bind_to_fsm(*args: object, **kwargs: object) -> object:
     from uhls.backend.hls.fsm import lower_bind_to_fsm as _impl
 
     return _impl(*args, **kwargs)
-
-
-def lower_fsm_to_uglir(*args: object, **kwargs: object) -> object:
-    """Lower fsm-stage µhIR to uglir-stage µhIR."""
-    from uhls.backend.hls.glue import lower_fsm_to_uglir as _impl
-
-    return _impl(*args, **kwargs)
-
-
 def dummy_executability_graph(*args: object, **kwargs: object) -> object:
     """Build one starter executability graph covering canonical µIR ops."""
     from uhls.backend.hls.alloc import dummy_executability_graph as _impl
@@ -119,10 +102,6 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "ExecutabilityGraph",
     "GOptPassSpec",
-    "UHIRAddressMap",
-    "UHIRAddressMapEntry",
-    "UHIRAssign",
-    "UHIRAttach",
     "UHIRConstant",
     "UHIRController",
     "UHIRControllerEmit",
@@ -131,8 +110,6 @@ __all__ = [
     "UHIRControllerTransition",
     "UHIRDesign",
     "UHIREdge",
-    "UHIRGlueMux",
-    "UHIRGlueMuxCase",
     "UHIRMux",
     "UHIRNode",
     "UHIRParseError",
@@ -141,8 +118,6 @@ __all__ = [
     "UHIRRegionRef",
     "UHIRResource",
     "UHIRSchedule",
-    "UHIRSeqBlock",
-    "UHIRSeqUpdate",
     "UHIRSourceMap",
     "UHIRValueBinding",
     "TimingBinary",
@@ -160,7 +135,6 @@ __all__ = [
     "format_uhir",
     "lower_alloc_to_sched",
     "lower_bind_to_fsm",
-    "lower_fsm_to_uglir",
     "lower_module_to_seq",
     "lower_sched_to_bind",
     "lower_seq_to_alloc",

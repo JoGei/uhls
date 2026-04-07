@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from uhls.backend.hls import lower_fsm_to_uglir, lower_uglir_to_rtl, wrap_uglir_design
+from uhls.backend.hls.uglir import parse_uglir
 from uhls.backend.hls.uhir import parse_uhir
 import json
 
@@ -234,7 +235,7 @@ class RTLLoweringTests(unittest.TestCase):
         )
 
     def test_lower_uglir_to_verilog_applies_wishbone_byte_selects_to_memory_windows(self) -> None:
-        uglir_design = parse_uhir(
+        uglir_design = parse_uglir(
             """
             design mem_core
             stage uglir
@@ -488,7 +489,7 @@ class RTLLoweringTests(unittest.TestCase):
         self.assertIn("reg signed [31:0] A_mem_q [0:3];", verilog)
 
     def test_lower_uglir_to_verilog_rejects_missing_output_driver(self) -> None:
-        uglir_design = parse_uhir(
+        uglir_design = parse_uglir(
             """
             design bad
             stage uglir
@@ -508,7 +509,7 @@ class RTLLoweringTests(unittest.TestCase):
             lower_uglir_to_rtl(uglir_design, hdl="verilog")
 
     def test_lower_uglir_to_verilog_rejects_continuous_assign_to_reg(self) -> None:
-        uglir_design = parse_uhir(
+        uglir_design = parse_uglir(
             """
             design bad
             stage uglir
@@ -529,7 +530,7 @@ class RTLLoweringTests(unittest.TestCase):
             lower_uglir_to_rtl(uglir_design, hdl="verilog")
 
     def test_lower_uglir_to_verilog_rejects_incompatible_mux_case_type(self) -> None:
-        uglir_design = parse_uhir(
+        uglir_design = parse_uglir(
             """
             design bad
             stage uglir
@@ -552,7 +553,7 @@ class RTLLoweringTests(unittest.TestCase):
             lower_uglir_to_rtl(uglir_design, hdl="verilog")
 
     def test_lower_uglir_to_verilog_rejects_memory_word_type_mismatch(self) -> None:
-        uglir_design = parse_uhir(
+        uglir_design = parse_uglir(
             """
             design bad_mem
             stage uglir
@@ -585,7 +586,7 @@ class RTLLoweringTests(unittest.TestCase):
             wrap_uglir_design(uglir_design, wrap="slave", protocol="wishbone")
 
     def test_wrap_uglir_design_rejects_unsupported_protocol_feature(self) -> None:
-        uglir_design = parse_uhir(
+        uglir_design = parse_uglir(
             """
             design add1
             stage uglir

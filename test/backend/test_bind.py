@@ -12,10 +12,11 @@ from uhls.backend.hls.uhir import (
     lower_module_to_seq,
     lower_seq_to_alloc,
     parse_uhir,
-    parse_uhir_file,
     run_gopt_passes,
 )
 from uhls.frontend import lower_source_to_uir
+from uhls.middleend.passes.opt import CSEPass, ConstPropPass, CopyPropPass, DCEPass, InlineCallsPass, PruneFunctionsPass
+from uhls.middleend.passes.util import PassContext, PassManager
 
 
 class BindingLoweringTests(unittest.TestCase):
@@ -31,8 +32,21 @@ class BindingLoweringTests(unittest.TestCase):
         )
 
     def _static_dot4_relu_sched_design(self):
+        source = Path("examples/dot4_relu.c").read_text(encoding="utf-8")
+        context = PassContext()
+        optimized_module = PassManager(
+            [
+                InlineCallsPass(),
+                PruneFunctionsPass(),
+                DCEPass(),
+                CSEPass(),
+                CopyPropPass(),
+                ConstPropPass(),
+                DCEPass(),
+            ]
+        ).run(lower_source_to_uir(source), context)
         seq_design = run_gopt_passes(
-            parse_uhir_file(Path("dot4_relu.uhir")),
+            lower_module_to_seq(optimized_module, top="dot4_relu"),
             [
                 create_builtin_gopt_pass("infer_loops"),
                 create_builtin_gopt_pass("translate_loop_dialect"),
@@ -833,7 +847,7 @@ class BindingLoweringTests(unittest.TestCase):
 
         bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
 
-        body_region = bind_design.get_region("loop_body_dot4_for_header_1")
+        body_region = bind_design.get_region("loop_body_dot4_relu_for_header_1")
         self.assertIsNotNone(body_region)
         assert body_region is not None
 
@@ -848,8 +862,8 @@ class BindingLoweringTests(unittest.TestCase):
 
         rendered = format_bind_dump(bind_design, ("trp_unroll",))
         self.assertIn("t1_0@1", rendered)
-        self.assertIn("inl_mac_0_t1_0@0_b4", rendered)
-        self.assertIn("inl_mac_0_t1_0@2_b4", rendered)
+        self.assertIn("inl_mac_0_t1_0@0_b3", rendered)
+        self.assertIn("inl_mac_0_t1_0@2_b3", rendered)
         self.assertNotIn("sum_1[t=1]_b1", rendered)
 
     def test_non_flattened_dfgsb_unroll_renders_later_iterations_and_hidden_branch_flow(self) -> None:

@@ -6,16 +6,16 @@ from copy import deepcopy
 from dataclasses import dataclass
 import re
 
-from uhls.backend.hls.uhir.model import (
-    UHIRAddressMap,
-    UHIRAddressMapEntry,
-    UHIRAssign,
-    UHIRConstant,
-    UHIRDesign,
-    UHIRPort,
-    UHIRResource,
-    UHIRSeqBlock,
-    UHIRSeqUpdate,
+from uhls.backend.hls.uglir.model import (
+    UGLIRAddressMap,
+    UGLIRAddressMapEntry,
+    UGLIRAssign,
+    UGLIRConstant,
+    UGLIRDesign,
+    UGLIRPort,
+    UGLIRResource,
+    UGLIRSeqBlock,
+    UGLIRSeqUpdate,
 )
 
 from ..wrap import SlaveWrapperPlan
@@ -128,7 +128,11 @@ def plan_wishbone_slave_protocol(wrapper: SlaveWrapperPlan, features: tuple[str,
     )
 
 
-def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWrapperPlan, protocol: WishboneSlaveProtocolPlan) -> UHIRDesign:
+def build_wishbone_slave_wrapper_uglir(
+    core_design: UGLIRDesign,
+    wrapper: SlaveWrapperPlan,
+    protocol: WishboneSlaveProtocolPlan,
+) -> UGLIRDesign:
     """Merge a Wishbone slave wrapper around one core µglIR design."""
     design = deepcopy(core_design)
     if design.stage != "uglir":
@@ -140,110 +144,110 @@ def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWr
     core_scalar_output_names = {port.name for port in wrapper.scalar_outputs}
     memory_bases = {interface.base for interface in wrapper.memory_interfaces}
 
-    design.inputs = [UHIRPort(port.direction, port.name, port.type) for port in protocol.ports if port.direction == "input"]
-    design.outputs = [UHIRPort(port.direction, port.name, port.type) for port in protocol.ports if port.direction == "output"]
+    design.inputs = [UGLIRPort(port.direction, port.name, port.type) for port in protocol.ports if port.direction == "input"]
+    design.outputs = [UGLIRPort(port.direction, port.name, port.type) for port in protocol.ports if port.direction == "output"]
 
     for port in original_inputs:
         if port.name not in {"clk", "rst"}:
-            design.resources.append(UHIRResource("net", port.name, port.type))
+            design.resources.append(UGLIRResource("net", port.name, port.type))
     for port in original_outputs:
-        design.resources.append(UHIRResource("net", port.name, port.type))
+        design.resources.append(UGLIRResource("net", port.name, port.type))
 
-    design.constants.append(UHIRConstant("WB_REG_CONTROL_STATUS", f"WB_BASE_ADDR + {_u32(protocol.control_status_address)}", "u32"))
+    design.constants.append(UGLIRConstant("WB_REG_CONTROL_STATUS", f"WB_BASE_ADDR + {_u32(protocol.control_status_address)}", "u32"))
     for port in protocol.scalar_inputs:
-        design.constants.append(UHIRConstant(port.symbol, f"WB_BASE_ADDR + {_u32(port.address)}", "u32"))
+        design.constants.append(UGLIRConstant(port.symbol, f"WB_BASE_ADDR + {_u32(port.address)}", "u32"))
     for port in protocol.scalar_outputs:
-        design.constants.append(UHIRConstant(port.symbol, f"WB_BASE_ADDR + {_u32(port.address)}", "u32"))
+        design.constants.append(UGLIRConstant(port.symbol, f"WB_BASE_ADDR + {_u32(port.address)}", "u32"))
     for window in protocol.memory_windows:
-        design.constants.append(UHIRConstant(window.symbol, f"WB_BASE_ADDR + {_u32(window.base_address)}", "u32"))
+        design.constants.append(UGLIRConstant(window.symbol, f"WB_BASE_ADDR + {_u32(window.base_address)}", "u32"))
     design.address_maps.append(_wishbone_address_map(protocol))
 
     design.resources.extend(
         [
-            UHIRResource("net", "wb_req_n", "i1"),
-            UHIRResource("net", "wb_hit_n", "i1"),
-            UHIRResource("reg", "start_pending_q", "i1"),
-            UHIRResource("reg", "busy_q", "i1"),
-            UHIRResource("reg", "done_q", "i1"),
+            UGLIRResource("net", "wb_req_n", "i1"),
+            UGLIRResource("net", "wb_hit_n", "i1"),
+            UGLIRResource("reg", "start_pending_q", "i1"),
+            UGLIRResource("reg", "busy_q", "i1"),
+            UGLIRResource("reg", "done_q", "i1"),
         ]
     )
     for port in wrapper.scalar_inputs:
-        design.resources.append(UHIRResource("reg", f"{port.name}_q", port.type))
+        design.resources.append(UGLIRResource("reg", f"{port.name}_q", port.type))
     for port in wrapper.scalar_outputs:
-        design.resources.append(UHIRResource("reg", f"{port.name}_q", port.type))
+        design.resources.append(UGLIRResource("reg", f"{port.name}_q", port.type))
     for interface in wrapper.memory_interfaces:
         depth = _memory_depth(interface)
-        design.resources.append(UHIRResource("mem", f"{interface.base}_mem_q", f"{interface.data_type}[{depth}]"))
-        design.resources.append(UHIRResource("net", f"{interface.base}_bus_hit_n", "i1"))
-        design.resources.append(UHIRResource("net", f"{interface.base}_bus_word_addr_n", f"u{_memory_index_width(interface)}"))
+        design.resources.append(UGLIRResource("mem", f"{interface.base}_mem_q", f"{interface.data_type}[{depth}]"))
+        design.resources.append(UGLIRResource("net", f"{interface.base}_bus_hit_n", "i1"))
+        design.resources.append(UGLIRResource("net", f"{interface.base}_bus_word_addr_n", f"u{_memory_index_width(interface)}"))
 
     design.assigns.extend(
         [
-            UHIRAssign("wb_req_n", "wb_cyc_i & wb_stb_i"),
-            UHIRAssign("req_valid", "start_pending_q"),
-            UHIRAssign("resp_ready", "true"),
-            UHIRAssign("wb_dat_o", _wishbone_read_data_expr(wrapper, protocol)),
+            UGLIRAssign("wb_req_n", "wb_cyc_i & wb_stb_i"),
+            UGLIRAssign("req_valid", "start_pending_q"),
+            UGLIRAssign("resp_ready", "true"),
+            UGLIRAssign("wb_dat_o", _wishbone_read_data_expr(wrapper, protocol)),
         ]
     )
-    design.assigns.append(UHIRAssign("wb_hit_n", _wishbone_hit_expr(protocol)))
+    design.assigns.append(UGLIRAssign("wb_hit_n", _wishbone_hit_expr(protocol)))
     if protocol.err_terminate:
-        design.assigns.append(UHIRAssign("wb_ack_o", "wb_req_n & wb_hit_n"))
-        design.assigns.append(UHIRAssign("wb_err_o", "wb_req_n & !wb_hit_n"))
+        design.assigns.append(UGLIRAssign("wb_ack_o", "wb_req_n & wb_hit_n"))
+        design.assigns.append(UGLIRAssign("wb_err_o", "wb_req_n & !wb_hit_n"))
     else:
-        design.assigns.append(UHIRAssign("wb_ack_o", "wb_req_n"))
+        design.assigns.append(UGLIRAssign("wb_ack_o", "wb_req_n"))
     for port in wrapper.scalar_inputs:
-        design.assigns.append(UHIRAssign(port.name, f"{port.name}_q"))
+        design.assigns.append(UGLIRAssign(port.name, f"{port.name}_q"))
     for interface in wrapper.memory_interfaces:
         window = next(window for window in protocol.memory_windows if window.base == interface.base)
         design.assigns.append(
-            UHIRAssign(
+            UGLIRAssign(
                 f"{interface.base}_bus_hit_n",
                 f"wb_adr_i >= {window.symbol} && wb_adr_i < ({window.symbol} + {_u32(window.span_bytes)})",
             )
         )
-        design.assigns.append(UHIRAssign(f"{interface.base}_bus_word_addr_n", "wb_adr_i[11:2]"))
+        design.assigns.append(UGLIRAssign(f"{interface.base}_bus_word_addr_n", "wb_adr_i[11:2]"))
         design.assigns.append(
-            UHIRAssign(
+            UGLIRAssign(
                 f"{interface.base}_rdata",
                 f"{interface.base}_mem_q[{_memory_index_expr(f'{interface.base}_addr', interface)}]",
             )
         )
 
-    seq = UHIRSeqBlock(clock="clk", reset="rst")
+    seq = UGLIRSeqBlock(clock="clk", reset="rst")
     seq.reset_updates.extend(
         [
-            UHIRSeqUpdate("start_pending_q", "false"),
-            UHIRSeqUpdate("busy_q", "false"),
-            UHIRSeqUpdate("done_q", "false"),
+            UGLIRSeqUpdate("start_pending_q", "false"),
+            UGLIRSeqUpdate("busy_q", "false"),
+            UGLIRSeqUpdate("done_q", "false"),
         ]
     )
     for port in wrapper.scalar_inputs:
-        seq.reset_updates.append(UHIRSeqUpdate(f"{port.name}_q", _zero_expr_for_type(port.type)))
+        seq.reset_updates.append(UGLIRSeqUpdate(f"{port.name}_q", _zero_expr_for_type(port.type)))
     for port in wrapper.scalar_outputs:
-        seq.reset_updates.append(UHIRSeqUpdate(f"{port.name}_q", _zero_expr_for_type(port.type)))
+        seq.reset_updates.append(UGLIRSeqUpdate(f"{port.name}_q", _zero_expr_for_type(port.type)))
 
     control_write_cond = "(wb_req_n && wb_we_i) && (wb_adr_i == WB_REG_CONTROL_STATUS) && wb_dat_i[0]"
     seq.updates.append(
-        UHIRSeqUpdate(
+        UGLIRSeqUpdate(
             "start_pending_q",
             f"({control_write_cond} && wb_sel_i[0]) ? true : ((start_pending_q && req_ready) ? false : start_pending_q)",
         )
     )
     seq.updates.append(
-        UHIRSeqUpdate(
+        UGLIRSeqUpdate(
             "busy_q",
             "((start_pending_q && req_ready) ? true : (resp_valid ? false : busy_q))",
         )
     )
     seq.updates.append(
-        UHIRSeqUpdate(
+        UGLIRSeqUpdate(
             "done_q",
             f"({control_write_cond} && wb_sel_i[0]) ? false : (resp_valid ? true : done_q)",
         )
     )
     for port in protocol.scalar_inputs:
         seq.updates.append(
-            UHIRSeqUpdate(
+            UGLIRSeqUpdate(
                 f"{port.name}_q",
                 _wishbone_masked_write_expr(f"{port.name}_q", "wb_dat_i", "wb_sel_i", port.type),
                 f"(wb_req_n && wb_we_i) && (wb_adr_i == {port.symbol})",
@@ -251,14 +255,14 @@ def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWr
         )
     for port in wrapper.scalar_outputs:
         seq.updates.append(
-            UHIRSeqUpdate(
+            UGLIRSeqUpdate(
                 f"{port.name}_q",
                 f"resp_valid ? {port.name} : {port.name}_q",
             )
         )
     for interface in wrapper.memory_interfaces:
         seq.updates.append(
-            UHIRSeqUpdate(
+            UGLIRSeqUpdate(
                 f"{interface.base}_mem_q[{interface.base}_bus_word_addr_n]",
                 _wishbone_masked_write_expr(
                     f"{interface.base}_mem_q[{interface.base}_bus_word_addr_n]",
@@ -271,7 +275,7 @@ def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWr
         )
         if interface.has_write:
             seq.updates.append(
-                UHIRSeqUpdate(
+                UGLIRSeqUpdate(
                     f"{interface.base}_mem_q[{_memory_index_expr(f'{interface.base}_addr', interface)}]",
                     f"{interface.base}_wdata",
                     f"{interface.base}_we",
@@ -286,9 +290,9 @@ def build_wishbone_slave_wrapper_uglir(core_design: UHIRDesign, wrapper: SlaveWr
 
 
 def _drop_obsolete_interface_ports(
-    design: UHIRDesign,
-    original_inputs: list[UHIRPort],
-    original_outputs: list[UHIRPort],
+    design: UGLIRDesign,
+    original_inputs: list[UGLIRPort],
+    original_outputs: list[UGLIRPort],
     scalar_input_names: set[str],
     scalar_output_names: set[str],
     memory_bases: set[str],
@@ -307,8 +311,8 @@ def _drop_obsolete_interface_ports(
             continue
 
 
-def _dedupe_resources(design: UHIRDesign) -> None:
-    deduped: list[UHIRResource] = []
+def _dedupe_resources(design: UGLIRDesign) -> None:
+    deduped: list[UGLIRResource] = []
     seen: set[tuple[str, str, str, str | None]] = set()
     for resource in design.resources:
         key = (resource.kind, resource.id, resource.value, resource.target)
@@ -319,8 +323,8 @@ def _dedupe_resources(design: UHIRDesign) -> None:
     design.resources = deduped
 
 
-def _dedupe_constants(design: UHIRDesign) -> None:
-    deduped: list[UHIRConstant] = []
+def _dedupe_constants(design: UGLIRDesign) -> None:
+    deduped: list[UGLIRConstant] = []
     seen: set[tuple[str, int | str, str]] = set()
     for constant in design.constants:
         key = (constant.name, constant.value, constant.type)
@@ -435,10 +439,10 @@ def _wishbone_hit_expr(protocol: WishboneSlaveProtocolPlan) -> str:
     return " || ".join(terms) if terms else "false"
 
 
-def _wishbone_address_map(protocol: WishboneSlaveProtocolPlan) -> UHIRAddressMap:
-    address_map = UHIRAddressMap("wishbone")
+def _wishbone_address_map(protocol: WishboneSlaveProtocolPlan) -> UGLIRAddressMap:
+    address_map = UGLIRAddressMap("wishbone")
     address_map.entries.append(
-        UHIRAddressMapEntry(
+        UGLIRAddressMapEntry(
             "register",
             "control_status",
             {
@@ -450,7 +454,7 @@ def _wishbone_address_map(protocol: WishboneSlaveProtocolPlan) -> UHIRAddressMap
     )
     for port in protocol.scalar_inputs:
         address_map.entries.append(
-            UHIRAddressMapEntry(
+            UGLIRAddressMapEntry(
                 "register",
                 port.name,
                 {
@@ -463,7 +467,7 @@ def _wishbone_address_map(protocol: WishboneSlaveProtocolPlan) -> UHIRAddressMap
         )
     for port in protocol.scalar_outputs:
         address_map.entries.append(
-            UHIRAddressMapEntry(
+            UGLIRAddressMapEntry(
                 "register",
                 port.name,
                 {
@@ -479,7 +483,7 @@ def _wishbone_address_map(protocol: WishboneSlaveProtocolPlan) -> UHIRAddressMap
         if protocol.err_terminate:
             access = f"{access}_err"
         address_map.entries.append(
-            UHIRAddressMapEntry(
+            UGLIRAddressMapEntry(
                 "memory",
                 window.base,
                 {

@@ -11,21 +11,22 @@ from uhls.backend.hls.lib import (
     parse_component_spec,
     resolve_component_definition,
 )
-from uhls.backend.hls.uhir.model import (
-    UHIRAssign,
-    UHIRAttach,
-    UHIRConstant,
-    UHIRDesign,
-    UHIRGlueMux,
-    UHIRGlueMuxCase,
-    UHIRPort,
-    UHIRResource,
-    UHIRSeqBlock,
-    UHIRSeqUpdate,
+from uhls.backend.hls.uhir.model import UHIRDesign
+from .model import (
+    UGLIRAssign,
+    UGLIRAttach,
+    UGLIRConstant,
+    UGLIRDesign,
+    UGLIRMux,
+    UGLIRMuxCase,
+    UGLIRPort,
+    UGLIRResource,
+    UGLIRSeqBlock,
+    UGLIRSeqUpdate,
 )
 
 
-def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str, Any]] | None = None) -> UHIRDesign:
+def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str, Any]] | None = None) -> UGLIRDesign:
     """Lower one static fsm-stage µhIR design to one initial uglir shell."""
     if design.stage != "fsm":
         raise ValueError(f"uglir lowering expects fsm-stage µhIR input, got stage '{design.stage}'")
@@ -36,61 +37,61 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         controller.name: {state.name: state.attributes["code"] for state in controller.states}
         for controller in design.controllers
     }
-    lowered = UHIRDesign(name=design.name, stage="uglir")
+    lowered = UGLIRDesign(name=design.name)
     helper_signal_ids: dict[tuple[str, str], str] = {}
     memory_interfaces = _memory_interfaces(design, component_library)
     _validate_memory_interface_schedule(top_controller, memory_interfaces)
     lowered.inputs = [
-        UHIRPort("input", "clk", "clock"),
-        UHIRPort("input", "rst", "i1"),
-        UHIRPort("input", "req_valid", "i1"),
-        UHIRPort("input", "resp_ready", "i1"),
+        UGLIRPort("input", "clk", "clock"),
+        UGLIRPort("input", "rst", "i1"),
+        UGLIRPort("input", "req_valid", "i1"),
+        UGLIRPort("input", "resp_ready", "i1"),
     ]
     lowered.inputs.extend(_lowered_data_inputs(design, memory_interfaces))
     lowered.outputs = [
-        UHIRPort("output", "req_ready", "i1"),
-        UHIRPort("output", "resp_valid", "i1"),
+        UGLIRPort("output", "req_ready", "i1"),
+        UGLIRPort("output", "resp_valid", "i1"),
     ]
     lowered.outputs.extend(_lowered_data_outputs(design, memory_interfaces))
     lowered.constants = list(design.constants)
     for interface in memory_interfaces.values():
         if interface["depth"] is not None:
-            lowered.constants.append(UHIRConstant(f"{interface['memory_name']}_depth", int(interface["depth"]), "u32"))
+            lowered.constants.append(UGLIRConstant(f"{interface['memory_name']}_depth", int(interface["depth"]), "u32"))
 
-    lowered.resources.append(UHIRResource("net", "req_fire", "i1"))
-    lowered.resources.append(UHIRResource("net", "resp_fire", "i1"))
+    lowered.resources.append(UGLIRResource("net", "req_fire", "i1"))
+    lowered.resources.append(UGLIRResource("net", "resp_fire", "i1"))
     for interface in memory_interfaces.values():
-        lowered.resources.append(UHIRResource("port", interface["memory_name"], interface["component_name"], interface["memory_name"]))
+        lowered.resources.append(UGLIRResource("port", interface["memory_name"], interface["component_name"], interface["memory_name"]))
     for controller in design.controllers:
         state_type = _state_type(controller)
-        lowered.resources.append(UHIRResource("reg", _controller_state_id(controller, top_controller), state_type))
-        lowered.resources.append(UHIRResource("net", _controller_next_state_id(controller, top_controller), state_type))
+        lowered.resources.append(UGLIRResource("reg", _controller_state_id(controller, top_controller), state_type))
+        lowered.resources.append(UGLIRResource("net", _controller_next_state_id(controller, top_controller), state_type))
         for port in controller.inputs:
             signal_id = _controller_port_signal_id(controller, port.name, top_controller)
             if signal_id not in {"req_valid", "resp_ready"}:
-                lowered.resources.append(UHIRResource("net", signal_id, port.type))
+                lowered.resources.append(UGLIRResource("net", signal_id, port.type))
         for port in controller.outputs:
             signal_id = _controller_port_signal_id(controller, port.name, top_controller)
             if signal_id not in {"req_ready", "resp_valid"}:
-                lowered.resources.append(UHIRResource("net", signal_id, port.type))
+                lowered.resources.append(UGLIRResource("net", signal_id, port.type))
     for signal_name in _link_export_signal_names(design, top_controller):
-        lowered.resources.append(UHIRResource("net", signal_name, "i1"))
+        lowered.resources.append(UGLIRResource("net", signal_name, "i1"))
 
     for resource in design.resources:
         if resource.kind == "fu":
             component_kind = None if component_library is None else _component_kind(component_library, resource.value)
             if component_kind != "memory":
-                lowered.resources.append(UHIRResource("inst", resource.id, resource.value))
+                lowered.resources.append(UGLIRResource("inst", resource.id, resource.value))
             if component_library is None:
-                lowered.resources.append(UHIRResource("net", f"{resource.id}_go", "i1"))
+                lowered.resources.append(UGLIRResource("net", f"{resource.id}_go", "i1"))
                 result_type = _instance_result_type(design, resource.id)
                 if result_type is not None:
-                    lowered.resources.append(UHIRResource("net", f"{resource.id}_y", result_type))
+                    lowered.resources.append(UGLIRResource("net", f"{resource.id}_y", result_type))
             else:
                 for port_name, port_type in _instance_ports(component_library, resource.value):
-                    lowered.resources.append(UHIRResource("net", f"{resource.id}_{port_name}", port_type))
+                    lowered.resources.append(UGLIRResource("net", f"{resource.id}_{port_name}", port_type))
         elif resource.kind == "reg":
-            lowered.resources.append(UHIRResource("reg", resource.id, resource.value))
+            lowered.resources.append(UGLIRResource("reg", resource.id, resource.value))
 
     latch_targets = sorted(
         {
@@ -101,26 +102,26 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         }
     )
     for register in latch_targets:
-        lowered.resources.append(UHIRResource("net", f"latch_{register}", "i1"))
-        lowered.resources.append(UHIRResource("net", f"sel_{register}", "ctrl"))
-        lowered.resources.append(UHIRResource("mux", f"mx_{register}", _resource_value(design, register)))
+        lowered.resources.append(UGLIRResource("net", f"latch_{register}", "i1"))
+        lowered.resources.append(UGLIRResource("net", f"sel_{register}", "ctrl"))
+        lowered.resources.append(UGLIRResource("mux", f"mx_{register}", _resource_value(design, register)))
 
     lowered.assigns.extend(
         [
-            UHIRAssign("req_fire", "req_valid & req_ready"),
-            UHIRAssign("resp_fire", "resp_valid & resp_ready"),
+            UGLIRAssign("req_fire", "req_valid & req_ready"),
+            UGLIRAssign("resp_fire", "resp_valid & resp_ready"),
         ]
     )
     for controller in design.controllers:
         for port in controller.outputs:
             lowered.assigns.append(
-                UHIRAssign(
+                UGLIRAssign(
                     _controller_port_signal_id(controller, port.name, top_controller),
                     _controller_output_expr(controller, port.name, controller_codes[controller.name], top_controller),
                 )
             )
         lowered.assigns.append(
-            UHIRAssign(
+            UGLIRAssign(
                 _controller_next_state_id(controller, top_controller),
                 _next_state_expr(controller, controller_codes[controller.name], top_controller),
             )
@@ -132,10 +133,10 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         if resource.kind != "fu":
             continue
         if component_library is None:
-            lowered.assigns.append(UHIRAssign(f"{resource.id}_go", _issue_expr(design.controllers, top_controller, resource.id, controller_codes)))
-            lowered.attachments.append(UHIRAttach(resource.id, "go", f"{resource.id}_go"))
+            lowered.assigns.append(UGLIRAssign(f"{resource.id}_go", _issue_expr(design.controllers, top_controller, resource.id, controller_codes)))
+            lowered.attachments.append(UGLIRAttach(resource.id, "go", f"{resource.id}_go"))
             if any(candidate.id == f"{resource.id}_y" for candidate in lowered.resources):
-                lowered.attachments.append(UHIRAttach(resource.id, "y", f"{resource.id}_y"))
+                lowered.attachments.append(UGLIRAttach(resource.id, "y", f"{resource.id}_y"))
             continue
 
         if _component_kind(component_library, resource.value) == "memory":
@@ -164,7 +165,7 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                     f"component '{resource.value}' issue binding references unknown port '{port_name}'"
                 )
             lowered.assigns.append(
-                UHIRAssign(
+                UGLIRAssign(
                     f"{resource.id}_{port_name}",
                     _issue_port_expr(
                         design.controllers,
@@ -178,7 +179,7 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
             )
         if "op" in port_names:
             lowered.assigns.append(
-                UHIRAssign(
+                UGLIRAssign(
                     f"{resource.id}_op",
                     _opcode_expr(design, design.controllers, top_controller, resource.id, resource.value, controller_codes, component_library),
                 )
@@ -199,48 +200,48 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                 port_type,
             )
         for port_name in port_names:
-            lowered.attachments.append(UHIRAttach(resource.id, port_name, f"{resource.id}_{port_name}"))
+            lowered.attachments.append(UGLIRAttach(resource.id, port_name, f"{resource.id}_{port_name}"))
 
     for register in latch_targets:
-        lowered.assigns.append(UHIRAssign(f"latch_{register}", _latch_expr(design.controllers, top_controller, register, controller_codes)))
+        lowered.assigns.append(UGLIRAssign(f"latch_{register}", _latch_expr(design.controllers, top_controller, register, controller_codes)))
         lowered.assigns.append(
-            UHIRAssign(
+            UGLIRAssign(
                 f"sel_{register}",
                 _select_expr(design, design.controllers, top_controller, register, controller_codes, component_library),
             )
         )
-        lowered.glue_muxes.append(_build_register_mux(design, register, component_library))
+        lowered.muxes.append(_build_register_mux(design, register, component_library))
 
     for assign in _memory_interface_assigns(memory_interfaces):
         lowered.assigns.append(assign)
 
     for output_name, driver in _output_drivers(design, component_library).items():
-        lowered.assigns.append(UHIRAssign(output_name, driver))
+        lowered.assigns.append(UGLIRAssign(output_name, driver))
 
-    top_seq_block = UHIRSeqBlock(
+    top_seq_block = UGLIRSeqBlock(
         clock="clk",
         reset="rst",
-        reset_updates=[UHIRSeqUpdate(_controller_state_id(top_controller, top_controller), str(controller_codes[top_controller.name]["IDLE"]))],
-        updates=[UHIRSeqUpdate(_controller_state_id(top_controller, top_controller), _controller_next_state_id(top_controller, top_controller))],
+        reset_updates=[UGLIRSeqUpdate(_controller_state_id(top_controller, top_controller), str(controller_codes[top_controller.name]["IDLE"]))],
+        updates=[UGLIRSeqUpdate(_controller_state_id(top_controller, top_controller), _controller_next_state_id(top_controller, top_controller))],
     )
     for register in latch_targets:
-        top_seq_block.updates.append(UHIRSeqUpdate(register, f"mx_{register}", f"latch_{register}"))
+        top_seq_block.updates.append(UGLIRSeqUpdate(register, f"mx_{register}", f"latch_{register}"))
     lowered.seq_blocks.append(top_seq_block)
     for controller in design.controllers:
         if controller.name == top_controller.name:
             continue
         lowered.seq_blocks.append(
-            UHIRSeqBlock(
+            UGLIRSeqBlock(
                 clock="clk",
                 reset="rst",
-                reset_updates=[UHIRSeqUpdate(_controller_state_id(controller, top_controller), str(controller_codes[controller.name]["IDLE"]))],
-                updates=[UHIRSeqUpdate(_controller_state_id(controller, top_controller), _controller_next_state_id(controller, top_controller))],
+                reset_updates=[UGLIRSeqUpdate(_controller_state_id(controller, top_controller), str(controller_codes[controller.name]["IDLE"]))],
+                updates=[UGLIRSeqUpdate(_controller_state_id(controller, top_controller), _controller_next_state_id(controller, top_controller))],
             )
         )
     return _apply_signal_naming_convention(lowered)
 
 
-def _apply_signal_naming_convention(design: UHIRDesign) -> UHIRDesign:
+def _apply_signal_naming_convention(design: UGLIRDesign) -> UGLIRDesign:
     rename_map = {
         resource.id: _uglir_signal_name(resource.kind, resource.id)
         for resource in design.resources
@@ -249,15 +250,14 @@ def _apply_signal_naming_convention(design: UHIRDesign) -> UHIRDesign:
     if not rename_map:
         return design
 
-    normalized = UHIRDesign(name=design.name, stage=design.stage)
+    normalized = UGLIRDesign(name=design.name, stage=design.stage)
     normalized.inputs = list(design.inputs)
     normalized.outputs = list(design.outputs)
     normalized.constants = list(design.constants)
-    normalized.schedule = design.schedule
 
     for resource in design.resources:
         normalized.resources.append(
-            UHIRResource(
+            UGLIRResource(
                 resource.kind,
                 rename_map.get(resource.id, resource.id),
                 resource.value,
@@ -266,38 +266,38 @@ def _apply_signal_naming_convention(design: UHIRDesign) -> UHIRDesign:
         )
     for assign in design.assigns:
         normalized.assigns.append(
-            UHIRAssign(
+            UGLIRAssign(
                 rename_map.get(assign.target, assign.target),
                 _rewrite_signal_expr(assign.expr, rename_map),
             )
         )
     for attachment in design.attachments:
         normalized.attachments.append(
-            UHIRAttach(
+            UGLIRAttach(
                 attachment.instance,
                 attachment.port,
                 rename_map.get(attachment.signal, attachment.signal),
             )
         )
-    for glue_mux in design.glue_muxes:
-        normalized.glue_muxes.append(
-            UHIRGlueMux(
-                name=rename_map.get(glue_mux.name, glue_mux.name),
-                type=glue_mux.type,
-                select=rename_map.get(glue_mux.select, glue_mux.select),
+    for mux in design.muxes:
+        normalized.muxes.append(
+            UGLIRMux(
+                name=rename_map.get(mux.name, mux.name),
+                type=mux.type,
+                select=rename_map.get(mux.select, mux.select),
                 cases=[
-                    UHIRGlueMuxCase(case.key, rename_map.get(case.source, case.source))
-                    for case in glue_mux.cases
+                    UGLIRMuxCase(case.key, rename_map.get(case.source, case.source))
+                    for case in mux.cases
                 ],
             )
         )
     for seq_block in design.seq_blocks:
         normalized.seq_blocks.append(
-            UHIRSeqBlock(
+            UGLIRSeqBlock(
                 clock=seq_block.clock,
                 reset=None if seq_block.reset is None else _rewrite_signal_expr(seq_block.reset, rename_map),
                 reset_updates=[
-                    UHIRSeqUpdate(
+                    UGLIRSeqUpdate(
                         rename_map.get(update.target, update.target),
                         _rewrite_signal_expr(update.value, rename_map),
                         None if update.enable is None else _rewrite_signal_expr(update.enable, rename_map),
@@ -305,7 +305,7 @@ def _apply_signal_naming_convention(design: UHIRDesign) -> UHIRDesign:
                     for update in seq_block.reset_updates
                 ],
                 updates=[
-                    UHIRSeqUpdate(
+                    UGLIRSeqUpdate(
                         rename_map.get(update.target, update.target),
                         _rewrite_signal_expr(update.value, rename_map),
                         None if update.enable is None else _rewrite_signal_expr(update.enable, rename_map),
@@ -485,19 +485,19 @@ def _build_register_mux(
     design: UHIRDesign,
     register: str,
     component_library: dict[str, dict[str, Any]] | None,
-) -> UHIRGlueMux:
+) -> UGLIRMux:
     register_type = _resource_value(design, register)
-    glue_mux = UHIRGlueMux(name=f"mx_{register}", type=register_type, select=f"sel_{register}")
+    mux = UGLIRMux(name=f"mx_{register}", type=register_type, select=f"sel_{register}")
     sources = [register, *_register_possible_sources(design, register, component_library)]
     labels = _register_mux_case_labels(register, sources)
-    glue_mux.cases.append(UHIRGlueMuxCase("HOLD", register))
+    mux.cases.append(UGLIRMuxCase("HOLD", register))
     seen_sources = {register}
     for source in _register_possible_sources(design, register, component_library):
         if source in seen_sources:
             continue
-        glue_mux.cases.append(UHIRGlueMuxCase(labels[source], source))
+        mux.cases.append(UGLIRMuxCase(labels[source], source))
         seen_sources.add(source)
-    return glue_mux
+    return mux
 
 
 def _controller_region_ids(controller, design: UHIRDesign) -> tuple[str, ...]:
@@ -590,9 +590,9 @@ def _link_export_signal_names(design: UHIRDesign, top_controller) -> list[str]:
     return exported
 
 
-def _controller_link_assigns(design: UHIRDesign, top_controller, controller_codes: dict[str, dict[str, int]]) -> list[UHIRAssign]:
+def _controller_link_assigns(design: UHIRDesign, top_controller, controller_codes: dict[str, dict[str, int]]) -> list[UGLIRAssign]:
     controllers_by_name = {controller.name: controller for controller in design.controllers}
-    assigns: list[UHIRAssign] = []
+    assigns: list[UGLIRAssign] = []
     for parent in design.controllers:
         for link in parent.links:
             child = controllers_by_name.get(link.child)
@@ -602,7 +602,7 @@ def _controller_link_assigns(design: UHIRDesign, top_controller, controller_code
             if isinstance(act_mapping, tuple) and len(act_mapping) == 2:
                 _, child_input = act_mapping
                 assigns.append(
-                    UHIRAssign(
+                    UGLIRAssign(
                         _controller_port_signal_id(child, child_input, top_controller),
                         _controller_action_expr(parent, top_controller, "activate", link.node, controller_codes[parent.name]),
                     )
@@ -611,7 +611,7 @@ def _controller_link_assigns(design: UHIRDesign, top_controller, controller_code
             if isinstance(ready_mapping, tuple) and len(ready_mapping) == 2:
                 parent_signal, child_output = ready_mapping
                 assigns.append(
-                    UHIRAssign(
+                    UGLIRAssign(
                         str(parent_signal),
                         _controller_port_signal_id(child, str(child_output), top_controller),
                     )
@@ -620,7 +620,7 @@ def _controller_link_assigns(design: UHIRDesign, top_controller, controller_code
             if isinstance(done_mapping, tuple) and len(done_mapping) == 2:
                 parent_signal, child_output = done_mapping
                 assigns.append(
-                    UHIRAssign(
+                    UGLIRAssign(
                         str(parent_signal),
                         _controller_port_signal_id(child, str(child_output), top_controller),
                     )
@@ -629,7 +629,7 @@ def _controller_link_assigns(design: UHIRDesign, top_controller, controller_code
             if isinstance(done_ready_mapping, tuple) and len(done_ready_mapping) == 2:
                 parent_signal, child_input = done_ready_mapping
                 assigns.append(
-                    UHIRAssign(
+                    UGLIRAssign(
                         _controller_port_signal_id(child, str(child_input), top_controller),
                         _controller_signal_ref(parent, top_controller, str(parent_signal)),
                     )
@@ -819,23 +819,23 @@ def _output_drivers(
     return drivers
 
 
-def _lowered_data_inputs(design: UHIRDesign, memory_interfaces: dict[str, dict[str, Any]]) -> list[UHIRPort]:
-    lowered: list[UHIRPort] = []
+def _lowered_data_inputs(design: UHIRDesign, memory_interfaces: dict[str, dict[str, Any]]) -> list[UGLIRPort]:
+    lowered: list[UGLIRPort] = []
     for port in design.inputs:
         if not _is_memref_type(port.type) or port.name not in memory_interfaces:
-            lowered.append(UHIRPort(port.direction, port.name, port.type))
+            lowered.append(UGLIRPort(port.direction, port.name, port.type))
             continue
         interface = memory_interfaces[port.name]
         if interface["read_type"] is not None:
-            lowered.append(UHIRPort("input", f"{port.name}_rdata", interface["read_type"]))
+            lowered.append(UGLIRPort("input", f"{port.name}_rdata", interface["read_type"]))
     return lowered
 
 
-def _lowered_data_outputs(design: UHIRDesign, memory_interfaces: dict[str, dict[str, Any]]) -> list[UHIRPort]:
-    lowered: list[UHIRPort] = []
+def _lowered_data_outputs(design: UHIRDesign, memory_interfaces: dict[str, dict[str, Any]]) -> list[UGLIRPort]:
+    lowered: list[UGLIRPort] = []
     for port in design.outputs:
         if not _is_memref_type(port.type) or port.name not in memory_interfaces:
-            lowered.append(UHIRPort(port.direction, port.name, port.type))
+            lowered.append(UGLIRPort(port.direction, port.name, port.type))
     seen_memories: set[str] = set()
     for port in [*design.inputs, *design.outputs]:
         if not _is_memref_type(port.type) or port.name not in memory_interfaces or port.name in seen_memories:
@@ -843,27 +843,27 @@ def _lowered_data_outputs(design: UHIRDesign, memory_interfaces: dict[str, dict[
         seen_memories.add(port.name)
         interface = memory_interfaces[port.name]
         if interface["addr_type"] is not None:
-            lowered.append(UHIRPort("output", f"{port.name}_addr", interface["addr_type"]))
+            lowered.append(UGLIRPort("output", f"{port.name}_addr", interface["addr_type"]))
         if interface["has_write"] and interface["write_type"] is not None:
-            lowered.append(UHIRPort("output", f"{port.name}_wdata", interface["write_type"]))
+            lowered.append(UGLIRPort("output", f"{port.name}_wdata", interface["write_type"]))
         if interface["has_write"]:
-            lowered.append(UHIRPort("output", f"{port.name}_we", "i1"))
+            lowered.append(UGLIRPort("output", f"{port.name}_we", "i1"))
     return lowered
 
 
-def _memory_interface_assigns(memory_interfaces: dict[str, dict[str, Any]]) -> list[UHIRAssign]:
-    assigns: list[UHIRAssign] = []
+def _memory_interface_assigns(memory_interfaces: dict[str, dict[str, Any]]) -> list[UGLIRAssign]:
+    assigns: list[UGLIRAssign] = []
     for interface in memory_interfaces.values():
         memory_name = interface["memory_name"]
         instance_id = interface["instance_id"]
         if interface["addr_type"] is not None:
-            assigns.append(UHIRAssign(f"{memory_name}_addr", f"{instance_id}_addr"))
+            assigns.append(UGLIRAssign(f"{memory_name}_addr", f"{instance_id}_addr"))
         if interface["has_write"] and interface["write_type"] is not None:
-            assigns.append(UHIRAssign(f"{memory_name}_wdata", f"{instance_id}_wdata"))
+            assigns.append(UGLIRAssign(f"{memory_name}_wdata", f"{instance_id}_wdata"))
         if interface["has_write"]:
-            assigns.append(UHIRAssign(f"{memory_name}_we", f"{instance_id}_we"))
+            assigns.append(UGLIRAssign(f"{memory_name}_we", f"{instance_id}_we"))
         if interface["read_type"] is not None:
-            assigns.append(UHIRAssign(f"{instance_id}_rdata", f"{memory_name}_rdata"))
+            assigns.append(UGLIRAssign(f"{instance_id}_rdata", f"{memory_name}_rdata"))
     return assigns
 
 
@@ -1096,8 +1096,8 @@ def _lower_explicit_input_mux(
     select_signal = f"sel_{resource_id}_{port_name}"
     mux_name = f"mx_{resource_id}_{port_name}"
 
-    lowered.resources.append(UHIRResource("net", select_signal, "ctrl"))
-    lowered.resources.append(UHIRResource("mux", mux_name, port_type))
+    lowered.resources.append(UGLIRResource("net", select_signal, "ctrl"))
+    lowered.resources.append(UGLIRResource("mux", mux_name, port_type))
 
     default_signal = _materialize_glue_source_signal(
         lowered,
@@ -1130,21 +1130,21 @@ def _lower_explicit_input_mux(
         select_expr = f"{select_expr} : {labels[default_signal]}"
     else:
         select_expr = labels[default_signal]
-    lowered.assigns.append(UHIRAssign(select_signal, select_expr))
-    lowered.assigns.append(UHIRAssign(target_signal, mux_name))
+    lowered.assigns.append(UGLIRAssign(select_signal, select_expr))
+    lowered.assigns.append(UGLIRAssign(target_signal, mux_name))
 
-    glue_mux = UHIRGlueMux(name=mux_name, type=port_type, select=select_signal)
+    mux = UGLIRMux(name=mux_name, type=port_type, select=select_signal)
     seen_sources: set[str] = set()
     for source_signal in [default_signal, *(source for _, _expr, source in choices)]:
         if source_signal in seen_sources:
             continue
         seen_sources.add(source_signal)
-        glue_mux.cases.append(UHIRGlueMuxCase(labels[source_signal], source_signal))
-    lowered.glue_muxes.append(glue_mux)
+        mux.cases.append(UGLIRMuxCase(labels[source_signal], source_signal))
+    lowered.muxes.append(mux)
 
 
 def _materialize_glue_source_signal(
-    lowered: UHIRDesign,
+    lowered: UGLIRDesign,
     source_expr: str,
     port_type: str,
     helper_signal_ids: dict[tuple[str, str], str],
@@ -1156,13 +1156,13 @@ def _materialize_glue_source_signal(
     if existing is not None:
         return existing
     signal_id = _fresh_helper_signal_id(lowered, source_expr, port_type)
-    lowered.resources.append(UHIRResource("net", signal_id, port_type))
-    lowered.assigns.append(UHIRAssign(signal_id, source_expr))
+    lowered.resources.append(UGLIRResource("net", signal_id, port_type))
+    lowered.assigns.append(UGLIRAssign(signal_id, source_expr))
     helper_signal_ids[key] = signal_id
     return signal_id
 
 
-def _is_known_uglir_signal(lowered: UHIRDesign, signal_name: str) -> bool:
+def _is_known_uglir_signal(lowered: UGLIRDesign, signal_name: str) -> bool:
     if signal_name in {port.name for port in [*lowered.inputs, *lowered.outputs]}:
         return True
     return any(resource.id == signal_name for resource in lowered.resources if resource.kind in {"reg", "net", "mux"})

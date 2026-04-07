@@ -3,6 +3,8 @@
 :toclevels: 3
 :sectnums:
 
+NOTE: We are well aware of the fact that *µglIR* may be pronounce ugli-R as in ugly representation. With that said, we hereby reject any comments on this µglIR's aesthetics `¯\\_(ツ)_/¯`. 
+
 == Overview
 
 This document specifies the *µglIR* textual intermediate representation used by

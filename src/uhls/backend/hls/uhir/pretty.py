@@ -9,10 +9,6 @@ from uhls.utils.graph import topological_sort
 from .model import (
     AttributeValue,
     TimingValue,
-    UHIRAddressMap,
-    UHIRAddressMapEntry,
-    UHIRAssign,
-    UHIRAttach,
     UHIRConstant,
     UHIRController,
     UHIRControllerEmit,
@@ -21,14 +17,10 @@ from .model import (
     UHIRControllerTransition,
     UHIRDesign,
     UHIREdge,
-    UHIRGlueMux,
-    UHIRGlueMuxCase,
     UHIRMux,
     UHIRNode,
     UHIRRegion,
     UHIRResource,
-    UHIRSeqBlock,
-    UHIRSeqUpdate,
     UHIRValueBinding,
 )
 
@@ -43,9 +35,6 @@ def format_uhir(design: UHIRDesign) -> str:
         lines.append(f"output {port.name} : {port.type}")
     for const_decl in design.constants:
         lines.extend(format_constant(const_decl))
-    for address_map in design.address_maps:
-        lines.append("")
-        lines.extend(format_address_map(address_map))
 
     if design.schedule is not None:
         lines.append(f"schedule kind={design.schedule.kind}")
@@ -55,21 +44,6 @@ def format_uhir(design: UHIRDesign) -> str:
         for resource in design.resources:
             lines.append(f"  {format_resource(resource)}")
         lines.append("}")
-
-    if design.stage == "uglir":
-        for assign in design.assigns:
-            lines.append("")
-            lines.extend(format_assign(assign))
-        for attachment in design.attachments:
-            lines.append("")
-            lines.append(format_attach(attachment))
-        for glue_mux in design.glue_muxes:
-            lines.append("")
-            lines.extend(format_glue_mux(glue_mux))
-        for seq_block in design.seq_blocks:
-            lines.append("")
-            lines.extend(format_seq_block(seq_block))
-        return "\n".join(lines)
 
     for controller in design.controllers:
         lines.append("")
@@ -125,83 +99,9 @@ def format_controller_link(link: UHIRControllerLink) -> str:
     """Render one controller link declaration."""
     head = f"link {link.child} via={link.node}"
     return head if not link.attributes else f"{head} {_format_attrs(link.attributes)}"
-
-
-def format_assign(assign: UHIRAssign) -> str:
-    """Render one uglir combinational assignment."""
-    return _format_expr_statement(f"assign {assign.target} =", assign.expr)
-
-
 def format_constant(const_decl: UHIRConstant) -> list[str]:
     """Render one top-level constant declaration."""
     return _format_expr_statement(f"const  {const_decl.name} =", str(const_decl.value), suffix=f" : {const_decl.type}")
-
-
-def format_address_map(address_map: UHIRAddressMap) -> list[str]:
-    """Render one top-level address map declaration."""
-    lines = [f"address_map {address_map.name} {{"]
-    for entry in address_map.entries:
-        lines.append(f"  {format_address_map_entry(entry)}")
-    lines.append("}")
-    return lines
-
-
-def format_address_map_entry(entry: UHIRAddressMapEntry) -> str:
-    """Render one address-map entry."""
-    head = f"{entry.kind} {entry.name}"
-    return head if not entry.attributes else f"{head} {_format_attrs(entry.attributes)}"
-
-
-def format_attach(attachment: UHIRAttach) -> str:
-    """Render one uglir instance-port attachment."""
-    return f"{attachment.instance}.{attachment.port}({attachment.signal})"
-
-
-def format_glue_mux(glue_mux: UHIRGlueMux) -> list[str]:
-    """Render one uglir mux declaration."""
-    lines = [f"mux {glue_mux.name} : {glue_mux.type} sel={glue_mux.select} {{"]
-    for case in glue_mux.cases:
-        lines.append(f"  {format_glue_mux_case(case)}")
-    lines.append("}")
-    return lines
-
-
-def format_glue_mux_case(case: UHIRGlueMuxCase) -> str:
-    """Render one uglir mux case."""
-    return f"{case.key} -> {case.source}"
-
-
-def format_seq_block(seq_block: UHIRSeqBlock) -> list[str]:
-    """Render one uglir sequential block."""
-    lines = [f"seq {seq_block.clock} {{"]
-    if seq_block.reset is not None:
-        lines.extend(_indent_lines(_format_if_header(seq_block.reset), "  "))
-        for update in seq_block.reset_updates:
-            lines.extend(_indent_lines(format_seq_update(update), "    "))
-        lines.append("  } else {")
-        for update in seq_block.updates:
-            if update.enable is None:
-                lines.extend(_indent_lines(format_seq_update(update), "    "))
-            else:
-                lines.extend(_indent_lines(_format_if_header(update.enable), "    "))
-                lines.extend(_indent_lines(format_seq_update(UHIRSeqUpdate(update.target, update.value)), "      "))
-                lines.append("    }")
-        lines.append("  }")
-    else:
-        for update in seq_block.updates:
-            if update.enable is None:
-                lines.extend(_indent_lines(format_seq_update(update), "  "))
-            else:
-                lines.extend(_indent_lines(_format_if_header(update.enable), "  "))
-                lines.extend(_indent_lines(format_seq_update(UHIRSeqUpdate(update.target, update.value)), "    "))
-                lines.append("  }")
-    lines.append("}")
-    return lines
-
-
-def format_seq_update(update: UHIRSeqUpdate) -> list[str]:
-    """Render one uglir sequential update."""
-    return _format_expr_statement(f"{update.target} <=", update.value)
 
 
 def format_region(region: UHIRRegion) -> list[str]:

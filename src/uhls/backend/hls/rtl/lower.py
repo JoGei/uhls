@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from uhls.backend.hls.uhir.model import UHIRDesign
-
-from ..uglir import validate_uglir_for_rtl
+from ..uglir import UGLIRDesign, validate_uglir_for_rtl
 from .verilog import emit_uglir_to_verilog
 
 RTL_HDLS: tuple[str, ...] = ("verilog", "vhdl", "systemc")
 
 
 def lower_uglir_to_rtl(
-    design: UHIRDesign,
+    design: UGLIRDesign,
     hdl: str,
 ) -> str:
     """Lower one uglir design to one textual HDL artifact."""

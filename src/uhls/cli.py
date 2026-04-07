@@ -38,6 +38,7 @@ from uhls.backend.hls import (
     wrap_uglir_design,
 )
 from uhls.backend.hls.lib import import_verilog_component_stub, validate_component_library
+from uhls.backend.hls.uglir import format_uglir, parse_uglir_file
 from uhls.backend.hls.uhir import (
     ExecutabilityGraph,
     GOptPassSpec,
@@ -903,7 +904,7 @@ def glue_cmd(
     output: Path | None,
 ) -> None:
     """Lower fsm-stage µhIR to µglIR and optionally apply wrapper composition."""
-    design = parse_uhir_file(input_path)
+    design = _load_hls_exchange_design(input_path)
     if design.stage == "fsm":
         component_library = _load_component_library(resources_path) if resources_path is not None else None
         lowered = lower_fsm_to_uglir(design, component_library=component_library)
@@ -915,7 +916,7 @@ def glue_cmd(
         lowered = wrap_uglir_design(lowered, wrap=wrap, protocol=protocol)
     except (NotImplementedError, ValueError) as exc:
         raise CLIError(str(exc)) from exc
-    _write_or_print_text(format_uhir(lowered), output)
+    _write_or_print_text(_format_hls_exchange_design(lowered), output)
 
 
 @cli.command(
@@ -942,7 +943,7 @@ def glue_cmd(
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def rtl_cmd(input_path: Path, hdl: str, output: Path | None) -> None:
     """Lower µglIR to one textual RTL artifact."""
-    design = parse_uhir_file(input_path)
+    design = parse_uglir_file(input_path)
     if design.stage != "uglir":
         raise CLIError(f"'rtl' expects µglIR input, got stage '{design.stage}'")
     try:
@@ -954,6 +955,18 @@ def rtl_cmd(input_path: Path, hdl: str, output: Path | None) -> None:
 
 def _load_ir_file(path: Path) -> object:
     return parse_module(path.read_text(encoding="utf-8"))
+
+
+def _load_hls_exchange_design(path: Path):
+    if path.suffix.lower() == ".uglir":
+        return parse_uglir_file(path)
+    return parse_uhir_file(path)
+
+
+def _format_hls_exchange_design(design) -> str:
+    if design.stage == "uglir":
+        return format_uglir(design)
+    return format_uhir(design)
 
 
 def _resolve_view_backend(*, emit_pretty: bool, emit_dot: bool) -> str:
@@ -1043,9 +1056,18 @@ def _render_view(
             function_name=function_name,
             block_name=block_name,
         )
-    if suffix in {".uhir", ".uglir"}:
+    if suffix == ".uhir":
         return _render_uhir_view(
             parse_uhir_file(input_path),
+            backend=backend,
+            what_name=what_name,
+            compact=compact,
+            function_name=function_name,
+            block_name=block_name,
+        )
+    if suffix == ".uglir":
+        return _render_uglir_view(
+            parse_uglir_file(input_path),
             backend=backend,
             what_name=what_name,
             compact=compact,
@@ -1147,6 +1169,25 @@ def _render_uhir_view(
     return to_uhir_dot(design, compact=compact) if backend == "dot" else format_uhir(design)
 
 
+def _render_uglir_view(
+    design,
+    *,
+    backend: str,
+    what_name: str | None,
+    compact: bool,
+    function_name: str | None,
+    block_name: str | None,
+) -> str:
+    del compact
+    if function_name is not None or block_name is not None:
+        raise CLIError("'view' only supports --function/--block for canonical µIR inputs")
+    supported = ("uglir",)
+    view_name = _select_view_name("µglIR", backend, what_name, supported, default_pretty="uglir")
+    if backend != "pretty":
+        raise _unsupported_view_backend("µglIR", view_name, backend, ("pretty",))
+    return format_uglir(design)
+
+
 def _render_json_view(input_path: Path, *, backend: str, what_name: str | None) -> str:
     supported = ("exg",)
     view_name = _select_view_name("JSON exchange artifact", backend, what_name, supported, default_pretty="exg", default_dot="exg")
@@ -1202,7 +1243,7 @@ def _lint_exchange_file(path: Path) -> None:
         verify_module(module, require_ssa=True, allow_calls=True)
         return
     if suffix in {".uhir", ".uglir"}:
-        design = parse_uhir_file(path)
+        design = _load_hls_exchange_design(path)
         if design.stage == "exg":
             executability_graph_from_uhir(design)
         elif design.stage == "uglir":

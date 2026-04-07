@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 import re
 
-from uhls.backend.hls.uhir.model import UHIRDesign
+from .model import UGLIRDesign
 
 _TYPED_INT_RE = re.compile(r"(?<![\w$])(-?\d+):(i|u)(\d+)\b")
 _VERILOG_INT_RE = re.compile(r"(?<![\w$])\d+'[sS]?[bBoOdDhH][0-9a-fA-F_xXzZ]+")
 _IDENT_RE = re.compile(r"\b[A-Za-z_][\w$]*\b")
 
 
-def validate_uglir_for_rtl(design: UHIRDesign) -> None:
+def validate_uglir_for_rtl(design: UGLIRDesign) -> None:
     """Validate one uglir design against the current RTL backend contract."""
     if design.stage != "uglir":
         raise ValueError(f"uglir validator expects uglir input, got stage '{design.stage}'")
@@ -75,34 +75,34 @@ def validate_uglir_for_rtl(design: UHIRDesign) -> None:
         if resource.kind == "net" and resource.value == "ctrl" and assign_targets[resource.id] != 1:
             raise ValueError(f"uglir ctrl net '{resource.id}' must have exactly one assign driver")
 
-    glue_muxes = {glue_mux.name: glue_mux for glue_mux in design.glue_muxes}
-    if len(glue_muxes) != len(design.glue_muxes):
+    muxes = {mux.name: mux for mux in design.muxes}
+    if len(muxes) != len(design.muxes):
         raise ValueError("uglir mux names must be unique")
     for mux_name in mux_resource_types:
-        if mux_name not in glue_muxes:
+        if mux_name not in muxes:
             raise ValueError(f"uglir mux resource '{mux_name}' must have a matching mux declaration")
-    for glue_mux in design.glue_muxes:
-        if glue_mux.name not in mux_resource_types:
-            raise ValueError(f"uglir mux '{glue_mux.name}' must have a declared mux resource")
-        if glue_mux.type != mux_resource_types[glue_mux.name]:
+    for mux in design.muxes:
+        if mux.name not in mux_resource_types:
+            raise ValueError(f"uglir mux '{mux.name}' must have a declared mux resource")
+        if mux.type != mux_resource_types[mux.name]:
             raise ValueError(
-                f"uglir mux '{glue_mux.name}' type '{glue_mux.type}' does not match resource type '{mux_resource_types[glue_mux.name]}'"
+                f"uglir mux '{mux.name}' type '{mux.type}' does not match resource type '{mux_resource_types[mux.name]}'"
             )
-        if glue_mux.select not in signal_types:
-            raise ValueError(f"uglir mux '{glue_mux.name}' references unknown select signal '{glue_mux.select}'")
-        if signal_types[glue_mux.select] != "ctrl":
-            raise ValueError(f"uglir mux '{glue_mux.name}' select signal '{glue_mux.select}' must have type ctrl")
-        if not glue_mux.cases:
-            raise ValueError(f"uglir mux '{glue_mux.name}' must declare at least one case")
-        case_keys = [case.key for case in glue_mux.cases]
+        if mux.select not in signal_types:
+            raise ValueError(f"uglir mux '{mux.name}' references unknown select signal '{mux.select}'")
+        if signal_types[mux.select] != "ctrl":
+            raise ValueError(f"uglir mux '{mux.name}' select signal '{mux.select}' must have type ctrl")
+        if not mux.cases:
+            raise ValueError(f"uglir mux '{mux.name}' must declare at least one case")
+        case_keys = [case.key for case in mux.cases]
         if len(case_keys) != len(set(case_keys)):
-            raise ValueError(f"uglir mux '{glue_mux.name}' must use unique case keys")
-        for case in glue_mux.cases:
+            raise ValueError(f"uglir mux '{mux.name}' must use unique case keys")
+        for case in mux.cases:
             if case.source not in signal_types:
-                raise ValueError(f"uglir mux '{glue_mux.name}' case '{case.key}' references unknown source '{case.source}'")
-            if not _rtl_types_compatible(glue_mux.type, signal_types[case.source]):
+                raise ValueError(f"uglir mux '{mux.name}' case '{case.key}' references unknown source '{case.source}'")
+            if not _rtl_types_compatible(mux.type, signal_types[case.source]):
                 raise ValueError(
-                    f"uglir mux '{glue_mux.name}' case '{case.key}' source '{case.source}' has type '{signal_types[case.source]}', expected '{glue_mux.type}'"
+                    f"uglir mux '{mux.name}' case '{case.key}' source '{case.source}' has type '{signal_types[case.source]}', expected '{mux.type}'"
                 )
 
     reg_seq_drivers = Counter()
@@ -188,8 +188,8 @@ def _validate_unique_signal_names(design: UHIRDesign) -> None:
 
 def _ctrl_labels_by_signal(design: UHIRDesign) -> dict[str, set[str]]:
     labels: dict[str, set[str]] = {}
-    for glue_mux in design.glue_muxes:
-        labels[glue_mux.select] = {case.key for case in glue_mux.cases}
+    for mux in design.muxes:
+        labels[mux.select] = {case.key for case in mux.cases}
     return labels
 
 

@@ -9,10 +9,6 @@ from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 
 from .model import (
     AttributeValue,
-    UHIRAddressMap,
-    UHIRAddressMapEntry,
-    UHIRAssign,
-    UHIRAttach,
     UHIRConstant,
     UHIRController,
     UHIRControllerEmit,
@@ -21,8 +17,6 @@ from .model import (
     UHIRControllerTransition,
     UHIRDesign,
     UHIREdge,
-    UHIRGlueMux,
-    UHIRGlueMuxCase,
     UHIRMux,
     UHIRNode,
     UHIRPort,
@@ -30,8 +24,6 @@ from .model import (
     UHIRRegionRef,
     UHIRResource,
     UHIRSchedule,
-    UHIRSeqBlock,
-    UHIRSeqUpdate,
     UHIRSourceMap,
     UHIRValueBinding,
 )
@@ -40,7 +32,7 @@ from .timing import TimingExpr, parse_timing_expr
 _IDENT_RE = r"[A-Za-z_][\w$]*"
 _RESOURCE_VALUE_RE = r"[A-Za-z_][\w$]*(?:<[^>\n]+>)?"
 _DESIGN_RE = re.compile(rf"^design\s+({_IDENT_RE})$")
-_STAGE_RE = re.compile(r"^stage\s+(seq|exg|alloc|sched|bind|fsm|uglir)$")
+_STAGE_RE = re.compile(r"^stage\s+(seq|exg|alloc|sched|bind|fsm)$")
 _PORT_RE = re.compile(rf"^(input|output)\s+({_IDENT_RE})\s*:\s*(.+)$")
 _CONTROLLER_START_RE = re.compile(rf"^controller\s+({_IDENT_RE})(?:\s+(.*?))?\{{$")
 _STATE_RE = re.compile(rf"^state\s+({_IDENT_RE})(?:\s+(.*))?$")
@@ -49,8 +41,6 @@ _EMIT_RE = re.compile(rf"^emit\s+({_IDENT_RE})(?:\s+(.*))?$")
 _LINK_RE = re.compile(rf"^link\s+({_IDENT_RE})(?:\s+(.*))?$")
 _CONST_RE = re.compile(rf"^const\s+({_IDENT_RE})\s*=\s*(.+?)\s*:\s*(.+)$")
 _SCHEDULE_RE = re.compile(rf"^schedule\s+kind=({_IDENT_RE})$")
-_ADDRESS_MAP_START_RE = re.compile(rf"^address_map\s+({_IDENT_RE})\s*\{{$")
-_ADDRESS_MAP_ENTRY_RE = re.compile(rf"^(register|memory)\s+({_IDENT_RE})(?:\s+(.*))?$")
 _REGION_START_RE = re.compile(rf"^region\s+({_IDENT_RE})\s+(.+)\{{$")
 _REGION_REF_RE = re.compile(rf"^region_ref\s+({_IDENT_RE})$")
 _NODE_RE = re.compile(rf"^node\s+({_IDENT_RE})\s*=\s*(.+)$")
@@ -68,15 +58,6 @@ _MEM_RE = re.compile(rf"^mem\s+({_IDENT_RE})\s*:\s*([A-Za-z0-9_<>\[\]]+)$")
 _INST_RE = re.compile(rf"^inst\s+({_IDENT_RE})\s*:\s*({_RESOURCE_VALUE_RE})$")
 _MUX_RESOURCE_RE = re.compile(rf"^mux\s+({_IDENT_RE})\s*:\s*([A-Za-z0-9_<>\[\]]+)$")
 _PORT_RESOURCE_RE = re.compile(rf"^port\s+({_IDENT_RE})\s*:\s*({_RESOURCE_VALUE_RE})(?:\s+({_IDENT_RE}))?$")
-_ASSIGN_RE = re.compile(rf"^assign\s+({_IDENT_RE})\s*=\s*(.+)$")
-_ATTACH_RE = re.compile(rf"^({_IDENT_RE})\.({_IDENT_RE})\(([_A-Za-z][\w$]*)\)$")
-_UGLIR_MUX_START_RE = re.compile(rf"^mux\s+({_IDENT_RE})\s*:\s*(.+?)\s+sel=(\S+)\s*\{{$")
-_UGLIR_MUX_CASE_RE = re.compile(r"^(\S+)\s*->\s*(\S+)$")
-_SEQ_START_RE = re.compile(rf"^seq\s+({_IDENT_RE})\s*\{{$")
-_IF_RE = re.compile(r"^if\s+(.+)\s*\{$")
-_UPDATE_TARGET_RE = rf"{_IDENT_RE}(?:\[(.+)\])?"
-_UPDATE_RE = re.compile(rf"^({_UPDATE_TARGET_RE})\s*<=\s*(.+)$")
-_UGLIR_EXPR_IDENT_RE = re.compile(rf"\b({_IDENT_RE})\b")
 _UIR_LANGUAGE_OPCODES = frozenset(str(opcode).lower() for opcode in COMPACT_OPCODE_LABELS)
 
 
@@ -120,10 +101,6 @@ def parse_uhir(text: str) -> UHIRDesign:
             design.schedule = schedule
             index += 1
             continue
-        if line.startswith("address_map "):
-            address_map, index = _parse_address_map(lines, index)
-            design.address_maps.append(address_map)
-            continue
         if line.startswith("controller "):
             controller, index = _parse_controller(lines, index)
             design.controllers.append(controller)
@@ -133,22 +110,6 @@ def parse_uhir(text: str) -> UHIRDesign:
                 raise UHIRParseError(f"duplicate resources block at line {line_number}")
             resources, index = _parse_resources_block(lines, index)
             design.resources.extend(resources)
-            continue
-        if match := _ASSIGN_RE.fullmatch(line):
-            design.assigns.append(UHIRAssign(match.group(1), _unwrap_parenthesized_expr(match.group(2).strip())))
-            index += 1
-            continue
-        if match := _ATTACH_RE.fullmatch(line):
-            design.attachments.append(UHIRAttach(match.group(1), match.group(2), match.group(3)))
-            index += 1
-            continue
-        if line.startswith("mux "):
-            glue_mux, index = _parse_uglir_mux(lines, index)
-            design.glue_muxes.append(glue_mux)
-            continue
-        if line.startswith("seq "):
-            seq_block, index = _parse_seq_block(lines, index)
-            design.seq_blocks.append(seq_block)
             continue
         if line.startswith("region "):
             region, index = _parse_region(lines, index)
@@ -325,125 +286,6 @@ def _parse_resources_block(lines: list[str], index: int) -> tuple[list[UHIRResou
             raise UHIRParseError(f"invalid resources declaration at line {line_number}: {line!r}")
         index += 1
     raise UHIRParseError("unterminated resources block")
-
-
-def _parse_address_map(lines: list[str], index: int) -> tuple[UHIRAddressMap, int]:
-    line = lines[index]
-    line_number = index + 1
-    match = _ADDRESS_MAP_START_RE.fullmatch(line)
-    if match is None:
-        raise UHIRParseError(f"invalid address-map declaration at line {line_number}: {line!r}")
-    address_map = UHIRAddressMap(match.group(1))
-    index += 1
-    while index < len(lines):
-        line = lines[index]
-        line_number = index + 1
-        if line == "}":
-            return address_map, index + 1
-        match = _ADDRESS_MAP_ENTRY_RE.fullmatch(line)
-        if match is None:
-            raise UHIRParseError(f"invalid address-map entry at line {line_number}: {line!r}")
-        attributes = {} if match.group(3) is None else _parse_attrs(match.group(3))
-        address_map.entries.append(UHIRAddressMapEntry(match.group(1), match.group(2), attributes))
-        index += 1
-    raise UHIRParseError(f"unterminated address_map '{address_map.name}'")
-
-
-def _parse_uglir_mux(lines: list[str], index: int) -> tuple[UHIRGlueMux, int]:
-    line = lines[index]
-    line_number = index + 1
-    match = _UGLIR_MUX_START_RE.fullmatch(line)
-    if match is None:
-        raise UHIRParseError(f"invalid uglir mux declaration at line {line_number}: {line!r}")
-    glue_mux = UHIRGlueMux(match.group(1), match.group(2).strip(), match.group(3).strip())
-    index += 1
-    while index < len(lines):
-        line = lines[index]
-        line_number = index + 1
-        if line == "}":
-            return glue_mux, index + 1
-        match = _UGLIR_MUX_CASE_RE.fullmatch(line)
-        if match is None:
-            raise UHIRParseError(f"invalid uglir mux case at line {line_number}: {line!r}")
-        glue_mux.cases.append(UHIRGlueMuxCase(match.group(1), match.group(2)))
-        index += 1
-    raise UHIRParseError(f"unterminated uglir mux '{glue_mux.name}'")
-
-
-def _parse_seq_block(lines: list[str], index: int) -> tuple[UHIRSeqBlock, int]:
-    line = lines[index]
-    line_number = index + 1
-    match = _SEQ_START_RE.fullmatch(line)
-    if match is None:
-        raise UHIRParseError(f"invalid uglir seq declaration at line {line_number}: {line!r}")
-    seq_block = UHIRSeqBlock(clock=match.group(1))
-    index += 1
-    if index >= len(lines):
-        raise UHIRParseError(f"unterminated seq block '{seq_block.clock}'")
-    line = lines[index]
-    if_match = _IF_RE.fullmatch(line)
-    if if_match is not None:
-        seq_block.reset = _unwrap_parenthesized_expr(if_match.group(1).strip())
-        index += 1
-        seq_block.reset_updates, index = _parse_seq_updates_until(lines, index, "}")
-        if index >= len(lines):
-            raise UHIRParseError(f"seq block '{seq_block.clock}' is missing else {{")
-        if lines[index] == "} else {":
-            index += 1
-        elif lines[index] == "}":
-            index += 1
-            if index >= len(lines) or lines[index] != "else {":
-                raise UHIRParseError(f"seq block '{seq_block.clock}' is missing else {{")
-            index += 1
-        else:
-            raise UHIRParseError(f"seq block '{seq_block.clock}' is missing else {{")
-        seq_block.updates, index = _parse_seq_updates_with_guards_until(lines, index, "}")
-        if index >= len(lines) or lines[index] != "}":
-            raise UHIRParseError(f"unterminated seq block '{seq_block.clock}'")
-        index += 1
-        if index >= len(lines) or lines[index] != "}":
-            raise UHIRParseError(f"unterminated seq block '{seq_block.clock}'")
-        return seq_block, index + 1
-    seq_block.updates, index = _parse_seq_updates_with_guards_until(lines, index, "}")
-    return seq_block, index + 1
-
-
-def _parse_seq_updates_until(lines: list[str], index: int, terminator: str) -> tuple[list[UHIRSeqUpdate], int]:
-    updates: list[UHIRSeqUpdate] = []
-    while index < len(lines):
-        line = lines[index]
-        line_number = index + 1
-        if line == terminator or line == f"{terminator} else {{":
-            return updates, index
-        match = _UPDATE_RE.fullmatch(line)
-        if match is None:
-            raise UHIRParseError(f"invalid sequential update at line {line_number}: {line!r}")
-        updates.append(UHIRSeqUpdate(match.group(1), _unwrap_parenthesized_expr(match.group(3).strip())))
-        index += 1
-    raise UHIRParseError("unterminated sequential update block")
-
-
-def _parse_seq_updates_with_guards_until(lines: list[str], index: int, terminator: str) -> tuple[list[UHIRSeqUpdate], int]:
-    updates: list[UHIRSeqUpdate] = []
-    while index < len(lines):
-        line = lines[index]
-        line_number = index + 1
-        if line == terminator:
-            return updates, index
-        guard_match = _IF_RE.fullmatch(line)
-        if guard_match is not None:
-            guard = _unwrap_parenthesized_expr(guard_match.group(1).strip())
-            index += 1
-            guarded_updates, index = _parse_seq_updates_until(lines, index, "}")
-            updates.extend(UHIRSeqUpdate(update.target, update.value, guard) for update in guarded_updates)
-            index += 1
-            continue
-        match = _UPDATE_RE.fullmatch(line)
-        if match is None:
-            raise UHIRParseError(f"invalid sequential update at line {line_number}: {line!r}")
-        updates.append(UHIRSeqUpdate(match.group(1), _unwrap_parenthesized_expr(match.group(3).strip())))
-        index += 1
-    raise UHIRParseError("unterminated sequential update block")
 
 
 def _parse_region(lines: list[str], index: int) -> tuple[UHIRRegion, int]:
@@ -838,18 +680,14 @@ def _split_range(text: str, line_number: int) -> tuple[str, str]:
 
 
 def _validate_design(design: UHIRDesign) -> None:
-    if design.stage != "uglir" and not design.regions:
+    if not design.regions:
         raise UHIRParseError("µhIR design must contain at least one region")
     if design.stage == "seq":
         if design.schedule is not None:
             raise UHIRParseError("seq µhIR must not declare a schedule block")
-        if design.address_maps:
-            raise UHIRParseError("seq µhIR must not declare address maps")
         if design.resources:
             raise UHIRParseError("seq µhIR must not declare resources")
     elif design.stage == "exg":
-        if design.address_maps:
-            raise UHIRParseError("exg µhIR must not declare address maps")
         if design.inputs or design.outputs or design.constants:
             raise UHIRParseError("exg µhIR must not declare ports or constants")
         if design.schedule is not None:
@@ -859,22 +697,16 @@ def _validate_design(design: UHIRDesign) -> None:
     elif design.stage == "alloc":
         if design.schedule is not None:
             raise UHIRParseError("alloc µhIR must not declare a schedule block")
-        if design.address_maps:
-            raise UHIRParseError("alloc µhIR must not declare address maps")
         if design.resources:
             raise UHIRParseError("alloc µhIR must not declare resources")
     elif design.stage == "sched":
         if design.schedule is None:
             raise UHIRParseError("sched µhIR must declare schedule kind=...")
-        if design.address_maps:
-            raise UHIRParseError("sched µhIR must not declare address maps")
         if design.resources:
             raise UHIRParseError("sched µhIR must not declare resources")
     elif design.stage == "bind":
         if design.schedule is None:
             raise UHIRParseError("bind µhIR must declare schedule kind=...")
-        if design.address_maps:
-            raise UHIRParseError("bind µhIR must not declare address maps")
         if not design.resources:
             raise UHIRParseError("bind µhIR must declare resources")
         if design.controllers:
@@ -882,21 +714,10 @@ def _validate_design(design: UHIRDesign) -> None:
     elif design.stage == "fsm":
         if design.schedule is None:
             raise UHIRParseError("fsm µhIR must declare schedule kind=...")
-        if design.address_maps:
-            raise UHIRParseError("fsm µhIR must not declare address maps")
         if not design.resources:
             raise UHIRParseError("fsm µhIR must declare resources")
         if not design.controllers:
             raise UHIRParseError("fsm µhIR must declare at least one controller")
-    elif design.stage == "uglir":
-        if design.schedule is not None:
-            raise UHIRParseError("uglir µhIR must not declare a schedule block")
-        if design.controllers:
-            raise UHIRParseError("uglir µhIR must not declare controllers")
-        if design.regions:
-            raise UHIRParseError("uglir µhIR must not declare regions")
-        if not design.resources:
-            raise UHIRParseError("uglir µhIR must declare resources")
     elif design.controllers:
         raise UHIRParseError(f"{design.stage} µhIR must not declare controllers")
 
@@ -905,10 +726,6 @@ def _validate_design(design: UHIRDesign) -> None:
         raise UHIRParseError("controller identifiers must be unique within one µhIR design")
     for controller in design.controllers:
         _validate_controller(controller, design.stage)
-
-    if design.stage == "uglir":
-        _validate_uglir_design(design)
-        return
 
     region_ids = {region.id for region in design.regions}
     if len(region_ids) != len(design.regions):
@@ -1232,67 +1049,6 @@ def _validate_controller(controller: UHIRController, stage: str) -> None:
     link_children = {link.child for link in controller.links}
     if len(link_children) != len(controller.links):
         raise UHIRParseError(f"controller '{controller.name}' must use unique child-controller link targets")
-
-
-def _validate_uglir_design(design: UHIRDesign) -> None:
-    """Validate one uglir-stage design."""
-    resource_ids = {resource.id for resource in design.resources}
-    resource_kinds = {resource.id: resource.kind for resource in design.resources}
-    signal_names = {port.name for port in design.inputs + design.outputs}
-    signal_names.update(resource.id for resource in design.resources if resource.kind in {"reg", "net", "mux", "mem"})
-    instance_ids = {resource.id for resource in design.resources if resource.kind == "inst"}
-    mux_ids = {resource.id for resource in design.resources if resource.kind == "mux"}
-
-    for attachment in design.attachments:
-        if attachment.instance not in instance_ids:
-            raise UHIRParseError(f"uglir attachment '{attachment.instance}.{attachment.port}(...)' references unknown instance")
-        if attachment.signal not in signal_names:
-            raise UHIRParseError(f"uglir attachment '{attachment.instance}.{attachment.port}({attachment.signal})' references unknown signal")
-    for assign in design.assigns:
-        if assign.target not in signal_names:
-            raise UHIRParseError(f"uglir assign '{assign.target} = ...' references unknown target signal")
-    glue_mux_names = {glue_mux.name for glue_mux in design.glue_muxes}
-    if len(glue_mux_names) != len(design.glue_muxes):
-        raise UHIRParseError("uglir mux names must be unique")
-    for glue_mux in design.glue_muxes:
-        if glue_mux.name not in mux_ids:
-            raise UHIRParseError(f"uglir mux '{glue_mux.name}' must have a declared mux resource")
-        if glue_mux.select not in signal_names:
-            raise UHIRParseError(f"uglir mux '{glue_mux.name}' references unknown select signal '{glue_mux.select}'")
-        if not glue_mux.cases:
-            raise UHIRParseError(f"uglir mux '{glue_mux.name}' must declare at least one case")
-        for case in glue_mux.cases:
-            if case.source not in signal_names:
-                raise UHIRParseError(f"uglir mux '{glue_mux.name}' case '{case.key}' references unknown source '{case.source}'")
-    for seq_block in design.seq_blocks:
-        if seq_block.clock not in {port.name for port in design.inputs}:
-            raise UHIRParseError(f"uglir seq block clock '{seq_block.clock}' must be an input port")
-        if seq_block.reset is not None:
-            _validate_uglir_expr_identifiers(seq_block.reset, signal_names, f"uglir seq block reset '{seq_block.reset}'")
-        for update in [*seq_block.reset_updates, *seq_block.updates]:
-            target_base, _ = _split_seq_target(update.target)
-            if target_base not in resource_ids or resource_kinds[target_base] not in {"reg", "mem"}:
-                raise UHIRParseError(f"uglir sequential update target '{update.target}' must be a reg or mem resource")
-            if update.enable is not None:
-                _validate_uglir_expr_identifiers(
-                    update.enable,
-                    signal_names,
-                    f"uglir sequential enable '{update.enable}'",
-                )
-
-
-def _split_seq_target(target: str) -> tuple[str, str | None]:
-    match = re.fullmatch(rf"({_IDENT_RE})(?:\[(.+)\])?", target)
-    if match is None:
-        raise UHIRParseError(f"uglir sequential update target '{target}' must be an identifier or indexed memory element")
-    return match.group(1), match.group(2)
-
-
-def _validate_uglir_expr_identifiers(expr: str, signal_names: set[str], prefix: str) -> None:
-    allowed = signal_names | {"true", "false"}
-    for ident in _UGLIR_EXPR_IDENT_RE.findall(expr):
-        if ident not in allowed:
-            raise UHIRParseError(f"{prefix} references unknown signal")
 
 
 def _exg_vertex_name(node: UHIRNode) -> str:

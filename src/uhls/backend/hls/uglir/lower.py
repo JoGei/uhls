@@ -6,9 +6,15 @@ from math import ceil, log2
 import re
 from typing import Any
 
+from uhls.backend.hls.component_library import (
+    format_component_spec,
+    parse_component_spec,
+    resolve_component_definition,
+)
 from uhls.backend.hls.uhir.model import (
     UHIRAssign,
     UHIRAttach,
+    UHIRConstant,
     UHIRDesign,
     UHIRGlueMux,
     UHIRGlueMuxCase,
@@ -47,6 +53,9 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
     ]
     lowered.outputs.extend(_lowered_data_outputs(design, memory_interfaces))
     lowered.constants = list(design.constants)
+    for interface in memory_interfaces.values():
+        if interface["depth"] is not None:
+            lowered.constants.append(UHIRConstant(f"{interface['memory_name']}_depth", int(interface["depth"]), "u32"))
 
     lowered.resources.append(UHIRResource("net", "req_fire", "i1"))
     lowered.resources.append(UHIRResource("net", "resp_fire", "i1"))
@@ -708,13 +717,57 @@ def _instance_result_type(design: UHIRDesign, resource_id: str) -> str | None:
 
 
 def _is_memref_type(type_name: str) -> bool:
-    return type_name.startswith("memref<") and type_name.endswith(">")
+    return _parse_memref_type(type_name) is not None
+
+
+def _parse_memref_type(type_name: str) -> tuple[str, int | None] | None:
+    match = re.fullmatch(r"memref<\s*([A-Za-z_][\w$<>]*)\s*(?:,\s*(\d+)\s*)?>", type_name)
+    if match is None:
+        return None
+    element_type, extent_text = match.groups()
+    return element_type, None if extent_text is None else int(extent_text)
+
+
+def _component_definition(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+) -> tuple[str, dict[str, Any]]:
+    base_name, _, component = resolve_component_definition(component_library, component_name)
+    return base_name, component
+
+
+def _parse_component_spec(component_name: str) -> tuple[str, dict[str, str]]:
+    return parse_component_spec(component_name)
+
+
+def _format_component_spec(base_name: str, params: dict[str, str]) -> str:
+    return format_component_spec(base_name, params)
+
+
+def _split_component_params(params_text: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in params_text:
+        if char == "," and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        if char == "<":
+            depth += 1
+        elif char == ">" and depth > 0:
+            depth -= 1
+        current.append(char)
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
 
 
 def _component_kind(component_library: dict[str, dict[str, Any]], component_name: str) -> str | None:
-    component = component_library.get(component_name)
-    if component is None:
-        raise ValueError(f"component library does not define component '{component_name}'")
+    _, component = _component_definition(component_library, component_name)
     kind = component.get("kind")
     if kind is None:
         return None
@@ -822,9 +875,14 @@ def _memory_interfaces(
         return {}
 
     top_level_memories = {
-        port.name: port.type
+        port.name: _parse_memref_type(port.type)
         for port in [*design.inputs, *design.outputs]
         if _is_memref_type(port.type)
+    }
+    memory_port_specs = {
+        (resource.target if resource.target is not None else resource.id): resource.value
+        for resource in design.resources
+        if resource.kind == "port"
     }
     instance_components = {
         resource.id: resource.value
@@ -841,22 +899,29 @@ def _memory_interfaces(
             if not node.operands:
                 raise ValueError(f"memory-bound node '{node.id}' must declare the memory name as its first operand")
             memory_name = node.operands[0]
-            if memory_name not in top_level_memories:
+            memref_spec = top_level_memories.get(memory_name)
+            if memref_spec is None:
                 raise ValueError(
                     f"memory-bound node '{node.id}' references memory '{memory_name}' that is not a top-level memref port"
                 )
             component_name = instance_components[instance_id]
             existing = interfaces.get(memory_name)
             if existing is None:
+                component_spec = memory_port_specs.get(memory_name)
+                if component_spec is None:
+                    component_spec = _parameterized_memory_component_name(component_name, memref_spec)
+                else:
+                    _validate_memory_component_spec(component_spec, memref_spec, memory_name)
                 interfaces[memory_name] = {
                     "memory_name": memory_name,
-                    "component_name": component_name,
+                    "component_name": component_spec,
                     "instance_id": instance_id,
                     "has_read": False,
                     "has_write": False,
                     "addr_type": _memory_port_type(component_library, component_name, "addr"),
                     "write_type": _memory_port_type(component_library, component_name, "wdata"),
                     "read_type": _memory_port_type(component_library, component_name, "rdata"),
+                    "depth": memref_spec[1],
                 }
                 existing = interfaces[memory_name]
             elif existing["instance_id"] != instance_id:
@@ -883,6 +948,34 @@ def _memory_interfaces(
                 f"memory component '{interface['component_name']}' for '{interface['memory_name']}' must declare a write-data input port"
             )
     return interfaces
+
+
+def _parameterized_memory_component_name(component_name: str, memref_spec: tuple[str, int | None]) -> str:
+    base_name, params = _parse_component_spec(component_name)
+    params = dict(params)
+    params.setdefault("word_t", memref_spec[0])
+    if memref_spec[1] is not None:
+        params.setdefault("word_len", str(memref_spec[1]))
+    return _format_component_spec(base_name, params)
+
+
+def _validate_memory_component_spec(
+    component_spec: str,
+    memref_spec: tuple[str, int | None],
+    memory_name: str,
+) -> None:
+    _, params = _parse_component_spec(component_spec)
+    expected_word_t, expected_word_len = memref_spec
+    actual_word_t = params.get("word_t")
+    if actual_word_t is not None and actual_word_t != expected_word_t:
+        raise ValueError(
+            f"memory port '{memory_name}' uses '{component_spec}' but top-level memref expects word_t={expected_word_t}"
+        )
+    actual_word_len = params.get("word_len")
+    if expected_word_len is not None and actual_word_len is not None and actual_word_len != str(expected_word_len):
+        raise ValueError(
+            f"memory port '{memory_name}' uses '{component_spec}' but top-level memref expects word_len={expected_word_len}"
+        )
 
 
 def _validate_memory_interface_schedule(controller, memory_interfaces: dict[str, dict[str, Any]]) -> None:
@@ -1162,9 +1255,7 @@ def _instance_port_names(component_library: dict[str, dict[str, Any]], component
 
 
 def _instance_ports(component_library: dict[str, dict[str, Any]], component_name: str) -> tuple[tuple[str, str], ...]:
-    component = component_library.get(component_name)
-    if component is None:
-        raise ValueError(f"component library does not define component '{component_name}'")
+    _, component = _component_definition(component_library, component_name)
     ports = component.get("ports")
     if not isinstance(ports, dict):
         raise ValueError(f"component '{component_name}' must define object-valued 'ports'")
@@ -1180,9 +1271,7 @@ def _instance_ports(component_library: dict[str, dict[str, Any]], component_name
 
 
 def _instance_input_ports(component_library: dict[str, dict[str, Any]], component_name: str) -> tuple[tuple[str, str], ...]:
-    component = component_library.get(component_name)
-    if component is None:
-        raise ValueError(f"component library does not define component '{component_name}'")
+    _, component = _component_definition(component_library, component_name)
     ports = component.get("ports")
     if not isinstance(ports, dict):
         raise ValueError(f"component '{component_name}' must define object-valued 'ports'")
@@ -1198,9 +1287,7 @@ def _instance_input_ports(component_library: dict[str, dict[str, Any]], componen
 
 
 def _instance_output_ports(component_library: dict[str, dict[str, Any]], component_name: str) -> tuple[tuple[str, str], ...]:
-    component = component_library.get(component_name)
-    if component is None:
-        raise ValueError(f"component library does not define component '{component_name}'")
+    _, component = _component_definition(component_library, component_name)
     ports = component.get("ports")
     if not isinstance(ports, dict):
         raise ValueError(f"component '{component_name}' must define object-valued 'ports'")
@@ -1255,9 +1342,7 @@ def _component_result_port(
     component_name: str,
     opcode_name: str,
 ) -> str | None:
-    component = component_library.get(component_name)
-    if component is None:
-        raise ValueError(f"component library does not define component '{component_name}'")
+    _, component = _component_definition(component_library, component_name)
     supports = component.get("supports")
     if not isinstance(supports, dict):
         raise ValueError(f"component '{component_name}' must define object-valued 'supports'")
@@ -1283,9 +1368,7 @@ def _component_issue_bindings(
     component_library: dict[str, dict[str, Any]],
     component_name: str,
 ) -> dict[str, str]:
-    component = component_library.get(component_name)
-    if component is None:
-        raise ValueError(f"component library does not define component '{component_name}'")
+    _, component = _component_definition(component_library, component_name)
     issue = component.get("issue")
     if issue is None:
         return {}
@@ -1305,9 +1388,7 @@ def _component_port_binding(
     opcode_name: str,
     port_name: str,
 ) -> str | None:
-    component = component_library.get(component_name)
-    if component is None:
-        raise ValueError(f"component library does not define component '{component_name}'")
+    _, component = _component_definition(component_library, component_name)
     supports = component.get("supports")
     if not isinstance(supports, dict):
         raise ValueError(f"component '{component_name}' must define object-valued 'supports'")
@@ -1428,9 +1509,7 @@ def _opcode_expr(
     controller_codes: dict[str, dict[str, int]],
     component_library: dict[str, dict[str, Any]],
 ) -> str:
-    component = component_library.get(component_name)
-    if component is None:
-        raise ValueError(f"component library does not define component '{component_name}'")
+    _, component = _component_definition(component_library, component_name)
     supports = component.get("supports")
     if not isinstance(supports, dict):
         raise ValueError(f"component '{component_name}' must define object-valued 'supports'")

@@ -68,7 +68,7 @@ def lowerable_type(type_ref: ast.TypeRef) -> ScalarType | ArrayType:
         return scalar
     if type_ref.array_size <= 0:
         raise SemanticError("array sizes must be positive")
-    return ArrayType(scalar)
+    return ArrayType(scalar, type_ref.array_size)
 
 
 def analyze_program(program: ast.Program) -> ProgramInfo:

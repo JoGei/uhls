@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 SCALAR_TYPE_NAMES = frozenset({"i1", "i8", "i16", "i32", "u8", "u16", "u32"})
@@ -37,9 +38,16 @@ class ArrayType:
     """An explicit canonical array memory object type."""
 
     element_type: ScalarType
+    extent: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.extent is not None and self.extent <= 0:
+            raise ValueError("array extents must be positive")
 
     def __str__(self) -> str:
-        return f"{self.element_type}[]"
+        if self.extent is None:
+            return f"{self.element_type}[]"
+        return f"{self.element_type}[{self.extent}]"
 
 
 Type = ScalarType | ArrayType
@@ -94,8 +102,11 @@ def normalize_type(type_hint: TypeLike | None) -> Type | None:
         return type_hint
 
     text = str(type_hint).strip()
-    if text.endswith("[]"):
-        return ArrayType(normalize_scalar_type(text[:-2]))
+    array_match = re.fullmatch(r"(.+)\[(\d*)\]", text)
+    if array_match is not None:
+        element_text, extent_text = array_match.groups()
+        extent = None if extent_text == "" else int(extent_text)
+        return ArrayType(normalize_scalar_type(element_text), extent)
     return normalize_scalar_type(text)
 
 

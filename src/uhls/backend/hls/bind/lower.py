@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from uhls.backend.hls.uhir.model import (
     UHIRConstant,
     UHIRDesign,
@@ -98,12 +100,12 @@ def _infer_memory_port_resources(
     binding_resources: tuple[UHIRResource, ...],
     node_bindings: dict[str, str],
 ) -> list[UHIRResource]:
-    memref_names = {
-        port.name
+    memref_types = {
+        port.name: port.type
         for port in [*design.inputs, *design.outputs]
         if port.type.startswith("memref<")
     }
-    if not memref_names:
+    if not memref_types:
         return []
 
     resource_type_by_id = {
@@ -117,7 +119,8 @@ def _infer_memory_port_resources(
             if node.opcode not in {"load", "store"} or not node.operands:
                 continue
             memory_name = node.operands[0]
-            if memory_name not in memref_names:
+            memref_type = memref_types.get(memory_name)
+            if memref_type is None:
                 continue
             resource_id = node_bindings.get(node.id)
             if resource_id is None:
@@ -125,6 +128,7 @@ def _infer_memory_port_resources(
             component_name = resource_type_by_id.get(resource_id)
             if component_name is None:
                 continue
+            component_name = _parameterized_memory_component_type(component_name, memref_type)
             existing = inferred.get(memory_name)
             if existing is not None and existing != component_name:
                 raise ValueError(
@@ -143,3 +147,19 @@ def _infer_memory_port_resources(
         for memory_name, component_name in sorted(inferred.items())
         if memory_name not in existing_ports
     ]
+
+
+def _parameterized_memory_component_type(component_name: str, memref_type: str) -> str:
+    element_type, extent = _parse_memref_type(memref_type)
+    params = [f"word_t={element_type}"]
+    if extent is not None:
+        params.append(f"word_len={extent}")
+    return f"{component_name}<{','.join(params)}>"
+
+
+def _parse_memref_type(type_name: str) -> tuple[str, int | None]:
+    match = re.fullmatch(r"memref<\s*([A-Za-z_][\w$<>]*)\s*(?:,\s*(\d+)\s*)?>", type_name)
+    if match is None:
+        raise ValueError(f"invalid memref type '{type_name}'")
+    element_type, extent_text = match.groups()
+    return element_type, None if extent_text is None else int(extent_text)

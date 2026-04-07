@@ -34,6 +34,7 @@ from uhls.backend.hls import (
     lower_uglir_to_rtl,
     parse_bind_dump_spec,
 )
+from uhls.backend.hls.component_library import validate_component_library
 from uhls.backend.hls.uhir import (
     ExecutabilityGraph,
     GOptPassSpec,
@@ -1136,12 +1137,13 @@ def _load_component_library(path: Path) -> dict[str, dict[str, object]]:
     components = payload.get("components")
     if not isinstance(components, dict):
         raise CLIError(f"component library '{path}' must define object-valued 'components'")
-    normalized: dict[str, dict[str, object]] = {}
     for component_name, component_payload in components.items():
         if not isinstance(component_payload, dict):
             raise CLIError(f"component library '{path}' component '{component_name}' must be a JSON object")
-        normalized[str(component_name)] = component_payload
-    return normalized
+    try:
+        return validate_component_library(components)
+    except ValueError as exc:
+        raise CLIError(f"component library '{path}' is invalid: {exc}") from exc
 
 
 def _format_executability_graph_json(graph: ExecutabilityGraph) -> str:

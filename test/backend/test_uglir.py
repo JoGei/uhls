@@ -408,7 +408,7 @@ class UGLIRLoweringTests(unittest.TestCase):
             design read1
             stage fsm
             schedule kind=control_steps
-            input  A : memref<i32>
+            input  A : memref<i32, 4>
             input  i : i32
             output result : i32
             resources {
@@ -482,7 +482,10 @@ class UGLIRLoweringTests(unittest.TestCase):
 
         self.assertEqual([(port.name, port.type) for port in uglir_design.inputs[:6]], [("clk", "clock"), ("rst", "i1"), ("req_valid", "i1"), ("resp_ready", "i1"), ("A_rdata", "i32"), ("i", "i32")])
         self.assertEqual([(port.name, port.type) for port in uglir_design.outputs[:4]], [("req_ready", "i1"), ("resp_valid", "i1"), ("result", "i32"), ("A_addr", "i32")])
-        self.assertIn(("port", "A", "MEM", "A"), [(resource.kind, resource.id, resource.value, resource.target) for resource in uglir_design.resources])
+        self.assertIn(
+            ("port", "A", "MEM<word_t=i32,word_len=4>", "A"),
+            [(resource.kind, resource.id, resource.value, resource.target) for resource in uglir_design.resources],
+        )
         self.assertNotIn(("inst", "mr0", "MEM", None), [(resource.kind, resource.id, resource.value, resource.target) for resource in uglir_design.resources])
         assigns = {(assign.target, assign.expr) for assign in uglir_design.assigns}
         self.assertIn(("mr0_addr_n", "mx_mr0_addr_n"), assigns)
@@ -496,7 +499,7 @@ class UGLIRLoweringTests(unittest.TestCase):
         rendered = format_uhir(uglir_design)
         self.assertIn("input  A_rdata : i32", rendered)
         self.assertIn("output A_addr : i32", rendered)
-        self.assertIn("port A : MEM A", rendered)
+        self.assertIn("port A : MEM<word_t=i32,word_len=4> A", rendered)
         self.assertIn("assign mr0_rdata_n = A_rdata", rendered)
         self.assertIn("assign A_addr = mr0_addr_n", rendered)
         self.assertIn("assign mr0_addr_n = mx_mr0_addr_n", rendered)

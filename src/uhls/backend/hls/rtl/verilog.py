@@ -346,13 +346,17 @@ def _emit_wishbone_slave_wrapper_body(
     for interface in memory_interfaces:
         data_type = interface.data_type
         base = interface.base
-        lines.append(f"  reg {_join_decl_tokens(_format_decl_type(data_type, {}, base), f'{base}_mem_q [0:1023]')};")
+        lines.append(
+            f"  reg {_join_decl_tokens(_format_decl_type(data_type, {}, base), f'{base}_mem_q [0:{_memory_depth(interface) - 1}]')};"
+        )
     if scalar_inputs or scalar_outputs or memory_interfaces:
         lines.append("")
 
     for interface in memory_interfaces:
         base = interface.base
-        lines.append(f"  wire {_join_decl_tokens(_format_decl_type('u10', {}, None), f'{base}_bus_word_addr_n')};")
+        lines.append(
+            f"  wire {_join_decl_tokens(_format_decl_type(f'u{_memory_index_width(interface)}', {}, None), f'{base}_bus_word_addr_n')};"
+        )
         lines.append(f"  wire {base}_bus_hit_n;")
     if memory_interfaces:
         lines.append("")
@@ -362,7 +366,7 @@ def _emit_wishbone_slave_wrapper_body(
         window = next(window for window in protocol_plan.memory_windows if window.base == base)
         lines.append(
             f"  assign {base}_bus_hit_n = wb_adr_i >= {window.symbol} && "
-            f"wb_adr_i < ({window.symbol} + 32'h{window.span_bytes:08x});"
+            f"wb_adr_i < ({window.symbol} + {_format_hex32(window.span_bytes)});"
         )
         lines.append(f"  assign {base}_bus_word_addr_n = wb_adr_i[11:2];")
     if memory_interfaces:
@@ -386,7 +390,7 @@ def _emit_wishbone_slave_wrapper_body(
         lines.append(f"  assign core_{port.name}_n = {port.name}_q;")
     for interface in memory_interfaces:
         base = interface.base
-        lines.append(f"  assign core_{base}_rdata_n = {base}_mem_q[core_{base}_addr_n[9:0]];")
+        lines.append(f"  assign core_{base}_rdata_n = {base}_mem_q[{_memory_index_expr(f'core_{base}_addr_n', interface)}];")
     if scalar_inputs or memory_interfaces:
         lines.append("")
 
@@ -456,7 +460,7 @@ def _emit_wishbone_slave_wrapper_body(
             continue
         base = interface.base
         lines.append(f"      if (core_{base}_we_n) begin")
-        lines.append(f"        {base}_mem_q[core_{base}_addr_n[9:0]] <= core_{base}_wdata_n;")
+        lines.append(f"        {base}_mem_q[{_memory_index_expr(f'core_{base}_addr_n', interface)}] <= core_{base}_wdata_n;")
         lines.append("      end")
     lines.append("    end")
     lines.append("  end")
@@ -505,6 +509,24 @@ def _zero_expr_for_type(type_hint: str) -> str:
         return "1'b0"
     width = max(1, int(match.group(2)))
     return _format_literal(0, width, signed=False)
+
+
+def _memory_depth(interface) -> int:
+    depth = getattr(interface, "depth", None)
+    if isinstance(depth, int) and depth > 0:
+        return depth
+    return 1024
+
+
+def _memory_index_width(interface) -> int:
+    return max(1, ceil(log2(_memory_depth(interface))))
+
+
+def _memory_index_expr(signal: str, interface) -> str:
+    width = _memory_index_width(interface)
+    if width == 1:
+        return f"{signal}[0]"
+    return f"{signal}[{width - 1}:0]"
 
 
 def _sanitize_identifier(text: str) -> str:

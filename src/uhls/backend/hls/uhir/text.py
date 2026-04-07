@@ -36,6 +36,7 @@ from .model import (
 from .timing import TimingExpr, parse_timing_expr
 
 _IDENT_RE = r"[A-Za-z_][\w$]*"
+_RESOURCE_VALUE_RE = r"[A-Za-z_][\w$]*(?:<[^>\n]+>)?"
 _DESIGN_RE = re.compile(rf"^design\s+({_IDENT_RE})$")
 _STAGE_RE = re.compile(r"^stage\s+(seq|exg|alloc|sched|bind|fsm|uglir)$")
 _PORT_RE = re.compile(rf"^(input|output)\s+({_IDENT_RE})\s*:\s*(.+)$")
@@ -56,12 +57,12 @@ _LATENCY_RE = re.compile(r"^latency\s+(.+)$")
 _II_RE = re.compile(r"^ii\s+(.+)$")
 _VALUE_RE = re.compile(r"^value\s+(\S+)\s*->\s*(\S+)\s+(.+)$")
 _MUX_RE = re.compile(rf"^mux\s+({_IDENT_RE})\s*:\s*(.+)$")
-_FU_RE = re.compile(rf"^fu\s+({_IDENT_RE})\s*:\s*({_IDENT_RE})$")
+_FU_RE = re.compile(rf"^fu\s+({_IDENT_RE})\s*:\s*({_RESOURCE_VALUE_RE})$")
 _REG_RE = re.compile(rf"^reg\s+({_IDENT_RE})\s*:\s*([A-Za-z0-9_<>\[\]]+)$")
 _NET_RE = re.compile(rf"^net\s+({_IDENT_RE})\s*:\s*([A-Za-z0-9_<>\[\]]+)$")
-_INST_RE = re.compile(rf"^inst\s+({_IDENT_RE})\s*:\s*({_IDENT_RE})$")
+_INST_RE = re.compile(rf"^inst\s+({_IDENT_RE})\s*:\s*({_RESOURCE_VALUE_RE})$")
 _MUX_RESOURCE_RE = re.compile(rf"^mux\s+({_IDENT_RE})\s*:\s*([A-Za-z0-9_<>\[\]]+)$")
-_PORT_RESOURCE_RE = re.compile(rf"^port\s+({_IDENT_RE})\s*:\s*({_IDENT_RE})(?:\s+({_IDENT_RE}))?$")
+_PORT_RESOURCE_RE = re.compile(rf"^port\s+({_IDENT_RE})\s*:\s*({_RESOURCE_VALUE_RE})(?:\s+({_IDENT_RE}))?$")
 _ASSIGN_RE = re.compile(rf"^assign\s+({_IDENT_RE})\s*=\s*(.+)$")
 _ATTACH_RE = re.compile(rf"^({_IDENT_RE})\.({_IDENT_RE})\(([_A-Za-z][\w$]*)\)$")
 _UGLIR_MUX_START_RE = re.compile(rf"^mux\s+({_IDENT_RE})\s*:\s*(.+?)\s+sel=(\S+)\s*\{{$")

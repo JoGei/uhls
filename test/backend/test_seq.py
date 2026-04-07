@@ -219,6 +219,24 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         proc_branch = next(node for node in proc.nodes if node.opcode == "branch")
         self.assertNotIn("static_trip_count", proc_branch.attributes)
 
+    def test_lower_frontend_preserves_fixed_array_extent_in_seq_ports(self) -> None:
+        module = lower_source_to_uir(
+            """
+            int32_t dot4(int32_t A[4], int32_t B[4]) {
+                int32_t i;
+                int32_t sum = 0;
+                for (i = 0; i < 4; i = i + 1) {
+                    sum = sum + A[i] * B[i];
+                }
+                return sum;
+            }
+            """
+        )
+
+        design = lower_module_to_seq(module, top="dot4")
+
+        self.assertEqual([(port.name, port.type) for port in design.inputs[:2]], [("A", "memref<i32, 4>"), ("B", "memref<i32, 4>")])
+
     def test_lower_parsed_uir_loop_has_no_static_trip_count(self) -> None:
         module = parse_module(
             """

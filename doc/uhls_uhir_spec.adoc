@@ -152,8 +152,19 @@ Memory-like examples:
 [source,text]
 ----
 memref<i32>
+memref<i32, 4>
 memref<u32>
 ----
+
+When the original µIR memory object has one statically known extent, µHIR should
+preserve that shape as `memref<T, N>`.
+This shape information is intended to survive through later HLS stages so wrapper
+generation and later memory-oriented transforms can distinguish problem-sized
+memories from unbounded external interfaces.
+
+Future µHIR memory partition passes are expected to refine one logical
+`memref<T, N>` into partitioned/banked memory resources and regions while
+preserving the original logical memory identity.
 
 === Attribute syntax
 
@@ -1071,10 +1082,21 @@ Supported declarations:
 
 [source,text]
 ----
-fu   <id> : <class>
+fu   <id> : <class-or-component-spec>
 reg  <id> : <type>
-port <id> : <class> [<memory-name>]
+port <id> : <class-or-component-spec> [<memory-name>]
 ----
+
+For memory-facing resources, the resource class may carry structural metadata via
+one lightweight parameterization form:
+
+[source,text]
+----
+MEM<word_t=i32,word_len=4>
+----
+
+This lets later stages preserve memory shape and word type directly on the
+bound resource instead of reconstructing them from separate side metadata.
 
 Examples:
 
@@ -1085,8 +1107,8 @@ resources {
   fu   add0  : add
   reg  r_acc : i32
   reg  r_tmp : i32
-  port mr0   : memrd A
-  port mw0   : memwr C
+  port mr0   : MEM<word_t=i32,word_len=4> A
+  port mw0   : MEM<word_t=i32,word_len=4> C
 }
 ----
 

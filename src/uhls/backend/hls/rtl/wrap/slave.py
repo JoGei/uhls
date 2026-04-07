@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from uhls.backend.hls.component_library import parse_component_spec as _shared_parse_component_spec
 from uhls.backend.hls.uhir.model import UHIRDesign, UHIRPort
 
 
@@ -16,6 +17,7 @@ class WrapperMemoryInterface:
     addr_type: str | None
     write_type: str | None
     has_write: bool
+    depth: int | None
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,20 @@ def classify_core_ports(
     design: UHIRDesign,
 ) -> tuple[list[UHIRPort], list[UHIRPort], list[WrapperMemoryInterface]]:
     """Split raw core ports into scalar and memory-facing groups."""
+    memory_resource_params = {
+        (resource.target if resource.target is not None else resource.id): _parse_component_spec(resource.value)[1]
+        for resource in design.resources
+        if resource.kind == "port"
+    }
+    memory_depths = {
+        const.name[:-6]: int(const.value)
+        for const in design.constants
+        if const.name.endswith("_depth") and isinstance(const.value, int)
+    }
+    for base, params in memory_resource_params.items():
+        word_len = params.get("word_len")
+        if word_len is not None and word_len.isdigit():
+            memory_depths[base] = int(word_len)
     memory_by_base: dict[str, dict[str, object]] = {}
     for port in design.inputs:
         if port.name.endswith("_rdata"):
@@ -58,6 +74,7 @@ def classify_core_ports(
                     "addr_type": None,
                     "write_type": None,
                     "has_write": False,
+                    "depth": memory_depths.get(base),
                 },
             )["data_type"] = port.type
     for port in design.outputs:
@@ -71,6 +88,7 @@ def classify_core_ports(
                     "addr_type": None,
                     "write_type": None,
                     "has_write": False,
+                    "depth": memory_depths.get(base),
                 },
             )["addr_type"] = port.type
         elif port.name.endswith("_wdata"):
@@ -83,6 +101,7 @@ def classify_core_ports(
                     "addr_type": None,
                     "write_type": None,
                     "has_write": False,
+                    "depth": memory_depths.get(base),
                 },
             )
             info["write_type"] = port.type
@@ -98,6 +117,7 @@ def classify_core_ports(
                     "addr_type": None,
                     "write_type": None,
                     "has_write": True,
+                    "depth": memory_depths.get(base),
                 },
             )
             info["has_write"] = True
@@ -122,10 +142,44 @@ def classify_core_ports(
             addr_type=None if memory_by_base[key]["addr_type"] is None else str(memory_by_base[key]["addr_type"]),
             write_type=None if memory_by_base[key]["write_type"] is None else str(memory_by_base[key]["write_type"]),
             has_write=bool(memory_by_base[key]["has_write"]),
+            depth=None if memory_by_base[key]["depth"] is None else int(memory_by_base[key]["depth"]),
         )
         for key in sorted(memory_by_base)
     ]
+    for interface in memory_interfaces:
+        params = memory_resource_params.get(interface.base, {})
+        word_t = params.get("word_t")
+        if word_t is not None and word_t != interface.data_type:
+            raise ValueError(
+                f"memory interface '{interface.base}' declares word_t={word_t} but core bundle uses {interface.data_type}"
+            )
     return scalar_inputs, scalar_outputs, memory_interfaces
+
+
+def _parse_component_spec(component_name: str) -> tuple[str, dict[str, str]]:
+    return _shared_parse_component_spec(component_name)
+
+
+def _split_component_params(params_text: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in params_text:
+        if char == "," and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        if char == "<":
+            depth += 1
+        elif char == ">" and depth > 0:
+            depth -= 1
+        current.append(char)
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
 
 
 def wrapper_core_signal(port_name: str, plan: SlaveWrapperPlan) -> str:

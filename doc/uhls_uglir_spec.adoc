@@ -92,12 +92,45 @@ For the first µglIR version, each top-level addressed memory object is lowered
 as one visible memory-interface bundle, not as storage instantiated inside the
 bare core.
 
-So a top-level `memref<T>` such as `A` may expand into glue-level ports like:
+So a top-level `memref<T>` or `memref<T, N>` such as `A` may expand into
+glue-level ports like:
 
 * `A_addr`
 * `A_wdata`
 * `A_we`
 * `A_rdata`
+
+If the original top-level memory had one known extent `N`, µglIR should keep the
+raw bundle shape above but preserve the depth as explicit metadata, for example
+via parameterized memory-interface resources such as:
+
+[source,text]
+----
+port A : MEM<word_t=i32,word_len=4> A
+----
+
+Generated constants such as `A_depth` may still exist as convenient lowering
+artifacts, but the structured memory metadata should survive primarily on the
+resource itself.
+That metadata can then be consumed by RTL wrapper generation to size wrapper-local
+memories and address windows without changing the bare core interface shape.
+
+The shared component library may declare such parameters explicitly, for example:
+
+[source,json]
+----
+"MEM": {
+  "kind": "memory",
+  "parameters": {
+    "word_t": { "kind": "type" },
+    "word_len": { "kind": "int" }
+  }
+}
+----
+
+Lowering should validate concrete resource specs such as
+`MEM<word_t=i32,word_len=4>` against that declaration instead of treating the
+parameter list as an opaque string.
 
 Current assumption:
 
@@ -379,7 +412,8 @@ Syntax:
 resources {
   reg  <name> : <type> [reset=<literal>]
   net  <name> : <type>
-  inst <name> : <component-kind>
+  inst <name> : <component-kind-or-spec>
+  port <name> : <component-kind-or-spec> [<external-name>]
   mux  <name> : <type>
 }
 ----
@@ -394,6 +428,7 @@ resources {
   net  next_state : u3
   net  req_fire : i1
   inst ewms0 : EWMS
+  port A : MEM<word_t=i32,word_len=4> A
   mux  mx_r_i32_0 : i32
 }
 ----
@@ -406,6 +441,9 @@ Semantics:
   * combinational signal
 * `inst`
   * external datapath or controller component instance
+* `port`
+  * external protocol or memory-facing interface resource
+  * may carry structural parameters such as `word_t` and `word_len`
 * `mux`
   * explicit multiplexer object, later lowered to combinational selection logic
 

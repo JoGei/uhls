@@ -186,7 +186,7 @@ class RTLLoweringTests(unittest.TestCase):
             design read1
             stage fsm
             schedule kind=control_steps
-            input  A : memref<i32>
+            input  A : memref<i32, 4>
             input  i : i32
             output result : i32
             resources {
@@ -265,6 +265,90 @@ class RTLLoweringTests(unittest.TestCase):
         self.assertIn("assign mr0_rdata_n = A_rdata;", verilog)
         self.assertNotIn("MEM mr0 (", verilog)
 
+    def test_lower_uglir_to_verilog_sizes_wishbone_wrapper_memory_from_memref_extent(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design read1
+            stage fsm
+            schedule kind=control_steps
+            input  A : memref<i32, 4>
+            input  i : i32
+            output result : i32
+            resources {
+              fu mr0 : MEM
+              reg r_i32_0 : i32
+            }
+            controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_read1 {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=1
+              state T0 code=2
+              state T1 code=4
+              state T2 code=8
+              state DONE code=16
+              transition IDLE -> T0 when=req_valid && req_ready
+              transition T0 -> T1
+              transition T1 -> T2
+              transition T2 -> DONE
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[mr0<-v1]
+              emit T1 latch=[r_i32_0]
+              emit DONE resp_valid=true
+            }
+
+            region proc_read1 kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = load A, i : i32 class=MEM ii=1 delay=1 start=0 end=0 bind=mr0
+              node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              steps [0:1]
+              latency 2
+              value v1 -> r_i32_0 live=[1:1]
+            }
+            """
+        )
+        component_library = json.loads(
+            """
+            {
+              "components": {
+                "MEM": {
+                  "kind": "memory",
+                  "ports": {
+                    "addr": { "dir": "input", "type": "i32" },
+                    "wdata": { "dir": "input", "type": "i32" },
+                    "we": { "dir": "input", "type": "i1" },
+                    "rdata": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "load": {
+                      "ii": 1,
+                      "d": 1,
+                      "bind": {
+                        "addr": "operand1",
+                        "rdata": "result"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+        )["components"]
+
+        uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
+        verilog = lower_uglir_to_rtl(uglir_design, hdl="verilog", wrap="slave", protocol="wishbone")
+
+        self.assertIn(("A_depth", 4, "u32"), [(const.name, const.value, const.type) for const in uglir_design.constants])
+        self.assertIn("localparam [31:0] WB_MEM_A_BASE = WB_BASE_ADDR + 32'h0000_1000;", verilog)
+        self.assertIn("assign A_bus_hit_n = wb_adr_i >= WB_MEM_A_BASE && wb_adr_i < (WB_MEM_A_BASE + 32'h0000_0010);", verilog)
+        self.assertIn("reg signed [31:0] A_mem_q [0:3];", verilog)
+
     def test_lower_uglir_to_verilog_rejects_missing_output_driver(self) -> None:
         uglir_design = parse_uhir(
             """
@@ -328,3 +412,36 @@ class RTLLoweringTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "mux 'mx' case 'ZERO' source 'bad_sel' has type 'ctrl', expected 'i32'"):
             lower_uglir_to_rtl(uglir_design, hdl="verilog")
+
+    def test_lower_uglir_to_verilog_rejects_memory_word_type_mismatch(self) -> None:
+        uglir_design = parse_uhir(
+            """
+            design bad_mem
+            stage uglir
+            input  clk : clock
+            input  rst : i1
+            input  req_valid : i1
+            input  resp_ready : i1
+            input  A_rdata : i32
+            output req_ready : i1
+            output resp_valid : i1
+            output A_addr : i32
+            resources {
+              port A : MEM<word_t=i16,word_len=4> A
+              reg state_q : u1
+              net next_state_n : u1
+            }
+            assign req_ready = true
+            assign resp_valid = false
+            assign A_addr = 0:i32
+            seq clk {
+              state_q <= next_state_n
+            }
+            """
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "memory interface 'A' declares word_t=i16 but core bundle uses i32",
+        ):
+            lower_uglir_to_rtl(uglir_design, hdl="verilog", wrap="slave", protocol="wishbone")

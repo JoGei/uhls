@@ -122,7 +122,7 @@ def verify_function(
             raise IRVerificationError(
                 f"function '{function.name}' local array '{local_name}' must use a scalar element type"
             )
-        symbol_types[local_name] = ArrayType(element_type)
+        symbol_types[local_name] = ArrayType(element_type, size)
 
     has_phi = any(
         getattr(instruction, "opcode", None) == "phi"

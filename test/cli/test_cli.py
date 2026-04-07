@@ -607,6 +607,52 @@ region proc_add1 kind=procedure {
             self.assertIn("node v1 = add x, 1 : i32 class=ALU ii=1 delay=1", alloc_text)
             self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0", alloc_text)
 
+    def test_alloc_command_rejects_invalid_component_parameter_schema(self) -> None:
+        seq = """design add1
+stage seq
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        library = """
+{
+  "components": {
+    "MEM": {
+      "kind": "memory",
+      "parameters": {
+        "word_len": { "kind": "integer" }
+      },
+      "ports": {
+        "addr": { "dir": "input", "type": "i32" },
+        "rdata": { "dir": "output", "type": "i32" }
+      },
+      "supports": {
+        "load": { "ii": 1, "d": 1 }
+      }
+    }
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seq_path = root / "add1.seq.uhir"
+            library_path = root / "ressources.json"
+            seq_path.write_text(seq, encoding="utf-8")
+            library_path.write_text(library, encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["alloc", str(seq_path), "-exg", str(library_path)]), 1)
+            self.assertIn("parameter 'word_len' must use kind=type|int|bool|string", stderr.getvalue())
+
     def test_sched_command_lowers_alloc_to_sched_with_builtin_asap(self) -> None:
         alloc = """design add1
 stage alloc

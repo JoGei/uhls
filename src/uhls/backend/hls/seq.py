@@ -151,6 +151,12 @@ def _looks_like_region_ref(name: str) -> bool:
     return name.startswith(("proc_", "bb_", "loop_"))
 
 
+def _memref_type_name(array_type: ArrayType) -> str:
+    if array_type.extent is None:
+        return f"memref<{array_type.element_type}>"
+    return f"memref<{array_type.element_type}, {array_type.extent}>"
+
+
 def _node_id_by_role(unit: SGUnit, role: str) -> str | None:
     for node in unit.nodes:
         if node.opcode == "nop" and node.attributes.get("role") == role:
@@ -245,7 +251,7 @@ class _SeqLowerer:
         for parameter in self.top.params:
             parameter_type = parameter.type
             if isinstance(parameter_type, ArrayType):
-                ports.append(UHIRPort("input", parameter.name, f"memref<{parameter_type.element_type}>"))
+                ports.append(UHIRPort("input", parameter.name, _memref_type_name(parameter_type)))
             else:
                 ports.append(UHIRPort("input", parameter.name, type_name(parameter_type) or "i32"))
         return ports

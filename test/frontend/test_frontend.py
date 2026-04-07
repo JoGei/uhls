@@ -35,7 +35,7 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(program.functions[0].name, "dot4")
         self.assertIn("dot4", info.functions)
         verify_module(module)
-        self.assertIn("func dot4(A:i32[], B:i32[]) -> i32", pretty(module))
+        self.assertIn("func dot4(A:i32[4], B:i32[4]) -> i32", pretty(module))
 
     def test_frontend_lowered_dot4_runs_in_interpreter(self) -> None:
         module = lower_source_to_uir(DOT4_SOURCE)

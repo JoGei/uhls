@@ -35,6 +35,7 @@ class WishboneMemoryWindow:
     addr_type: str | None
     write_type: str | None
     has_write: bool
+    depth: int | None
     base_address: int
     span_bytes: int
     symbol: str
@@ -78,8 +79,9 @@ def plan_wishbone_slave_protocol(wrapper: SlaveWrapperPlan) -> WishboneSlaveProt
             addr_type=interface.addr_type,
             write_type=interface.write_type,
             has_write=interface.has_write,
+            depth=interface.depth,
             base_address=0x1000 + 0x1000 * index,
-            span_bytes=0x1000,
+            span_bytes=_memory_window_span_bytes(interface.data_type, interface.depth),
             symbol=f"WB_MEM_{_sanitize_symbol(interface.base)}_BASE",
         )
         for index, interface in enumerate(wrapper.memory_interfaces)
@@ -111,3 +113,16 @@ def _sanitize_symbol(text: str) -> str:
     if sanitized[0].isdigit():
         sanitized = f"V_{sanitized}"
     return sanitized.upper()
+
+
+def _memory_window_span_bytes(type_name: str, depth: int | None) -> int:
+    if depth is None:
+        return 0x1000
+    return max(_type_size_bytes(type_name) * depth, _type_size_bytes(type_name))
+
+
+def _type_size_bytes(type_name: str) -> int:
+    if len(type_name) >= 2 and type_name[0] in {"i", "u"} and type_name[1:].isdigit():
+        width = int(type_name[1:])
+        return max((width + 7) // 8, 1)
+    return 4

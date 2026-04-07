@@ -72,7 +72,8 @@ Supported scalar types:
 
 Supported memory object type:
 
-* `T[]` for arrays of scalar element type `T`
+* `T[]` for unsized array parameters of scalar element type `T`
+* `T[N]` for fixed-size arrays of scalar element type `T` and positive extent `N`
 
 Optional later extension:
 
@@ -111,7 +112,7 @@ Function parameters are SSA definitions.
 
 NOTE: The non-SSA memory relaxation is a strong simplification for ease-of-understanding.
 
-NOTE: At present, µIR only models addressed memory objects (`T[]`) as first-class memory.
+NOTE: At present, µIR only models addressed memory objects (`T[]` / `T[N]`) as first-class memory.
 FIFO and STREAM style channels are intentionally not yet part of the canonical IR.
 If they are added later, they are expected to become full-stack concepts across frontend, µIR, µHIR, scheduling, binding, FSMD, and uglIR, rather than being introduced only as a backend-specific lowering detail.
 
@@ -146,7 +147,7 @@ If they are added later, they are expected to become full-stack concepts across 
 
 where:
 
-* `A` is an array object of type `T[]`
+* `A` is an array object of type `T[]` or `T[N]`
 * `idx` is an integer scalar
 * `v` has type `T`
 

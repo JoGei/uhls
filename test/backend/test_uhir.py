@@ -532,8 +532,8 @@ class UHIRParserTests(unittest.TestCase):
               fu add0 : add
               reg r_acc : i32
               reg r_p : i32
-              port mr0 : memrd A
-              port mw0 : memwr C
+              port mr0 : memrd<word_t=i32,word_len=32> A
+              port mw0 : memwr<word_t=i32,word_len=32> C
             }
 
             region R0 kind=procedure {
@@ -558,6 +558,13 @@ class UHIRParserTests(unittest.TestCase):
         )
 
         self.assertEqual(design.stage, "bind")
+        self.assertEqual(
+            [(resource.kind, resource.id, resource.value, resource.target) for resource in design.resources if resource.kind == "port"],
+            [
+                ("port", "mr0", "memrd<word_t=i32,word_len=32>", "A"),
+                ("port", "mw0", "memwr<word_t=i32,word_len=32>", "C"),
+            ],
+        )
         self.assertEqual([resource.id for resource in design.resources], ["mul0", "add0", "r_acc", "r_p", "mr0", "mw0"])
         region = design.regions[0]
         self.assertEqual(region.nodes[1].attributes["bind"], "mul0")

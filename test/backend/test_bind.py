@@ -240,7 +240,7 @@ class BindingLoweringTests(unittest.TestCase):
             design mem_bind
             stage sched
             schedule kind=control_steps
-            input  A : memref<i32>
+            input  A : memref<i32, 4>
             input  i : i32
             output result : i32
 
@@ -262,7 +262,10 @@ class BindingLoweringTests(unittest.TestCase):
 
         bind_design = lower_sched_to_bind(sched_design)
 
-        self.assertIn(("port", "A", "MEM", "A"), [(resource.kind, resource.id, resource.value, resource.target) for resource in bind_design.resources])
+        self.assertIn(
+            ("port", "A", "MEM<word_t=i32,word_len=4>", "A"),
+            [(resource.kind, resource.id, resource.value, resource.target) for resource in bind_design.resources],
+        )
 
     def test_compat_binder_infers_memory_port_resource(self) -> None:
         sched_design = parse_uhir(
@@ -289,7 +292,10 @@ class BindingLoweringTests(unittest.TestCase):
 
         bind_design = lower_sched_to_bind(sched_design, binder=CompatibilityBinder())
 
-        self.assertIn(("port", "A", "MEM", "A"), [(resource.kind, resource.id, resource.value, resource.target) for resource in bind_design.resources])
+        self.assertIn(
+            ("port", "A", "MEM<word_t=i32>", "A"),
+            [(resource.kind, resource.id, resource.value, resource.target) for resource in bind_design.resources],
+        )
 
     def test_lower_sched_to_bind_rejects_symbolic_sched_timing(self) -> None:
         sched_design = parse_uhir(

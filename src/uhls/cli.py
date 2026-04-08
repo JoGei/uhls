@@ -22,6 +22,7 @@ from uhls.backend.hls import (
     GLUE_PROTOCOLS,
     GLUE_WRAPS,
     RTL_HDLS,
+    VerilatorWrappedRunner,
     bind_dump_to_dot,
     binding_to_dot,
     builtin_binder_names,
@@ -694,7 +695,7 @@ def gopt_cmd(
 @cli.command(
     "run",
     help=(
-        "Execute IR with the interpreter.\n"
+        "Execute IR with one selected execution backend.\n"
         "\n"
         "Examples:\n"
         "\n"
@@ -703,10 +704,34 @@ def gopt_cmd(
         "\n"
         "\b\n"
         "  uhls run input.uir --function dot4 --arg A=[1,2,3,4] --arg B=[4,3,2,1]\n"
+        "\n"
+        "\b\n"
+        "  uhls run input.uir --backend=verilator --uglir wrapped.uglir --resources resources.json\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--function", "function_name")
+@click.option(
+    "--backend",
+    "backend_name",
+    type=click.Choice(["interp", "verilator"], case_sensitive=False),
+    default="interp",
+    show_default=True,
+    help="Execution backend.",
+)
+@click.option(
+    "--uglir",
+    "uglir_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Wrapped µglIR artifact used by hardware-backed execution backends.",
+)
+@click.option(
+    "--resources",
+    "-res",
+    "resources_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Optional component-library JSON used to resolve foreign Verilog modules for hardware-backed execution.",
+)
 @click.option(
     "--arg",
     "arguments",
@@ -718,18 +743,39 @@ def gopt_cmd(
 def run_cmd(
     input_path: Path,
     function_name: str | None,
+    backend_name: str,
+    uglir_path: Path | None,
+    resources_path: Path | None,
     arguments: tuple[str, ...],
     legacy_arrays: tuple[str, ...],
     trace: bool,
 ) -> None:
-    """Execute canonical µIR with the interpreter."""
+    """Execute canonical µIR with the selected backend."""
     module = _load_ir_file(input_path)
     function = _select_function_for_run(module, function_name)
     raw_arguments = _parse_run_argument_items(list(legacy_arrays))
     raw_arguments.update(_parse_run_argument_items(list(arguments)))
     scalar_arguments, array_arguments = _parse_run_arguments(function, raw_arguments)
     _validate_run_invocation(function, scalar_arguments, array_arguments)
-    result = run_uir(function, arguments=scalar_arguments, arrays=array_arguments, module=module, trace=trace)
+    call_hook = None
+    if backend_name == "verilator":
+        if uglir_path is None:
+            raise CLIError("'run --backend=verilator' requires --uglir <wrapped.uglir>")
+        uglir_design = parse_uglir_file(uglir_path)
+        if uglir_design.stage != "uglir":
+            raise CLIError(f"'run --backend=verilator' expects µglIR input, got stage '{uglir_design.stage}'")
+        if not uglir_design.address_maps:
+            raise CLIError("'run --backend=verilator' currently requires wrapped µglIR with one address_map")
+        _validate_verilog_run_target(module, uglir_design.name)
+        component_library = _load_component_library(resources_path) if resources_path is not None else None
+        library_root = Path.cwd() if resources_path is None else resources_path.parent.resolve()
+        call_hook = _make_verilog_run_call_hook(uglir_design, component_library=component_library, library_root=library_root)
+    cleanup = getattr(call_hook, "_uhls_cleanup", None) if call_hook is not None else None
+    try:
+        result = run_uir(function, arguments=scalar_arguments, arrays=array_arguments, module=module, trace=trace, call_hook=call_hook)
+    finally:
+        if callable(cleanup):
+            cleanup()
 
     if trace:
         for event in result.state.trace:
@@ -1689,6 +1735,55 @@ def _validate_run_invocation(
             f"missing array arguments for function '{function_name}': "
             f"{', '.join(missing_arrays)}; pass --arg name=[v1,v2,...][:type]"
         )
+
+
+def _validate_verilog_run_target(module: object, design_name: str) -> None:
+    getter = getattr(module, "get_function", None)
+    if callable(getter):
+        if getter(design_name) is not None:
+            return
+    functions = getattr(module, "functions", None)
+    if functions is not None:
+        if any(getattr(function, "name", None) == design_name for function in functions):
+            return
+    raise CLIError(
+        f"'run --backend=verilog' requires wrapped µglIR design '{design_name}' to match one callable µIR function"
+    )
+
+
+def _make_verilog_run_call_hook(uglir_design, *, component_library=None, library_root: Path | None = None):
+    runner = VerilatorWrappedRunner(uglir_design, component_library=component_library, library_root=library_root)
+    target_name = uglir_design.name
+
+    def _hook(callee_name: str, callee: object, scalar_arguments: dict[str, int], array_arguments: dict[str, dict[str, object]], state) -> object | None:
+        del callee
+        if callee_name != target_name:
+            return None
+        arrays_by_alias: dict[str, list[int]] = {}
+        for parameter_name, spec in array_arguments.items():
+            alias = str(spec["alias"])
+            snapshot = state.memory.snapshot()
+            if alias not in snapshot:
+                raise CLIError(f"call argument '{alias}' for hardware-backed function '{callee_name}' is not bound in memory")
+            arrays_by_alias[parameter_name] = snapshot[alias]
+        hook_result = runner.invoke(scalar_arguments, arrays_by_alias)
+        if hook_result.updated_arrays:
+            alias_updates: dict[str, list[int]] = {}
+            for parameter_name, values in hook_result.updated_arrays.items():
+                spec = array_arguments.get(parameter_name)
+                if spec is None:
+                    continue
+                alias_updates[str(spec["alias"])] = list(values)
+            return type(hook_result)(
+                return_value=hook_result.return_value,
+                updated_arrays=alias_updates,
+                stdout=hook_result.stdout,
+                metadata=hook_result.metadata,
+            )
+        return hook_result
+
+    setattr(_hook, "_uhls_cleanup", runner.close)
+    return _hook
 
 
 def _lookup_flat_sgu_scheduler(name: str | None, scheduler_kwargs: dict[str, object] | None = None) -> object:

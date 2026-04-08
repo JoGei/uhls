@@ -134,6 +134,11 @@ class ArrayMemory:
         slot = self._slot(name)
         slot.data[self._checked_index(name, index, len(slot.data))] = int(value)
 
+    def overwrite(self, name: str, values: Sequence[int]) -> None:
+        """Replace one existing array object's contents in place."""
+        slot = self._slot(name)
+        slot.data[:] = [int(value) for value in values]
+
     def snapshot(self) -> dict[str, list[int]]:
         """Return a deep-enough copy of the current array contents."""
         return {name: slot.data[:] for name, slot in self.arrays.items()}

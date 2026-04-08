@@ -228,7 +228,12 @@ def build_obi_slave_wrapper_uglir(
                 f"obi_addr_i >= {window.symbol} && obi_addr_i < ({window.symbol} + {_u32(window.span_bytes)})",
             )
         )
-        design.assigns.append(UGLIRAssign(f"{interface.base}_bus_word_addr_n", "obi_addr_i[11:2]"))
+        design.assigns.append(
+            UGLIRAssign(
+                f"{interface.base}_bus_word_addr_n",
+                f"((obi_addr_i - {window.symbol}) >> 2)",
+            )
+        )
         design.assigns.append(
             UGLIRAssign(
                 f"{interface.base}_rdata",

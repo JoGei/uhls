@@ -119,6 +119,23 @@ requirement:
 If a foreign HDL FU uses *registered outputs*, that extra output cycle must
 already be accounted for in the declared `d`.
 
+When µhLS inserts one register between two FUs, it should distinguish:
+
+* `capture_cycle`
+  * the cycle whose end latches the producer result into the register
+* `live_start`
+  * the first cycle in which downstream logic is allowed to consume that
+    register value
+
+So one pipelined result may be:
+
+* captured at the end of one cycle
+* then first consumed from the bound register in the following cycle
+
+This is why first-consumer logic must not automatically bypass the inserted
+register back to the producer output for every value. That same-cycle bypass is
+only valid when the value is actually capturable in that same cycle.
+
 Example:
 
 * one FU with `d=2`
@@ -128,6 +145,8 @@ Example:
     * final internal step completes
     * result becomes visible at the output port
     * a consumer register may latch it at the end of `ccx+1`
+  * `ccx+2`
+    * downstream logic may consume the bound register value
 
 This is why µhLS currently treats clocked pipelined/sequential FUs differently
 from plain combinational ones during glue lowering:

@@ -179,9 +179,9 @@ class UGLIRLoweringTests(unittest.TestCase):
         uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
 
         resource_ids = [resource.id for resource in uglir_design.resources]
-        self.assertIn("ewms0_a_n", resource_ids)
-        self.assertIn("ewms0_b_n", resource_ids)
-        self.assertIn("ewms0_op_n", resource_ids)
+        self.assertIn("ewms0_a_q", resource_ids)
+        self.assertIn("ewms0_b_q", resource_ids)
+        self.assertIn("ewms0_op_q", resource_ids)
         self.assertIn("ewms0_y_n", resource_ids)
         self.assertIn("sel_ewms0_a_n", resource_ids)
         self.assertIn("sel_ewms0_b_n", resource_ids)
@@ -189,23 +189,23 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertIn("mx_ewms0_b_n", resource_ids)
         self.assertNotIn("ewms0_go_n", resource_ids)
         attachments = {(attachment.instance, attachment.port, attachment.signal) for attachment in uglir_design.attachments}
-        self.assertIn(("ewms0", "a", "ewms0_a_n"), attachments)
-        self.assertIn(("ewms0", "b", "ewms0_b_n"), attachments)
-        self.assertIn(("ewms0", "op", "ewms0_op_n"), attachments)
+        self.assertIn(("ewms0", "a", "ewms0_a_q"), attachments)
+        self.assertIn(("ewms0", "b", "ewms0_b_q"), attachments)
+        self.assertIn(("ewms0", "op", "ewms0_op_q"), attachments)
         self.assertIn(("ewms0", "y", "ewms0_y_n"), attachments)
         assign_pairs = {(assign.target, assign.expr) for assign in uglir_design.assigns}
-        self.assertIn(("ewms0_a_n", "mx_ewms0_a_n"), assign_pairs)
-        self.assertIn(("ewms0_b_n", "mx_ewms0_b_n"), assign_pairs)
-        self.assertIn(("ewms0_op_n", "0"), {(assign.target, assign.expr) for assign in uglir_design.assigns})
+        self.assertIn(("sel_ewms0_a_n", "state_q == 2 ? SRC_X : ZERO"), assign_pairs)
+        self.assertIn(("sel_ewms0_b_n", "state_q == 2 ? CONST_1_I32 : ZERO"), assign_pairs)
+        self.assertIn(("sel_ewms0_op_n", "state_q == 2 ? SRC_0 : ZERO"), assign_pairs)
         mux_a = next(mux for mux in uglir_design.muxes if mux.name == "mx_ewms0_a_n")
         mux_b = next(mux for mux in uglir_design.muxes if mux.name == "mx_ewms0_b_n")
         self.assertEqual([(case.key, case.source) for case in mux_a.cases], [("ZERO", "const_i32_0_n"), ("SRC_X", "x")])
         self.assertEqual([(case.key, case.source) for case in mux_b.cases], [("ZERO", "const_i32_0_n"), ("CONST_1_I32", "const_i32_1_n")])
         rendered = format_uglir(uglir_design)
-        self.assertIn("assign ewms0_a_n = mx_ewms0_a_n", rendered)
-        self.assertIn("assign ewms0_b_n = mx_ewms0_b_n", rendered)
+        self.assertIn("ewms0.a(ewms0_a_q)", rendered)
+        self.assertIn("ewms0.b(ewms0_b_q)", rendered)
         self.assertIn("mux mx_ewms0_a_n : i32 sel=sel_ewms0_a_n {", rendered)
-        self.assertIn("ewms0.op(ewms0_op_n)", rendered)
+        self.assertIn("ewms0.op(ewms0_op_q)", rendered)
         self.assertNotIn("ewms0.go(", rendered)
 
     def test_lower_fsm_to_uglir_uses_component_issue_and_result_bindings(self) -> None:
@@ -300,8 +300,8 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertIn(("seq0", "out", "seq0_out_n"), attachments)
         assigns = {(assign.target, assign.expr) for assign in uglir_design.assigns}
         self.assertIn(("seq0_start_n", "state_q == 2"), assigns)
-        self.assertIn(("seq0_a_n", "mx_seq0_a_n"), assigns)
-        self.assertIn(("seq0_b_n", "mx_seq0_b_n"), assigns)
+        self.assertIn(("sel_seq0_a_n", "state_q == 2 ? SRC_X : ZERO"), assigns)
+        self.assertIn(("sel_seq0_b_n", "state_q == 2 ? CONST_1_I32 : ZERO"), assigns)
         mux_a = next(mux for mux in uglir_design.muxes if mux.name == "mx_seq0_a_n")
         mux_b = next(mux for mux in uglir_design.muxes if mux.name == "mx_seq0_b_n")
         self.assertEqual([(case.key, case.source) for case in mux_a.cases], [("ZERO", "const_i32_0_n"), ("SRC_X", "x")])
@@ -312,9 +312,137 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertIn("assign seq0_start_n = state_q == 2", rendered)
         self.assertIn("assign seq0_a_n = mx_seq0_a_n", rendered)
         self.assertIn("assign seq0_b_n = mx_seq0_b_n", rendered)
+        self.assertIn("seq0.a(seq0_a_n)", rendered)
+        self.assertIn("seq0.b(seq0_b_n)", rendered)
         self.assertIn("seq0.start(seq0_start_n)", rendered)
         self.assertIn("seq0.out(seq0_out_n)", rendered)
         self.assertNotIn("seq0.go(", rendered)
+
+    def test_lower_fsm_to_uglir_captures_pipelined_result_before_first_consumer_cycle(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design pipe_use
+            stage fsm
+            schedule kind=control_steps
+            input  x : i32
+            input  y : i32
+            output result : i32
+            resources {
+              fu mul0 : PMUL
+              fu alu0 : ALU
+              reg r_i32_0 : i32
+              reg r_i32_1 : i32
+            }
+            controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_pipe_use {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=1
+              state T0 code=2
+              state T1 code=4
+              state T2 code=8
+              state T3 code=16
+              state DONE code=32
+              transition IDLE -> T0 when=req_valid && req_ready
+              transition T0 -> T1
+              transition T1 -> T2
+              transition T2 -> T3
+              transition T3 -> DONE
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[mul0<-v1]
+              emit T1 latch=[r_i32_0]
+              emit T2 issue=[alu0<-v2]
+              emit T3 latch=[r_i32_1]
+              emit DONE resp_valid=true
+            }
+
+            region proc_pipe_use kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = mul x, y : i32 class=PMUL ii=1 delay=2 start=0 end=1 bind=mul0
+              node v2 = add v1, 1:i32 : i32 class=ALU ii=1 delay=1 start=2 end=2 bind=alu0
+              node v3 = ret v2 class=CTRL ii=0 delay=0 start=3 end=3
+              node v4 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+              steps [0:3]
+              latency 4
+              value v1 -> r_i32_0 live=[2:2]
+              value v2 -> r_i32_1 live=[3:3]
+            }
+            """
+        )
+        component_library = json.loads(
+            """
+            {
+              "components": {
+                "PMUL": {
+                  "kind": "pipelined",
+                  "ports": {
+                    "clk": { "dir": "input", "type": "clock" },
+                    "rst": { "dir": "input", "type": "reset", "kind": "sync", "active": "hi" },
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "y": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "mul": {
+                      "ii": 1,
+                      "d": 2,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "y": "result"
+                      }
+                    }
+                  }
+                },
+                "ALU": {
+                  "kind": "combinational",
+                  "ports": {
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "op": { "dir": "input", "type": "u5" },
+                    "y": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "add": {
+                      "ii": 1,
+                      "d": 1,
+                      "opcode": 0,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "y": "result"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+        )["components"]
+
+        uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
+
+        assign_pairs = {(assign.target, assign.expr) for assign in uglir_design.assigns}
+        self.assertIn(("latch_r_i32_0_n", "state_q == 4"), assign_pairs)
+        self.assertIn(("sel_r_i32_0_n", "state_q == 4 ? SRC_MUL0_Y : HOLD"), assign_pairs)
+        self.assertIn(("sel_alu0_a_n", "state_q == 8 ? SRC_R_I32_0 : ZERO"), assign_pairs)
+
+        mux = next(mux for mux in uglir_design.muxes if mux.name == "mx_alu0_a_n")
+        self.assertEqual(
+            [(case.key, case.source) for case in mux.cases],
+            [("ZERO", "const_i32_0_n"), ("SRC_R_I32_0", "r_i32_0_q")],
+        )
+
+        rendered = format_uglir(uglir_design)
+        self.assertIn("assign latch_r_i32_0_n = state_q == 4", rendered)
+        self.assertIn("assign sel_r_i32_0_n = state_q == 4 ? SRC_MUL0_Y : HOLD", rendered)
+        self.assertIn("assign sel_alu0_a_n = state_q == 8 ? SRC_R_I32_0 : ZERO", rendered)
 
     def test_lower_fsm_to_uglir_lowers_recursive_controller_links_to_nets(self) -> None:
         fsm_design = parse_uhir(
@@ -489,8 +617,8 @@ class UGLIRLoweringTests(unittest.TestCase):
         )
         self.assertNotIn(("inst", "mr0", "MEM", None), [(resource.kind, resource.id, resource.value, resource.target) for resource in uglir_design.resources])
         assigns = {(assign.target, assign.expr) for assign in uglir_design.assigns}
-        self.assertIn(("mr0_addr_n", "mx_mr0_addr_n"), assigns)
-        self.assertIn(("A_addr", "mr0_addr_n"), assigns)
+        self.assertIn(("sel_mr0_addr_n", "state_q == 2 ? SRC_I : ZERO"), assigns)
+        self.assertIn(("A_addr", "mr0_addr_q"), assigns)
         self.assertIn(("mr0_rdata_n", "A_rdata"), assigns)
         attachments = {(attachment.instance, attachment.port, attachment.signal) for attachment in uglir_design.attachments}
         self.assertNotIn(("mr0", "addr", "mr0_addr_n"), attachments)
@@ -502,8 +630,7 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertIn("output A_addr : i32", rendered)
         self.assertIn("port A : MEM<word_t=i32,word_len=4> A", rendered)
         self.assertIn("assign mr0_rdata_n = A_rdata", rendered)
-        self.assertIn("assign A_addr = mr0_addr_n", rendered)
-        self.assertIn("assign mr0_addr_n = mx_mr0_addr_n", rendered)
+        self.assertIn("assign A_addr = mr0_addr_q", rendered)
 
     def test_lower_fsm_to_uglir_expands_store_memref_outputs_for_memory_component(self) -> None:
         fsm_design = parse_uhir(
@@ -585,12 +712,12 @@ class UGLIRLoweringTests(unittest.TestCase):
             [("req_ready", "i1"), ("resp_valid", "i1"), ("C_addr", "i32"), ("C_wdata", "i32"), ("C_we", "i1")],
         )
         assigns = {(assign.target, assign.expr) for assign in uglir_design.assigns}
-        self.assertIn(("mw0_addr_n", "mx_mw0_addr_n"), assigns)
-        self.assertIn(("mw0_wdata_n", "mx_mw0_wdata_n"), assigns)
-        self.assertIn(("mw0_we_n", "mx_mw0_we_n"), assigns)
-        self.assertIn(("C_addr", "mw0_addr_n"), assigns)
-        self.assertIn(("C_wdata", "mw0_wdata_n"), assigns)
-        self.assertIn(("C_we", "mw0_we_n"), assigns)
+        self.assertIn(("sel_mw0_addr_n", "state_q == 2 ? SRC_I : ZERO"), assigns)
+        self.assertIn(("sel_mw0_wdata_n", "state_q == 2 ? SRC_X : ZERO"), assigns)
+        self.assertIn(("sel_mw0_we_n", "state_q == 2 ? TRUE : FALSE"), assigns)
+        self.assertIn(("C_addr", "mw0_addr_q"), assigns)
+        self.assertIn(("C_wdata", "mw0_wdata_q"), assigns)
+        self.assertIn(("C_we", "mw0_we_q"), assigns)
         attachments = {(attachment.instance, attachment.port, attachment.signal) for attachment in uglir_design.attachments}
         self.assertNotIn(("mw0", "addr", "mw0_addr_n"), attachments)
         self.assertNotIn(("mw0", "wdata", "mw0_wdata_n"), attachments)
@@ -605,9 +732,9 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertIn("output C_addr : i32", rendered)
         self.assertIn("output C_wdata : i32", rendered)
         self.assertIn("output C_we : i1", rendered)
-        self.assertIn("assign mw0_addr_n = mx_mw0_addr_n", rendered)
-        self.assertIn("assign mw0_wdata_n = mx_mw0_wdata_n", rendered)
-        self.assertIn("assign mw0_we_n = mx_mw0_we_n", rendered)
+        self.assertIn("assign C_addr = mw0_addr_q", rendered)
+        self.assertIn("assign C_wdata = mw0_wdata_q", rendered)
+        self.assertIn("assign C_we = mw0_we_q", rendered)
 
     def test_lower_fsm_to_uglir_time_multiplexes_multiple_loads_onto_one_memory_interface(self) -> None:
         fsm_design = parse_uhir(
@@ -699,12 +826,12 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertEqual([port.name for port in uglir_design.outputs].count("A_addr"), 1)
         self.assertEqual(len([resource for resource in uglir_design.resources if resource.kind == "port" and resource.id == "A"]), 1)
         assigns = {(assign.target, assign.expr) for assign in uglir_design.assigns}
-        self.assertIn(("mr0_addr_n", "mx_mr0_addr_n"), assigns)
-        self.assertIn(("A_addr", "mr0_addr_n"), assigns)
+        self.assertIn(("sel_mr0_addr_n", "state_q == 2 ? SRC_I : state_q == 8 ? SRC_J : ZERO"), assigns)
+        self.assertIn(("A_addr", "mr0_addr_q"), assigns)
         addr_mux = next(mux for mux in uglir_design.muxes if mux.name == "mx_mr0_addr_n")
         self.assertEqual([(case.key, case.source) for case in addr_mux.cases], [("ZERO", "const_i32_0_n"), ("SRC_I", "i"), ("SRC_J", "j")])
         rendered = format_uglir(uglir_design)
-        self.assertIn("assign mr0_addr_n = mx_mr0_addr_n", rendered)
+        self.assertIn("assign A_addr = mr0_addr_q", rendered)
 
     def test_lower_fsm_to_uglir_resolves_unrolled_issue_occurrences_for_fu_input_muxes(self) -> None:
         fsm_design = parse_uhir(
@@ -785,8 +912,6 @@ class UGLIRLoweringTests(unittest.TestCase):
         assigns = {(assign.target, assign.expr) for assign in uglir_design.assigns}
         self.assertIn(("sel_mul0_a_n", "state_q == 1 ? SRC_X : ZERO"), assigns)
         self.assertIn(("sel_mul0_b_n", "state_q == 1 ? SRC_Y : ZERO"), assigns)
-        self.assertIn(("mul0_a_n", "mx_mul0_a_n"), assigns)
-        self.assertIn(("mul0_b_n", "mx_mul0_b_n"), assigns)
         mux_a = next(mux for mux in uglir_design.muxes if mux.name == "mx_mul0_a_n")
         mux_b = next(mux for mux in uglir_design.muxes if mux.name == "mx_mul0_b_n")
         self.assertEqual([(case.key, case.source) for case in mux_a.cases], [("ZERO", "const_i32_0_n"), ("SRC_X", "x")])

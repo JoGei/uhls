@@ -550,7 +550,7 @@ class RTLLoweringTests(unittest.TestCase):
 
         self.assertIn("input signed [31:0] A_rdata,", verilog)
         self.assertIn("output signed [31:0] A_addr", verilog)
-        self.assertIn("assign A_addr = mr0_addr_n;", verilog)
+        self.assertIn("assign A_addr = mr0_addr_q;", verilog)
         self.assertIn("assign mr0_rdata_n = A_rdata;", verilog)
         self.assertNotIn("MEM mr0 (", verilog)
 

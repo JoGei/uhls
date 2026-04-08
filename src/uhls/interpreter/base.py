@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from uhls.middleend.uir import ArrayType, IncomingValue, Literal, Parameter, Variable, normalize_type
 
 from .eval import eval_binary, eval_compare, eval_unary, normalize_int, truthy
-from .runtime import ExecutionResult, ExecutionState, InterpreterError
+from .runtime import CallHookResult, ExecutionResult, ExecutionState, InterpreterError
 
 _MISSING = object()
 _UNSET = object()
@@ -461,7 +461,13 @@ class BaseAdapter:
 class InterpreterBase:
     """Shared explicit-CFG interpreter with adapter-driven IR details."""
 
-    def __init__(self, adapter: BaseAdapter | None = None) -> None:
+    def __init__(
+        self,
+        adapter: BaseAdapter | None = None,
+        *,
+        call_hook: Callable[[str, Any, dict[str, int], dict[str, dict[str, object]], ExecutionState], CallHookResult | None]
+        | None = None,
+    ) -> None:
         """Create an interpreter bound to a specific IR adapter.
 
         Args:
@@ -469,6 +475,7 @@ class InterpreterBase:
                 node shapes. Defaults to :class:`BaseAdapter`.
         """
         self.adapter = adapter or BaseAdapter()
+        self.call_hook = call_hook
 
     def run(
         self,
@@ -839,6 +846,23 @@ class InterpreterBase:
             raise InterpreterError(f"direct call '{callee_name}' cannot consume pending param ops")
 
         scalar_arguments, array_arguments = self._prepare_call_arguments(callee, operands, state)
+        if self.call_hook is not None:
+            hook_result = self.call_hook(callee_name, callee, scalar_arguments, array_arguments, state)
+            if hook_result is not None:
+                for array_name, values in hook_result.updated_arrays.items():
+                    state.memory.overwrite(array_name, values)
+                state.stdout.extend(hook_result.stdout)
+                metadata_suffix = ""
+                if hook_result.metadata:
+                    fragments = [f"{key}={value}" for key, value in sorted(hook_result.metadata.items())]
+                    metadata_suffix = f" ({', '.join(fragments)})"
+                state.record(
+                    "call",
+                    block=block_label,
+                    opcode="call",
+                    detail=f"{self.adapter.function_name(function)} -> {callee_name} returned {hook_result.return_value}{metadata_suffix}",
+                )
+                return hook_result.return_value
         child_state = ExecutionState(
             memory=state.memory,
             trace_enabled=state.trace_enabled,

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .base import BaseAdapter, InterpreterBase
-from .runtime import ExecutionResult, ExecutionState, InterpreterError
+from .runtime import CallHookResult, ExecutionResult, ExecutionState, InterpreterError
 
 
 class UIRAdapter(BaseAdapter):
@@ -84,9 +84,14 @@ class UIRAdapter(BaseAdapter):
 class UIRInterpreter(InterpreterBase):
     """Interpreter for canonical µIR."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        call_hook: Callable[[str, Any, dict[str, int], dict[str, dict[str, object]], ExecutionState], CallHookResult | None]
+        | None = None,
+    ) -> None:
         """Create a µIR interpreter using the SSA-aware adapter."""
-        super().__init__(adapter=UIRAdapter())
+        super().__init__(adapter=UIRAdapter(), call_hook=call_hook)
 
     def _assign_phi_value(self, value: int, type_hint: Any | None) -> int:
         """Normalize a selected phi incoming value to the phi result type."""
@@ -104,9 +109,11 @@ def run_uir(
     trace: bool = False,
     step_limit: int = 100_000,
     state: ExecutionState | None = None,
+    call_hook: Callable[[str, Any, dict[str, int], dict[str, dict[str, object]], ExecutionState], CallHookResult | None]
+    | None = None,
 ) -> ExecutionResult:
     """Execute one µIR function with explicit scalar and array inputs."""
-    return UIRInterpreter().run(
+    return UIRInterpreter(call_hook=call_hook).run(
         function,
         arguments,
         arrays,

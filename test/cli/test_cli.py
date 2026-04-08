@@ -1641,6 +1641,81 @@ seq clk {
             self.assertIn("wrapped_drv_start_nonblocking(wrapped_drv_t *inst)", rendered)
             self.assertIn("wrapped_drv_start_blocking(wrapped_drv_t *inst, int32_t value_x)", rendered)
 
+    def test_run_command_supports_verilator_backed_function_call(self) -> None:
+        uir = """func add1(x:i32) -> i32
+
+block entry:
+    y:i32 = add x, 1
+    ret y
+
+func main() -> i32
+
+block entry:
+    t0_0:i32 = call add1(7:i32)
+    ret t0_0
+"""
+        uglir = """design add1
+stage uglir
+input  clk : clock
+input  rst : i1
+input  wb_cyc_i : i1
+input  wb_stb_i : i1
+input  wb_we_i : i1
+input  wb_adr_i : u32
+input  wb_dat_i : u32
+input  wb_sel_i : u4
+output wb_dat_o : u32
+output wb_ack_o : i1
+address_map wishbone {
+  register control_status offset=32'h0000_0000 access=rw symbol=WB_REG_CONTROL_STATUS
+  register x offset=32'h0000_0100 access=rw symbol=WB_REG_IN_X type=i32
+  register result offset=32'h0000_0200 access=ro symbol=WB_REG_OUT_RESULT type=i32
+}
+resources {
+  reg start_pending_q : i1
+  reg busy_q : i1
+  reg done_q : i1
+  reg x_q : i32
+  reg result_q : i32
+}
+assign wb_ack_o = wb_cyc_i & wb_stb_i
+assign wb_dat_o = (
+  (wb_adr_i == 32'h0000_0000) ? {0:u28, true, start_pending_q, busy_q, done_q} :
+  ((wb_adr_i == 32'h0000_0100) ? x_q :
+   ((wb_adr_i == 32'h0000_0200) ? result_q : 0:u32))
+)
+seq clk {
+  if rst {
+    start_pending_q <= false
+    busy_q <= false
+    done_q <= false
+    x_q <= 0:i32
+    result_q <= 0:i32
+  } else {
+    x_q <= ((wb_cyc_i & wb_stb_i) && wb_we_i && (wb_adr_i == 32'h0000_0100)) ? wb_dat_i : x_q
+    start_pending_q <= false
+    busy_q <= false
+    done_q <= ((wb_cyc_i & wb_stb_i) && wb_we_i && (wb_adr_i == 32'h0000_0000) && wb_dat_i[0]) ? true : done_q
+    result_q <= ((wb_cyc_i & wb_stb_i) && wb_we_i && (wb_adr_i == 32'h0000_0000) && wb_dat_i[0]) ? (x_q + 1:i32) : result_q
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uir_path = root / "prog.uir"
+            uglir_path = root / "add1.uglir"
+            uir_path.write_text(uir, encoding="utf-8")
+            uglir_path.write_text(uglir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(
+                    main(["run", str(uir_path), "--function", "main", "--backend", "verilator", "--uglir", str(uglir_path)]),
+                    0,
+                )
+
+            self.assertEqual(stdout.getvalue().strip(), "8")
+
     def test_lint_accepts_component_library_json(self) -> None:
         library = {
             "components": {
@@ -2698,12 +2773,11 @@ region proc_add1 kind=procedure {
             self.assertEqual(main(["glue", str(fsm_path), "--resources", str(library_path), "-o", str(uglir_path)]), 0)
 
             uglir_text = uglir_path.read_text(encoding="utf-8")
-            self.assertIn("ewms0.a(ewms0_a_n)", uglir_text)
-            self.assertIn("assign ewms0_a_n = mx_ewms0_a_n", uglir_text)
-            self.assertIn("assign ewms0_b_n = mx_ewms0_b_n", uglir_text)
+            self.assertIn("ewms0.a(ewms0_a_q)", uglir_text)
+            self.assertIn("ewms0.b(ewms0_b_q)", uglir_text)
             self.assertIn("mux mx_ewms0_a_n : i32 sel=sel_ewms0_a_n {", uglir_text)
-            self.assertIn("ewms0.op(ewms0_op_n)", uglir_text)
-            self.assertIn("assign ewms0_op_n = 0", uglir_text)
+            self.assertIn("ewms0.op(ewms0_op_q)", uglir_text)
+            self.assertIn("assign sel_ewms0_op_n = state_q == 2 ? SRC_0 : ZERO", uglir_text)
             self.assertNotIn("ewms0.go(", uglir_text)
 
     def test_rtl_command_lowers_uglir_to_verilog(self) -> None:

@@ -23,6 +23,16 @@ class TraceEvent:
     detail: str | None = None
 
 
+@dataclass(frozen=True)
+class CallHookResult:
+    """One optional foreign-call result supplied by an execution hook."""
+
+    return_value: int | None
+    updated_arrays: dict[str, list[int]] = field(default_factory=dict)
+    stdout: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class ExecutionState:
     """Mutable execution state for a single function activation."""

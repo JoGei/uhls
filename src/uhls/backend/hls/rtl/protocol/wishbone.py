@@ -205,7 +205,12 @@ def build_wishbone_slave_wrapper_uglir(
                 f"wb_adr_i >= {window.symbol} && wb_adr_i < ({window.symbol} + {_u32(window.span_bytes)})",
             )
         )
-        design.assigns.append(UGLIRAssign(f"{interface.base}_bus_word_addr_n", "wb_adr_i[11:2]"))
+        design.assigns.append(
+            UGLIRAssign(
+                f"{interface.base}_bus_word_addr_n",
+                f"((wb_adr_i - {window.symbol}) >> 2)",
+            )
+        )
         design.assigns.append(
             UGLIRAssign(
                 f"{interface.base}_rdata",

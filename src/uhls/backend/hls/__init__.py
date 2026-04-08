@@ -21,6 +21,7 @@ from .fsm import FSM_ENCODINGS, fsm_to_dot, lower_bind_to_fsm
 from .glue import GLUE_PROTOCOLS, GLUE_WRAPS, lower_fsm_to_uglir, validate_uglir_for_rtl, wrap_uglir_design
 from .rtl import (
     RTL_HDLS,
+    VerilatorWrappedRunner,
     emit_uglir_to_verilog,
     lower_uglir_to_rtl,
     parse_protocol_spec,
@@ -58,6 +59,7 @@ __all__ = [
     "OperationBinderBase",
     "OperationBindingResult",
     "RTL_HDLS",
+    "VerilatorWrappedRunner",
     "bind_dump_to_dot",
     "binding_to_dot",
     "SGUScheduleResult",

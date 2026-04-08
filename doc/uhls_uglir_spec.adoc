@@ -207,6 +207,30 @@ In other words:
 If one foreign HDL component exposes *registered outputs*, that extra cycle must
 already be reflected in its declared `d`.
 
+When one produced value is bound to one storage register, µglIR lowering should
+distinguish two related but different moments:
+
+* `capture_cycle`
+  * the controller cycle whose end latches the FU output into the bound register
+* `live_start`
+  * the first later cycle in which downstream logic may consume that bound
+    register value
+
+These are often equal for directly consumable combinational sources, but they do
+not have to be equal.
+
+In particular:
+
+* for `pipelined` and `sequential` FUs, the glue may need to capture the FU
+  result one cycle before the first consumer-visible `live_start`
+* later consumers should then read the bound register in `live_start`, not
+  bypass the register back to the FU output
+
+This is the rule that lets one value be:
+
+* captured at the end of `T2`
+* then first consumed from its bound register in `T3`
+
 Example:
 
 * `d=2`
@@ -217,6 +241,9 @@ Example:
     * final internal step completes
     * result is visible on the output port
     * a consumer register may latch it at the end of `ccx+1`
+  * `ccx+2`
+    * later logic may consume the bound register value if the design inserted
+      storage between FUs
 
 So, for example, a divider with `ii=1` and `d=3` may still be classified as
 `combinational` if that delay is realized without internal state. It should be

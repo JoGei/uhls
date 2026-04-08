@@ -65,23 +65,24 @@ class ComponentLibraryImportTests(unittest.TestCase):
         self.assertEqual(validated["ALU"]["hdl"]["language"], "verilog")
         self.assertEqual(validated["ALU"]["hdl"]["module"], "ALU")
 
-    def test_validate_component_library_rejects_multicycle_combinational_support(self) -> None:
-        with self.assertRaisesRegex(ValueError, "kind=combinational"):
-            validate_component_library(
-                {
-                    "DIV": {
-                        "kind": "combinational",
-                        "ports": {
-                            "a": {"dir": "input", "type": "i32"},
-                            "b": {"dir": "input", "type": "i32"},
-                            "y": {"dir": "output", "type": "i32"},
-                        },
-                        "supports": {
-                            "div": {"ii": 1, "d": 3, "bind": {"a": "operand0", "b": "operand1", "y": "result"}}
-                        },
-                    }
+    def test_validate_component_library_accepts_multicycle_combinational_support(self) -> None:
+        validated = validate_component_library(
+            {
+                "DIV": {
+                    "kind": "combinational",
+                    "ports": {
+                        "a": {"dir": "input", "type": "i32"},
+                        "b": {"dir": "input", "type": "i32"},
+                        "y": {"dir": "output", "type": "i32"},
+                    },
+                    "supports": {
+                        "div": {"ii": 1, "d": 3, "bind": {"a": "operand0", "b": "operand1", "y": "result"}}
+                    },
                 }
-            )
+            }
+        )
+
+        self.assertEqual(validated["DIV"]["kind"], "combinational")
 
     def test_validate_component_library_accepts_multicycle_pipelined_support(self) -> None:
         validated = validate_component_library(

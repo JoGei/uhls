@@ -162,6 +162,8 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
             continue
 
         if _component_kind(component_library, resource.value) == "memory":
+            for port_name, tie_expr in _component_tied_input_ports(component_library, resource.value).items():
+                lowered.assigns.append(UGLIRAssign(f"{resource.id}_{port_name}", tie_expr))
             for port_name, port_type in _component_routed_input_ports(component_library, resource.value):
                 mux_name = _lower_explicit_input_mux(
                     lowered,
@@ -208,6 +210,8 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                     ),
                 )
             )
+        for port_name, tie_expr in _component_tied_input_ports(component_library, resource.value).items():
+            lowered.assigns.append(UGLIRAssign(f"{resource.id}_{port_name}", tie_expr))
         if "op" in {
             port_name
             for port_name, _ in _component_routed_input_ports(component_library, resource.value)
@@ -957,9 +961,56 @@ def _memory_port_type(
     component_name: str,
     port_name: str,
 ) -> str | None:
+    resolved_port_name = _memory_port_name(component_library, component_name, port_name)
+    if resolved_port_name is None:
+        return None
     for candidate_name, candidate_type in _instance_ports(component_library, component_name):
-        if candidate_name == port_name:
+        if candidate_name == resolved_port_name:
             return candidate_type
+    return None
+
+
+def _memory_port_name(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+    port_name: str,
+) -> str | None:
+    for candidate_name, _candidate_type in _instance_ports(component_library, component_name):
+        if candidate_name == port_name:
+            return candidate_name
+    semantic_role = {
+        "addr": "operand1",
+        "wdata": "operand2",
+        "rdata": "result",
+    }.get(port_name)
+    if semantic_role is not None:
+        for opcode_name in ("load", "store"):
+            try:
+                support_port = _component_support_port_for_binding(
+                    component_library,
+                    component_name,
+                    opcode_name,
+                    semantic_role,
+                    require_direction="output" if port_name == "rdata" else "input",
+                )
+            except ValueError:
+                continue
+            if support_port is not None:
+                return support_port
+    if port_name == "we":
+        for literal in ("true", "false"):
+            try:
+                support_port = _component_support_port_for_binding(
+                    component_library,
+                    component_name,
+                    "store",
+                    literal,
+                    require_direction="input",
+                )
+            except ValueError:
+                continue
+            if support_port is not None:
+                return support_port
     return None
 
 
@@ -1032,14 +1083,14 @@ def _memory_interface_assigns(memory_interfaces: dict[str, dict[str, Any]]) -> l
     for interface in memory_interfaces.values():
         memory_name = interface["memory_name"]
         instance_id = interface["instance_id"]
-        if interface["addr_type"] is not None:
-            assigns.append(UGLIRAssign(f"{memory_name}_addr", f"{instance_id}_addr"))
-        if interface["has_write"] and interface["write_type"] is not None:
-            assigns.append(UGLIRAssign(f"{memory_name}_wdata", f"{instance_id}_wdata"))
-        if interface["has_write"]:
-            assigns.append(UGLIRAssign(f"{memory_name}_we", f"{instance_id}_we"))
-        if interface["read_type"] is not None:
-            assigns.append(UGLIRAssign(f"{instance_id}_rdata", f"{memory_name}_rdata"))
+        if interface["addr_type"] is not None and interface["addr_port"] is not None:
+            assigns.append(UGLIRAssign(f"{memory_name}_addr", f"{instance_id}_{interface['addr_port']}"))
+        if interface["has_write"] and interface["write_type"] is not None and interface["write_port"] is not None:
+            assigns.append(UGLIRAssign(f"{memory_name}_wdata", f"{instance_id}_{interface['write_port']}"))
+        if interface["has_write"] and interface["we_port"] is not None:
+            assigns.append(UGLIRAssign(f"{memory_name}_we", f"{instance_id}_{interface['we_port']}"))
+        if interface["read_type"] is not None and interface["read_port"] is not None:
+            assigns.append(UGLIRAssign(f"{instance_id}_{interface['read_port']}", f"{memory_name}_rdata"))
     return assigns
 
 
@@ -1094,8 +1145,12 @@ def _memory_interfaces(
                     "instance_id": instance_id,
                     "has_read": False,
                     "has_write": False,
+                    "addr_port": _memory_port_name(component_library, component_name, "addr"),
                     "addr_type": _memory_port_type(component_library, component_name, "addr"),
+                    "write_port": _memory_port_name(component_library, component_name, "wdata"),
                     "write_type": _memory_port_type(component_library, component_name, "wdata"),
+                    "we_port": _memory_port_name(component_library, component_name, "we"),
+                    "read_port": _memory_port_name(component_library, component_name, "rdata"),
                     "read_type": _memory_port_type(component_library, component_name, "rdata"),
                     "depth": memref_spec[1],
                 }
@@ -1636,8 +1691,29 @@ def _component_routed_input_ports(
         (port_name, port_type)
         for port_name, port_type in _instance_input_ports(component_library, component_name)
         if port_name not in issue_bound_ports
+        and port_name not in _component_tied_input_ports(component_library, component_name)
         and not _is_semantic_component_port_type(port_type)
     )
+
+
+def _component_tied_input_ports(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+) -> dict[str, str]:
+    _, component = _component_definition(component_library, component_name)
+    ports = component.get("ports")
+    if not isinstance(ports, dict):
+        raise ValueError(f"component '{component_name}' must define object-valued 'ports'")
+    ties: dict[str, str] = {}
+    for port_name, port_payload in ports.items():
+        if not isinstance(port_payload, dict):
+            raise ValueError(f"component '{component_name}' port '{port_name}' must be an object")
+        if port_payload.get("dir") != "input":
+            continue
+        tie_expr = port_payload.get("tie")
+        if isinstance(tie_expr, str) and tie_expr:
+            ties[str(port_name)] = tie_expr
+    return ties
 
 
 def _component_should_hold_inputs(component_kind: str | None) -> bool:
@@ -1720,6 +1796,42 @@ def _component_result_port(
             f"component '{component_name}' support '{opcode_name}' must map at most one output port to 'result'"
         )
     return result_ports[0] if result_ports else None
+
+
+def _component_support_port_for_binding(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+    opcode_name: str,
+    binding_value: str,
+    *,
+    require_direction: str | None = None,
+) -> str | None:
+    _, component = _component_definition(component_library, component_name)
+    supports = component.get("supports")
+    if not isinstance(supports, dict):
+        raise ValueError(f"component '{component_name}' must define object-valued 'supports'")
+    support = supports.get(opcode_name)
+    if support is None:
+        return None
+    if not isinstance(support, dict):
+        raise ValueError(f"component '{component_name}' support '{opcode_name}' must be an object")
+    binding = support.get("bind")
+    if binding is None:
+        return None
+    if not isinstance(binding, dict):
+        raise ValueError(f"component '{component_name}' support '{opcode_name}' must use object-valued 'bind'")
+    matched_ports = [port_name for port_name, binding_key in binding.items() if binding_key == binding_value]
+    if require_direction is not None:
+        matched_ports = [
+            port_name
+            for port_name in matched_ports
+            if (_component_port_payload(component_library, component_name, port_name) or {}).get("dir") == require_direction
+        ]
+    if len(matched_ports) > 1:
+        raise ValueError(
+            f"component '{component_name}' support '{opcode_name}' must map at most one port to '{binding_value}'"
+        )
+    return matched_ports[0] if matched_ports else None
 
 
 def _component_issue_bindings(

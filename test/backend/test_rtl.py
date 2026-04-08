@@ -11,6 +11,89 @@ import json
 class RTLLoweringTests(unittest.TestCase):
     """Coverage for uglir-to-RTL emission."""
 
+    @staticmethod
+    def _vendor_memory_component_library() -> dict[str, dict[str, object]]:
+        return {
+            "VENDOR_MEM": {
+                "kind": "memory",
+                "parameters": {
+                    "word_t": {"kind": "type", "required": True},
+                    "word_len": {"kind": "int", "required": True},
+                },
+                "hdl": {
+                    "language": "verilog",
+                    "module": "VENDOR_MEM",
+                },
+                "ports": {
+                    "A_CLK": {"dir": "input", "type": "clock"},
+                    "A_MEN": {"dir": "input", "type": "i1"},
+                    "A_WEN": {"dir": "input", "type": "i1"},
+                    "A_REN": {"dir": "input", "type": "i1"},
+                    "A_ADDR": {"dir": "input", "type": "u2"},
+                    "A_DIN": {"dir": "input", "type": "word_t"},
+                    "A_DLY": {"dir": "input", "type": "i1"},
+                    "A_DOUT": {"dir": "output", "type": "word_t"},
+                },
+                "supports": {
+                    "load": {
+                        "ii": 1,
+                        "d": 2,
+                        "bind": {
+                            "A_DLY": "true",
+                            "A_MEN": "true",
+                            "A_REN": "true",
+                            "A_WEN": "false",
+                            "A_ADDR": "operand1",
+                            "A_DOUT": "result",
+                        },
+                    },
+                    "store": {
+                        "ii": 1,
+                        "d": 1,
+                        "bind": {
+                            "A_DLY": "true",
+                            "A_MEN": "true",
+                            "A_REN": "false",
+                            "A_WEN": "true",
+                            "A_ADDR": "operand1",
+                            "A_DIN": "operand2",
+                        },
+                    },
+                },
+            }
+        }
+
+    @staticmethod
+    def _generic_ff_memory_component_library() -> dict[str, dict[str, object]]:
+        return {
+            "GEN_FF_MEM": {
+                "kind": "memory",
+                "hdl": {
+                    "language": "verilog",
+                    "module": "GEN_FF_MEM",
+                    "parameters": {
+                        "W": "$bits(word_t)",
+                        "DEPTH": "word_len",
+                    },
+                },
+                "parameters": {
+                    "word_t": {"kind": "type", "required": True},
+                    "word_len": {"kind": "int", "required": True},
+                },
+                "ports": {
+                    "clk": {"dir": "input", "type": "clock"},
+                    "addr": {"dir": "input", "type": "i16"},
+                    "wdata": {"dir": "input", "type": "word_t"},
+                    "we": {"dir": "input", "type": "i1"},
+                    "rdata": {"dir": "output", "type": "word_t"},
+                },
+                "supports": {
+                    "load": {"ii": 1, "d": 1, "bind": {"addr": "operand1", "rdata": "result", "we": "false"}},
+                    "store": {"ii": 1, "d": 1, "bind": {"addr": "operand1", "wdata": "operand2", "we": "true"}},
+                },
+            }
+        }
+
     def test_lower_uglir_to_verilog_emits_static_module(self) -> None:
         fsm_design = parse_uhir(
             """
@@ -199,6 +282,130 @@ class RTLLoweringTests(unittest.TestCase):
             verilog,
         )
         self.assertNotIn("wb_err_o", verilog)
+
+    def test_lower_uglir_to_verilog_instantiates_selected_wishbone_wrapper_memory(self) -> None:
+        uglir_design = parse_uglir(
+            """
+            design memcore
+            stage uglir
+            input  clk : clock
+            input  rst : i1
+            input  req_valid : i1
+            input  resp_ready : i1
+            input  A_rdata : i32
+            output req_ready : i1
+            output resp_valid : i1
+            output A_addr : u2
+            output A_wdata : i32
+            output A_we : i1
+            resources {
+              port A : VENDOR_MEM<word_t=i32,word_len=4> A
+            }
+            assign req_ready = true
+            assign resp_valid = false
+            assign A_addr = 0:u2
+            assign A_wdata = 0:i32
+            assign A_we = false
+            """
+        )
+
+        wrapped_uglir = wrap_uglir_design(
+            uglir_design,
+            wrap="slave",
+            protocol="wishbone",
+            component_library=self._vendor_memory_component_library(),
+        )
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
+
+        self.assertIn("inst A_mem_inst : VENDOR_MEM", "\n".join(f"{r.kind} {r.id} : {r.value}" for r in wrapped_uglir.resources))
+        self.assertNotIn("mem A_mem_q", "\n".join(f"{r.kind} {r.id} : {r.value}" for r in wrapped_uglir.resources))
+        self.assertIn("A_mem_inst.A_CLK(clk)", "\n".join(f"{a.instance}.{a.port}({a.signal})" for a in wrapped_uglir.attachments))
+        self.assertIn("VENDOR_MEM A_mem_inst (", verilog)
+        self.assertIn("assign A_rdata = A_mem_rdata_n;", verilog)
+        self.assertIn("reg A_bus_read_pending_q;", verilog)
+
+    def test_lower_uglir_to_verilog_instantiates_selected_obi_wrapper_memory(self) -> None:
+        uglir_design = parse_uglir(
+            """
+            design memcore
+            stage uglir
+            input  clk : clock
+            input  rst : i1
+            input  req_valid : i1
+            input  resp_ready : i1
+            input  A_rdata : i32
+            output req_ready : i1
+            output resp_valid : i1
+            output A_addr : u2
+            output A_wdata : i32
+            output A_we : i1
+            resources {
+              port A : VENDOR_MEM<word_t=i32,word_len=4> A
+            }
+            assign req_ready = true
+            assign resp_valid = false
+            assign A_addr = 0:u2
+            assign A_wdata = 0:i32
+            assign A_we = false
+            """
+        )
+
+        wrapped_uglir = wrap_uglir_design(
+            uglir_design,
+            wrap="slave",
+            protocol="obi",
+            component_library=self._vendor_memory_component_library(),
+        )
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
+
+        self.assertIn("inst A_mem_inst : VENDOR_MEM", "\n".join(f"{r.kind} {r.id} : {r.value}" for r in wrapped_uglir.resources))
+        self.assertNotIn("mem A_mem_q", "\n".join(f"{r.kind} {r.id} : {r.value}" for r in wrapped_uglir.resources))
+        self.assertIn("VENDOR_MEM A_mem_inst (", verilog)
+        self.assertIn("assign obi_rvalid_o = obi_rsp_pending_q | (A_bus_read_pending_q);", verilog)
+        self.assertIn("assign A_rdata = A_mem_rdata_n;", verilog)
+
+    def test_lower_uglir_to_verilog_instantiates_selected_generic_ff_wrapper_memory(self) -> None:
+        uglir_design = parse_uglir(
+            """
+            design memcore
+            stage uglir
+            input  clk : clock
+            input  rst : i1
+            input  req_valid : i1
+            input  resp_ready : i1
+            input  A_rdata : i16
+            output req_ready : i1
+            output resp_valid : i1
+            output A_addr : i16
+            output A_wdata : i16
+            output A_we : i1
+            resources {
+              port A : GEN_FF_MEM<word_t=i16,word_len=4> A
+            }
+            assign req_ready = true
+            assign resp_valid = false
+            assign A_addr = 0:i16
+            assign A_wdata = 0:i16
+            assign A_we = false
+            """
+        )
+
+        wrapped_uglir = wrap_uglir_design(
+            uglir_design,
+            wrap="slave",
+            protocol="wishbone",
+            component_library=self._generic_ff_memory_component_library(),
+        )
+        verilog = lower_uglir_to_rtl(wrapped_uglir, hdl="verilog")
+
+        resource_dump = "\n".join(f"{r.kind} {r.id} : {r.value}" for r in wrapped_uglir.resources)
+        self.assertIn("inst A_mem_inst : GEN_FF_MEM<", resource_dump)
+        self.assertIn("DEPTH=4", resource_dump)
+        self.assertIn("W=16", resource_dump)
+        self.assertNotIn("mem A_mem_q", "\n".join(f"{r.kind} {r.id} : {r.value}" for r in wrapped_uglir.resources))
+        self.assertIn("GEN_FF_MEM #(", verilog)
+        self.assertIn(".W(16)", verilog)
+        self.assertIn(".DEPTH(4)", verilog)
 
     def test_lower_uglir_to_verilog_emits_wishbone_err_wrapper(self) -> None:
         fsm_design = parse_uhir(

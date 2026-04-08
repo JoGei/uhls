@@ -104,8 +104,37 @@ def validate_component_library(components: dict[str, object]) -> dict[str, dict[
             if not isinstance(module_name, str) or not module_name.strip():
                 raise ValueError(f"component '{component_name}' hdl.module must be one non-empty string")
             source = hdl.get("source")
+            sources = hdl.get("sources")
             if source is not None and (not isinstance(source, str) or not source.strip()):
                 raise ValueError(f"component '{component_name}' hdl.source must be one non-empty string")
+            if sources is not None:
+                if not isinstance(sources, list) or not sources:
+                    raise ValueError(f"component '{component_name}' hdl.sources must be one non-empty list")
+                for index, path in enumerate(sources):
+                    if not isinstance(path, str) or not path.strip():
+                        raise ValueError(
+                            f"component '{component_name}' hdl.sources[{index}] must be one non-empty string"
+                        )
+            if source is None and sources is None:
+                pass
+            include_dirs = hdl.get("include_dirs")
+            if include_dirs is not None:
+                if not isinstance(include_dirs, list) or not include_dirs:
+                    raise ValueError(f"component '{component_name}' hdl.include_dirs must be one non-empty list")
+                for index, path in enumerate(include_dirs):
+                    if not isinstance(path, str) or not path.strip():
+                        raise ValueError(
+                            f"component '{component_name}' hdl.include_dirs[{index}] must be one non-empty string"
+                        )
+            defines = hdl.get("defines")
+            if defines is not None:
+                if not isinstance(defines, list) or not defines:
+                    raise ValueError(f"component '{component_name}' hdl.defines must be one non-empty list")
+                for index, define in enumerate(defines):
+                    if not isinstance(define, str) or not define.strip():
+                        raise ValueError(
+                            f"component '{component_name}' hdl.defines[{index}] must be one non-empty string"
+                        )
             hdl_parameters = hdl.get("parameters")
             if hdl_parameters is not None:
                 if not isinstance(hdl_parameters, dict):
@@ -124,8 +153,8 @@ def validate_component_library(components: dict[str, object]) -> dict[str, dict[
                     raise ValueError(
                         f"component '{component_name}' parameter '{parameter_name}' must be an object"
                     )
-                kind = parameter_payload.get("kind")
-                if kind not in {"type", "int", "bool", "string"}:
+                parameter_kind = parameter_payload.get("kind")
+                if parameter_kind not in {"type", "int", "bool", "string"}:
                     raise ValueError(
                         f"component '{component_name}' parameter '{parameter_name}' must use kind=type|int|bool|string"
                     )
@@ -160,6 +189,18 @@ def validate_component_library(components: dict[str, object]) -> dict[str, dict[
             if not isinstance(ports, dict):
                 raise ValueError(f"component '{component_name}' must define object-valued 'ports'")
             _validate_component_ports(component_name, ports)
+        memory_shape = component_payload.get("memory")
+        if memory_shape is not None:
+            if kind != "memory":
+                raise ValueError(f"component '{component_name}' may define 'memory' only when kind=memory")
+            if not isinstance(memory_shape, dict):
+                raise ValueError(f"component '{component_name}' must define object-valued 'memory'")
+            word_t = memory_shape.get("word_t")
+            word_len = memory_shape.get("word_len")
+            if not isinstance(word_t, str) or not word_t:
+                raise ValueError(f"component '{component_name}' memory.word_t must be one non-empty string")
+            if not isinstance(word_len, int) or word_len <= 0:
+                raise ValueError(f"component '{component_name}' memory.word_len must be one positive integer")
         normalized[str(component_name)] = component_payload
     return normalized
 
@@ -218,6 +259,18 @@ def _validate_component_ports(component_name: str, ports: dict[str, object]) -> 
             if "kind" in port_payload or "active" in port_payload:
                 raise ValueError(
                     f"component '{component_name}' non-reset port '{port_name}' must not define reset kind/active"
+                )
+        tie_value = port_payload.get("tie")
+        if tie_value is not None:
+            if direction != "input":
+                raise ValueError(f"component '{component_name}' tied port '{port_name}' must be an input")
+            if type_name in {"clock", "reset"}:
+                raise ValueError(
+                    f"component '{component_name}' semantic port '{port_name}' must not define tie"
+                )
+            if not isinstance(tie_value, str) or not tie_value:
+                raise ValueError(
+                    f"component '{component_name}' tied port '{port_name}' must define non-empty string tie"
                 )
     if seen_clock > 1:
         raise ValueError(f"component '{component_name}' may define at most one clock port")

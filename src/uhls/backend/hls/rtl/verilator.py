@@ -33,6 +33,13 @@ class _MemoryWindow:
     word_bytes: int
 
 
+@dataclass(frozen=True)
+class _VerilogSupportAssets:
+    sources: tuple[Path, ...]
+    include_dirs: tuple[Path, ...]
+    defines: tuple[str, ...]
+
+
 class VerilatorWrappedRunner:
     """One compile-once runner for one wrapped µglIR design."""
 
@@ -58,7 +65,7 @@ class VerilatorWrappedRunner:
         self.reset = reset
         self.scalar_inputs, self.scalar_outputs, self.memory_windows = _collect_mmio(self.address_map)
         self.result_register = next((register for register in self.scalar_outputs if register.name == "result"), None)
-        self.support_files = _collect_verilog_support_files(design, component_library, self.library_root)
+        self.support_assets = _collect_verilog_support_assets(design, component_library, self.library_root)
         self._tempdir: tempfile.TemporaryDirectory[str] | None = None
         self._binary_path: Path | None = None
 
@@ -120,7 +127,9 @@ class VerilatorWrappedRunner:
                     "-Wno-WIDTHTRUNC",
                     "-Wno-WIDTHEXPAND",
                     str(verilog_path),
-                    *[str(path) for path in self.support_files],
+                    *[f"-I{path}" for path in self.support_assets.include_dirs],
+                    *[f"-D{define}" for define in self.support_assets.defines],
+                    *[str(path) for path in self.support_assets.sources],
                     "--exe",
                     str(harness_path),
                     "--build",
@@ -490,13 +499,17 @@ def _cpp_hex(value: int) -> str:
     return f"0x{value:x}u"
 
 
-def _collect_verilog_support_files(
+def _collect_verilog_support_assets(
     design: UGLIRDesign,
     component_library: dict[str, dict[str, object]] | None,
     library_root: Path,
-) -> list[Path]:
+) -> _VerilogSupportAssets:
     sources: list[Path] = []
-    seen: set[Path] = set()
+    include_dirs: list[Path] = []
+    defines: list[str] = []
+    seen_sources: set[Path] = set()
+    seen_include_dirs: set[Path] = set()
+    seen_defines: set[str] = set()
     for resource in design.resources:
         if resource.kind != "inst":
             continue
@@ -515,22 +528,65 @@ def _collect_verilog_support_files(
             raise ValueError(
                 f"Verilator run backend requires verilog-linked components; '{base_name}' uses hdl.language={language!r}"
             )
-        source_text = str(hdl.get("source", "")).strip()
-        if not source_text:
+        source_texts = _collect_hdl_source_texts(hdl)
+        if not source_texts:
             raise ValueError(
-                f"component '{base_name}' used by instance '{resource.id}' must define hdl.source in the component library"
+                f"component '{base_name}' used by instance '{resource.id}' must define hdl.source or hdl.sources in the component library"
             )
-        source_path = Path(source_text)
-        if not source_path.is_absolute():
-            source_path = (library_root / source_path).resolve()
-        if not source_path.is_file():
-            raise ValueError(
-                f"component '{base_name}' HDL source '{source_path}' for instance '{resource.id}' does not exist"
-            )
-        if source_path not in seen:
-            seen.add(source_path)
-            sources.append(source_path)
-    return sources
+        for source_text in source_texts:
+            source_path = Path(source_text)
+            if not source_path.is_absolute():
+                source_path = (library_root / source_path).resolve()
+            if not source_path.is_file():
+                raise ValueError(
+                    f"component '{base_name}' HDL source '{source_path}' for instance '{resource.id}' does not exist"
+                )
+            if source_path not in seen_sources:
+                seen_sources.add(source_path)
+                sources.append(source_path)
+        for include_dir_text in _collect_hdl_include_dirs(hdl):
+            include_dir = Path(include_dir_text)
+            if not include_dir.is_absolute():
+                include_dir = (library_root / include_dir).resolve()
+            if not include_dir.is_dir():
+                raise ValueError(
+                    f"component '{base_name}' HDL include dir '{include_dir}' for instance '{resource.id}' does not exist"
+                )
+            if include_dir not in seen_include_dirs:
+                seen_include_dirs.add(include_dir)
+                include_dirs.append(include_dir)
+        for define in _collect_hdl_defines(hdl):
+            if define not in seen_defines:
+                seen_defines.add(define)
+                defines.append(define)
+    return _VerilogSupportAssets(tuple(sources), tuple(include_dirs), tuple(defines))
+
+
+def _collect_hdl_source_texts(hdl: Mapping[str, object]) -> list[str]:
+    source_texts: list[str] = []
+    source = hdl.get("source")
+    if isinstance(source, str) and source.strip():
+        source_texts.append(source.strip())
+    sources = hdl.get("sources")
+    if isinstance(sources, list):
+        for entry in sources:
+            if isinstance(entry, str) and entry.strip():
+                source_texts.append(entry.strip())
+    return source_texts
+
+
+def _collect_hdl_include_dirs(hdl: Mapping[str, object]) -> list[str]:
+    include_dirs = hdl.get("include_dirs")
+    if not isinstance(include_dirs, list):
+        return []
+    return [entry.strip() for entry in include_dirs if isinstance(entry, str) and entry.strip()]
+
+
+def _collect_hdl_defines(hdl: Mapping[str, object]) -> list[str]:
+    defines = hdl.get("defines")
+    if not isinstance(defines, list):
+        return []
+    return [entry.strip() for entry in defines if isinstance(entry, str) and entry.strip()]
 
 
 def _resolve_instance_component(

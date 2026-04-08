@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+import re
 
+from uhls.backend.hls.impl import MemoryPolicy, select_memory_implementation
 from uhls.backend.hls.lib import format_component_spec
 from uhls.backend.hls.uhir.model import (
     UHIRConstant,
@@ -178,6 +180,8 @@ def lower_seq_to_alloc(
     *,
     executability_graph: UHIRDesign | ExecutabilityGraph | Mapping[str, Mapping[str, int] | Iterable[str]],
     algorithm: str = "min_delay",
+    memory_policy: MemoryPolicy | None = None,
+    memory_vendor_components: Mapping[str, Mapping[str, object]] | None = None,
 ) -> UHIRDesign:
     """Annotate one seq-stage design with chosen resource types and delays."""
     if design.stage != "seq":
@@ -186,6 +190,11 @@ def lower_seq_to_alloc(
     graph = _normalize_executability_graph(executability_graph)
     candidates = _validate_and_collect_allocations(graph, algorithm=algorithm)
     value_types = _design_value_types(design)
+    memory_impls = _design_memory_implementations(
+        design,
+        memory_policy=memory_policy,
+        memory_vendor_components=memory_vendor_components,
+    )
 
     allocated = UHIRDesign(name=design.name, stage="alloc")
     allocated.inputs = [_clone_port(port) for port in design.inputs]
@@ -193,7 +202,9 @@ def lower_seq_to_alloc(
     allocated.constants = [_clone_constant(constant) for constant in design.constants]
     allocated.schedule = _clone_schedule(design.schedule)
     allocated.resources = [_clone_resource(resource) for resource in design.resources]
-    allocated.regions = [_allocate_region(region, candidates, value_types, algorithm=algorithm) for region in design.regions]
+    allocated.regions = [
+        _allocate_region(region, candidates, value_types, memory_impls, algorithm=algorithm) for region in design.regions
+    ]
     allocated.regions.extend(
         _embed_executability_regions(
             graph,
@@ -429,12 +440,15 @@ def _allocate_region(
     region: UHIRRegion,
     candidates: dict[str, list[AllocationCandidate]],
     value_types: dict[str, str],
+    memory_impls: dict[str, object],
     *,
     algorithm: str,
 ) -> UHIRRegion:
     allocated = UHIRRegion(id=region.id, kind=region.kind, parent=region.parent)
     allocated.region_refs = [UHIRRegionRef(ref.target) for ref in region.region_refs]
-    allocated.nodes = [_allocate_node(node, candidates, value_types, algorithm=algorithm) for node in region.nodes]
+    allocated.nodes = [
+        _allocate_node(node, candidates, value_types, memory_impls, algorithm=algorithm) for node in region.nodes
+    ]
     allocated.edges = [UHIREdge(edge.kind, edge.source, edge.target, dict(edge.attributes)) for edge in region.edges]
     allocated.mappings = [UHIRSourceMap(mapping.node_id, mapping.source_id) for mapping in region.mappings]
     allocated.value_bindings = [
@@ -452,6 +466,7 @@ def _allocate_node(
     node: UHIRNode,
     candidates: dict[str, list[AllocationCandidate]],
     value_types: dict[str, str],
+    memory_impls: dict[str, object],
     *,
     algorithm: str,
 ) -> UHIRNode:
@@ -465,6 +480,18 @@ def _allocate_node(
     if operation is None:
         attributes["class"], attributes["ii"], attributes["delay"] = (_CONTROL_FU, 0, 0)
         return UHIRNode(node.id, node.opcode, node.operands, node.result_type, attributes)
+
+    if node.opcode in {"load", "store"} and node.operands:
+        memory_choice = memory_impls.get(node.operands[0])
+        if memory_choice is not None:
+            attributes["class"] = memory_choice.component_spec
+            if node.opcode == "load":
+                attributes["ii"] = memory_choice.load_ii
+                attributes["delay"] = memory_choice.load_delay
+            else:
+                attributes["ii"] = memory_choice.store_ii
+                attributes["delay"] = memory_choice.store_delay
+            return UHIRNode(node.id, node.opcode, node.operands, node.result_type, attributes)
 
     node_candidates = candidates.get(operation)
     if node_candidates is None:
@@ -612,6 +639,40 @@ def _looks_like_literal_operand(operand: str) -> bool:
 
 def _looks_like_concrete_type(type_name: str) -> bool:
     return bool(type_name) and type_name[0] in {"i", "u"} and type_name[1:].isdigit()
+
+
+def _design_memory_implementations(
+    design: UHIRDesign,
+    *,
+    memory_policy: MemoryPolicy | None,
+    memory_vendor_components: Mapping[str, Mapping[str, object]] | None,
+) -> dict[str, object]:
+    policy = MemoryPolicy() if memory_policy is None else memory_policy
+    memory_ports = {
+        port.name: _parse_memref_type(port.type)
+        for port in [*design.inputs, *design.outputs]
+        if port.type.startswith("memref<")
+    }
+    if not memory_ports:
+        return {}
+    return {
+        memory_name: select_memory_implementation(
+            component_name="GEN_FF_MEM",
+            element_type=element_type,
+            depth_words=depth_words,
+            policy=policy,
+            vendor_components=memory_vendor_components,
+        )
+        for memory_name, (element_type, depth_words) in memory_ports.items()
+    }
+
+
+def _parse_memref_type(type_name: str) -> tuple[str, int | None]:
+    match = re.fullmatch(r"memref<\s*([A-Za-z_][\w$<>]*)\s*(?:,\s*(\d+)\s*)?>", type_name)
+    if match is None:
+        raise ValueError(f"invalid memref type '{type_name}'")
+    element_type, extent_text = match.groups()
+    return element_type, None if extent_text is None else int(extent_text)
 
 
 def _normalize_weight(weight: object) -> tuple[int, int]:

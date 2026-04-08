@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
-from uhls.cli import main
+from uhls.cli import _load_component_library, main
 from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 
 
@@ -67,6 +69,272 @@ class CLITests(unittest.TestCase):
             self.assertEqual(component["ports"]["b"], {"dir": "input", "type": "u32"})
             self.assertEqual(component["supports"]["add"]["ii"], "TODO")
             self.assertEqual(component["supports"]["sub"]["bind"], "TODO")
+
+    def test_component_library_loader_expands_environment_variables_in_json_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            library_path = root / "ressources.json"
+            library_path.write_text(
+                """
+{
+  "components": {
+    "ALU": {
+      "kind": "combinational",
+      "hdl": {
+        "language": "verilog",
+        "module": "ALU",
+        "source": "${UHLS_TMP_ROOT}/rtl/alu.v",
+        "include_dirs": ["${UHLS_TMP_ROOT}/rtl/include"],
+        "defines": ["USE_${UHLS_MODE}"]
+      },
+      "ports": {
+        "a": { "dir": "input", "type": "i32" },
+        "y": { "dir": "output", "type": "i32" }
+      },
+      "supports": {}
+    }
+  }
+}
+""",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"UHLS_TMP_ROOT": "/tmp/uhls_test_root", "UHLS_MODE": "FAST"}, clear=False):
+                components = _load_component_library(library_path)
+
+            self.assertEqual(components["ALU"]["hdl"]["source"], "/tmp/uhls_test_root/rtl/alu.v")
+            self.assertEqual(components["ALU"]["hdl"]["include_dirs"], ["/tmp/uhls_test_root/rtl/include"])
+            self.assertEqual(components["ALU"]["hdl"]["defines"], ["USE_FAST"])
+
+    def test_component_library_loader_rejects_undefined_environment_variables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            library_path = root / "ressources.json"
+            library_path.write_text(
+                """
+{
+  "components": {
+    "ALU": {
+      "kind": "combinational",
+      "hdl": {
+        "language": "verilog",
+        "module": "ALU",
+        "source": "${UNDEFINED_UHLS_VAR}/rtl/alu.v"
+      },
+      "ports": {
+        "a": { "dir": "input", "type": "i32" },
+        "y": { "dir": "output", "type": "i32" }
+      },
+      "supports": {}
+    }
+  }
+}
+""",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(Exception, "undefined environment variable"):
+                    _load_component_library(library_path)
+
+    def test_component_library_loader_preserves_hdl_bits_expressions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            library_path = root / "ressources.json"
+            library_path.write_text(
+                """
+{
+  "components": {
+    "DIV": {
+      "kind": "pipelined",
+      "parameters": {
+        "base_t": { "kind": "type", "required": true }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "DIV",
+        "source": "div.v",
+        "parameters": {
+          "W": "$bits(base_t)"
+        }
+      },
+      "ports": {
+        "a": { "dir": "input", "type": "base_t" },
+        "y": { "dir": "output", "type": "base_t" }
+      },
+      "supports": {
+        "div": { "ii": 1, "d": 3 }
+      }
+    }
+  }
+}
+""",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                components = _load_component_library(library_path)
+
+            self.assertEqual(components["DIV"]["hdl"]["parameters"]["W"], "$bits(base_t)")
+
+    def test_lib_command_accepts_explicit_component_kind(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            library_path = root / "ressources.json"
+            verilog_path = root / "mem.v"
+            output_path = root / "updated.json"
+            library_path.write_text('{"components": {}}', encoding="utf-8")
+            verilog_path.write_text(
+                """
+                module MEM (
+                  input [5:0] addr,
+                  input [31:0] wdata,
+                  input we,
+                  output [31:0] rdata
+                );
+                endmodule
+                """,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "lib",
+                        str(library_path),
+                        "--import",
+                        str(verilog_path),
+                        "--module",
+                        "MEM",
+                        "--kind",
+                        "memory",
+                        "-o",
+                        str(output_path),
+                    ]
+                ),
+                0,
+            )
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["components"]["MEM"]["kind"], "memory")
+
+    def test_lib_command_collects_recursive_related_sources_from_multiple_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            library_path = root / "ressources.json"
+            leaf_path = root / "leaf.v"
+            mid_path = root / "mid.v"
+            top_path = root / "top.v"
+            output_path = root / "updated.json"
+            library_path.write_text('{"components": {}}', encoding="utf-8")
+            leaf_path.write_text(
+                """
+                module LEAF (
+                  input [31:0] a,
+                  output [31:0] y
+                );
+                endmodule
+                """,
+                encoding="utf-8",
+            )
+            mid_path.write_text(
+                """
+                module MID (
+                  input [31:0] a,
+                  output [31:0] y
+                );
+                  LEAF u_leaf (
+                    .a(a),
+                    .y(y)
+                  );
+                endmodule
+                """,
+                encoding="utf-8",
+            )
+            top_path.write_text(
+                """
+                module TOP (
+                  input [31:0] a,
+                  output [31:0] y
+                );
+                  MID u_mid (
+                    .a(a),
+                    .y(y)
+                  );
+                endmodule
+                """,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "lib",
+                        str(library_path),
+                        "--import",
+                        str(leaf_path),
+                        "--import",
+                        str(mid_path),
+                        "--import",
+                        str(top_path),
+                        "--module",
+                        "TOP",
+                        "-o",
+                        str(output_path),
+                    ]
+                ),
+                0,
+            )
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["components"]["TOP"]["hdl"]["sources"],
+                [str(leaf_path), str(mid_path), str(top_path)],
+            )
+
+    def test_lib_command_accepts_shell_expanded_extra_import_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            library_path = root / "ressources.json"
+            leaf_path = root / "leaf.v"
+            mid_path = root / "mid.v"
+            top_path = root / "top.v"
+            output_path = root / "updated.json"
+            library_path.write_text('{"components": {}}', encoding="utf-8")
+            leaf_path.write_text(
+                "module LEAF (input [31:0] a, output [31:0] y); endmodule\n",
+                encoding="utf-8",
+            )
+            mid_path.write_text(
+                "module MID (input [31:0] a, output [31:0] y); LEAF u_leaf (.a(a), .y(y)); endmodule\n",
+                encoding="utf-8",
+            )
+            top_path.write_text(
+                "module TOP (input [31:0] a, output [31:0] y); MID u_mid (.a(a), .y(y)); endmodule\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "lib",
+                        str(library_path),
+                        "--import",
+                        str(leaf_path),
+                        str(mid_path),
+                        str(top_path),
+                        "--module",
+                        "TOP",
+                        "-o",
+                        str(output_path),
+                    ]
+                ),
+                0,
+            )
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["components"]["TOP"]["hdl"]["sources"],
+                [str(leaf_path), str(mid_path), str(top_path)],
+            )
 
     def test_parse_lint_and_view_cfg_dfg_cdfg_round_trip(self) -> None:
         source = """
@@ -830,6 +1098,217 @@ region proc_add1 kind=procedure {
             with redirect_stderr(stderr):
                 self.assertEqual(main(["alloc", str(seq_path), "-exg", str(library_path)]), 1)
             self.assertIn("parameter 'word_len' must use kind=type|int|bool|string", stderr.getvalue())
+
+    def test_alloc_command_requires_vendor_for_autoram_memory_policy(self) -> None:
+        seq = """design memdemo
+stage seq
+input  A : memref<i64, 64>
+input  i : i32
+output result : i64
+
+region proc_memdemo kind=procedure {
+  node v0 = nop role=source
+  node v1 = load A, i : i64
+  node v2 = ret v1
+  node v3 = nop role=sink
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        library = """
+{
+  "components": {
+    "GENERIC": {
+      "kind": "combinational",
+      "ports": {
+        "a": { "dir": "input", "type": "i32" },
+        "b": { "dir": "input", "type": "i32" },
+        "y": { "dir": "output", "type": "i32" }
+      },
+      "supports": {
+        "add": { "ii": 1, "d": 1 },
+        "and": { "ii": 1, "d": 1 },
+        "div": { "ii": 1, "d": 1 },
+        "eq": { "ii": 1, "d": 1 },
+        "ge": { "ii": 1, "d": 1 },
+        "gt": { "ii": 1, "d": 1 },
+        "le": { "ii": 1, "d": 1 },
+        "lt": { "ii": 1, "d": 1 },
+        "mod": { "ii": 1, "d": 1 },
+        "mov": { "ii": 1, "d": 1 },
+        "mul": { "ii": 1, "d": 1 },
+        "ne": { "ii": 1, "d": 1 },
+        "neg": { "ii": 1, "d": 1 },
+        "not": { "ii": 1, "d": 1 },
+        "or": { "ii": 1, "d": 1 },
+        "shl": { "ii": 1, "d": 1 },
+        "shr": { "ii": 1, "d": 1 },
+        "sub": { "ii": 1, "d": 1 },
+        "xor": { "ii": 1, "d": 1 }
+      }
+    },
+    "MEM": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": { "kind": "type", "required": true },
+        "word_len": { "kind": "int", "required": true },
+        "impl": { "kind": "string" }
+      },
+      "ports": {
+        "addr": { "dir": "input", "type": "i32" },
+        "wdata": { "dir": "input", "type": "word_t" },
+        "we": { "dir": "input", "type": "i1" },
+        "rdata": { "dir": "output", "type": "word_t" }
+      },
+      "supports": {
+        "load": { "ii": 1, "d": 1 },
+        "store": { "ii": 1, "d": 1 }
+      }
+    }
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seq_path = root / "mem.seq.uhir"
+            library_path = root / "ressources.json"
+            seq_path.write_text(seq, encoding="utf-8")
+            library_path.write_text(library, encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["alloc", str(seq_path), "-exg", str(library_path), "--mem", "autoram"]), 1)
+            self.assertIn("requires --vendor", stderr.getvalue())
+
+    def test_alloc_command_autoram_selects_vendor_memory_impl(self) -> None:
+        seq = """design memdemo
+stage seq
+input  A : memref<i64, 64>
+input  i : i32
+output result : i64
+
+region proc_memdemo kind=procedure {
+  node v0 = nop role=source
+  node v1 = load A, i : i64
+  node v2 = ret v1
+  node v3 = nop role=sink
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        library = """
+{
+  "components": {
+    "GENERIC": {
+      "kind": "combinational",
+      "ports": {
+        "a": { "dir": "input", "type": "i32" },
+        "b": { "dir": "input", "type": "i32" },
+        "y": { "dir": "output", "type": "i32" }
+      },
+      "supports": {
+        "add": { "ii": 1, "d": 1 },
+        "and": { "ii": 1, "d": 1 },
+        "div": { "ii": 1, "d": 1 },
+        "eq": { "ii": 1, "d": 1 },
+        "ge": { "ii": 1, "d": 1 },
+        "gt": { "ii": 1, "d": 1 },
+        "le": { "ii": 1, "d": 1 },
+        "lt": { "ii": 1, "d": 1 },
+        "mod": { "ii": 1, "d": 1 },
+        "mov": { "ii": 1, "d": 1 },
+        "mul": { "ii": 1, "d": 1 },
+        "ne": { "ii": 1, "d": 1 },
+        "neg": { "ii": 1, "d": 1 },
+        "not": { "ii": 1, "d": 1 },
+        "or": { "ii": 1, "d": 1 },
+        "shl": { "ii": 1, "d": 1 },
+        "shr": { "ii": 1, "d": 1 },
+        "sub": { "ii": 1, "d": 1 },
+        "xor": { "ii": 1, "d": 1 }
+      }
+    },
+    "MEM": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": { "kind": "type", "required": true },
+        "word_len": { "kind": "int", "required": true },
+        "impl": { "kind": "string" }
+      },
+      "ports": {
+        "addr": { "dir": "input", "type": "i32" },
+        "wdata": { "dir": "input", "type": "word_t" },
+        "we": { "dir": "input", "type": "i1" },
+        "rdata": { "dir": "output", "type": "word_t" }
+      },
+      "supports": {
+        "load": { "ii": 1, "d": 1 },
+        "store": { "ii": 1, "d": 1 }
+      }
+    }
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seq_path = root / "mem.seq.uhir"
+            library_path = root / "ressources.json"
+            vendor_path = root / "vendor_res.json"
+            alloc_path = root / "mem.alloc.uhir"
+            seq_path.write_text(seq, encoding="utf-8")
+            library_path.write_text(library, encoding="utf-8")
+            vendor_path.write_text(
+                """
+{
+  "components": {
+    "RM_IHPSG13_1P_64x64_c2_bm_bist": {
+      "kind": "memory",
+      "memory": {
+        "word_t": "i64",
+        "word_len": 64
+      },
+      "ports": {
+        "addr": { "dir": "input", "type": "i32" },
+        "wdata": { "dir": "input", "type": "i64" },
+        "we": { "dir": "input", "type": "i1" },
+        "rdata": { "dir": "output", "type": "i64" }
+      },
+      "supports": {
+        "load": { "ii": 1, "d": 2 },
+        "store": { "ii": 1, "d": 1 }
+      }
+    }
+  }
+}
+""",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "alloc",
+                        str(seq_path),
+                        "-exg",
+                        str(library_path),
+                        "--mem",
+                        "autoram",
+                        "--vendor",
+                        str(vendor_path),
+                        "-o",
+                        str(alloc_path),
+                    ]
+                ),
+                0,
+            )
+
+            alloc_text = alloc_path.read_text(encoding="utf-8")
+            self.assertIn(
+                "node v1 = load A, i : i64 class=RM_IHPSG13_1P_64x64_c2_bm_bist<word_t=i64,word_len=64> ii=1 delay=2",
+                alloc_text,
+            )
 
     def test_sched_command_lowers_alloc_to_sched_with_builtin_asap(self) -> None:
         alloc = """design add1

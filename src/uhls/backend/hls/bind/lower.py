@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from uhls.backend.hls.lib import format_component_spec, parse_component_spec
 from uhls.backend.hls.uhir.model import (
     UHIRConstant,
     UHIRDesign,
@@ -150,11 +151,13 @@ def _infer_memory_port_resources(
 
 
 def _parameterized_memory_component_type(component_name: str, memref_type: str) -> str:
+    base_name, params = parse_component_spec(component_name)
     element_type, extent = _parse_memref_type(memref_type)
-    params = [f"word_t={element_type}"]
+    params = dict(params)
+    params["word_t"] = element_type
     if extent is not None:
-        params.append(f"word_len={extent}")
-    return f"{component_name}<{','.join(params)}>"
+        params["word_len"] = str(extent)
+    return format_component_spec(base_name, params)
 
 
 def _parse_memref_type(type_name: str) -> tuple[str, int | None]:

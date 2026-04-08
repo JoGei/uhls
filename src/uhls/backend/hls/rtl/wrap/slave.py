@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from uhls.backend.hls.lib import parse_component_spec as _shared_parse_component_spec
 from uhls.backend.hls.uhir.model import UHIRDesign, UHIRPort
@@ -13,11 +14,14 @@ class WrapperMemoryInterface:
     """One raw core memory bundle exposed through a wrapper."""
 
     base: str
+    component_spec: str | None
     data_type: str
     addr_type: str | None
     write_type: str | None
     has_write: bool
     depth: int | None
+    load_delay: int = 1
+    store_delay: int = 1
 
 
 @dataclass(frozen=True)
@@ -30,12 +34,17 @@ class SlaveWrapperPlan:
     memory_interfaces: tuple[WrapperMemoryInterface, ...]
 
 
-def plan_slave_wrapper(design: UHIRDesign, protocol: str) -> SlaveWrapperPlan:
+def plan_slave_wrapper(
+    design: UHIRDesign,
+    protocol: str,
+    *,
+    component_library: dict[str, dict[str, Any]] | None = None,
+) -> SlaveWrapperPlan:
     """Build one generic slave-wrapper plan for one uglir core."""
     normalized = protocol.strip().lower()
     if normalized not in {"wishbone", "obi"}:
         raise ValueError(f"unsupported slave wrapper protocol '{protocol}'")
-    scalar_inputs, scalar_outputs, memory_interfaces = classify_core_ports(design)
+    scalar_inputs, scalar_outputs, memory_interfaces = classify_core_ports(design, component_library=component_library)
     return SlaveWrapperPlan(
         protocol=normalized,
         scalar_inputs=tuple(scalar_inputs),
@@ -46,12 +55,18 @@ def plan_slave_wrapper(design: UHIRDesign, protocol: str) -> SlaveWrapperPlan:
 
 def classify_core_ports(
     design: UHIRDesign,
+    *,
+    component_library: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[UHIRPort], list[UHIRPort], list[WrapperMemoryInterface]]:
     """Split raw core ports into scalar and memory-facing groups."""
-    memory_resource_params = {
-        (resource.target if resource.target is not None else resource.id): _parse_component_spec(resource.value)[1]
+    memory_resource_specs = {
+        (resource.target if resource.target is not None else resource.id): resource.value
         for resource in design.resources
         if resource.kind == "port"
+    }
+    memory_resource_params = {
+        base: _parse_component_spec(spec)[1]
+        for base, spec in memory_resource_specs.items()
     }
     memory_depths = {
         const.name[:-6]: int(const.value)
@@ -70,6 +85,7 @@ def classify_core_ports(
                 base,
                 {
                     "base": base,
+                    "component_spec": memory_resource_specs.get(base),
                     "data_type": port.type,
                     "addr_type": None,
                     "write_type": None,
@@ -84,6 +100,7 @@ def classify_core_ports(
                 base,
                 {
                     "base": base,
+                    "component_spec": memory_resource_specs.get(base),
                     "data_type": "i32",
                     "addr_type": None,
                     "write_type": None,
@@ -97,6 +114,7 @@ def classify_core_ports(
                 base,
                 {
                     "base": base,
+                    "component_spec": memory_resource_specs.get(base),
                     "data_type": port.type,
                     "addr_type": None,
                     "write_type": None,
@@ -113,6 +131,7 @@ def classify_core_ports(
                 base,
                 {
                     "base": base,
+                    "component_spec": memory_resource_specs.get(base),
                     "data_type": "i32",
                     "addr_type": None,
                     "write_type": None,
@@ -138,11 +157,14 @@ def classify_core_ports(
     memory_interfaces = [
         WrapperMemoryInterface(
             base=str(memory_by_base[key]["base"]),
+            component_spec=None if memory_by_base[key]["component_spec"] is None else str(memory_by_base[key]["component_spec"]),
             data_type=str(memory_by_base[key]["data_type"]),
             addr_type=None if memory_by_base[key]["addr_type"] is None else str(memory_by_base[key]["addr_type"]),
             write_type=None if memory_by_base[key]["write_type"] is None else str(memory_by_base[key]["write_type"]),
             has_write=bool(memory_by_base[key]["has_write"]),
             depth=None if memory_by_base[key]["depth"] is None else int(memory_by_base[key]["depth"]),
+            load_delay=_memory_support_delay(component_library, memory_resource_specs.get(key), "load"),
+            store_delay=_memory_support_delay(component_library, memory_resource_specs.get(key), "store"),
         )
         for key in sorted(memory_by_base)
     ]
@@ -158,6 +180,27 @@ def classify_core_ports(
 
 def _parse_component_spec(component_name: str) -> tuple[str, dict[str, str]]:
     return _shared_parse_component_spec(component_name)
+
+
+def _memory_support_delay(
+    component_library: dict[str, dict[str, Any]] | None,
+    component_spec: str | None,
+    opcode_name: str,
+) -> int:
+    if component_library is None or component_spec is None:
+        return 1
+    base_name, _params = _parse_component_spec(component_spec)
+    component = component_library.get(base_name)
+    if not isinstance(component, dict):
+        return 1
+    supports = component.get("supports")
+    if not isinstance(supports, dict):
+        return 1
+    support = supports.get(opcode_name)
+    if not isinstance(support, dict):
+        return 1
+    delay = support.get("d")
+    return delay if isinstance(delay, int) and delay >= 1 else 1
 
 
 def _split_component_params(params_text: str) -> list[str]:

@@ -1,0 +1,2389 @@
+{
+  "components": {
+    "RM_IHPSG13_1P_1024x16_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_1024x16_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_1024x16_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u10"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u10",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "65535:u16"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i16",
+        "word_len": 1024
+      }
+    },
+    "RM_IHPSG13_1P_1024x32_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_1024x32_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_1024x32_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u10"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u10",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "4294967295:u32"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i32",
+        "word_len": 1024
+      }
+    },
+    "RM_IHPSG13_1P_1024x64_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_1024x64_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_1024x64_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u10"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u10",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "18446744073709551615:u64"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i64",
+        "word_len": 1024
+      }
+    },
+    "RM_IHPSG13_1P_1024x8_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_1024x8_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_1024x8_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u10"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u10",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "255:u8"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i8",
+        "word_len": 1024
+      }
+    },
+    "RM_IHPSG13_1P_2048x64_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_2048x64_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_2048x64_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u11"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u11",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "18446744073709551615:u64"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i64",
+        "word_len": 2048
+      }
+    },
+    "RM_IHPSG13_1P_256x16_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_256x16_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_256x16_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u8"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u8",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "65535:u16"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i16",
+        "word_len": 256
+      }
+    },
+    "RM_IHPSG13_1P_256x32_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_256x32_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_256x32_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u8"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u8",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "4294967295:u32"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i32",
+        "word_len": 256
+      }
+    },
+    "RM_IHPSG13_1P_256x48_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_256x48_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_256x48_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u8"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u8",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "281474976710655:u48"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i48",
+        "word_len": 256
+      }
+    },
+    "RM_IHPSG13_1P_256x64_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_256x64_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_256x64_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u8"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u8",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "18446744073709551615:u64"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i64",
+        "word_len": 256
+      }
+    },
+    "RM_IHPSG13_1P_256x8_c3_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_256x8_c3_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_256x8_c3_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u8"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u8",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "255:u8"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i8",
+        "word_len": 256
+      }
+    },
+    "RM_IHPSG13_1P_4096x16_c3_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_4096x16_c3_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_4096x16_c3_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u12"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u12",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "65535:u16"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i16",
+        "word_len": 4096
+      }
+    },
+    "RM_IHPSG13_1P_4096x8_c3_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_4096x8_c3_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_4096x8_c3_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u12"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u12",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "255:u8"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i8",
+        "word_len": 4096
+      }
+    },
+    "RM_IHPSG13_1P_512x16_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_512x16_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_512x16_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u9"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u9",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "65535:u16"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i16",
+        "word_len": 512
+      }
+    },
+    "RM_IHPSG13_1P_512x32_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_512x32_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_512x32_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u9"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u9",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "4294967295:u32"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i32",
+        "word_len": 512
+      }
+    },
+    "RM_IHPSG13_1P_512x64_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_512x64_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_512x64_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u9"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u9",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "18446744073709551615:u64"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i64",
+        "word_len": 512
+      }
+    },
+    "RM_IHPSG13_1P_512x8_c3_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_512x8_c3_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_512x8_c3_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u9"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u9",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "255:u8"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i8",
+        "word_len": 512
+      }
+    },
+    "RM_IHPSG13_1P_64x64_c2_bm_bist": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_64x64_c2_bm_bist",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_64x64_c2_bm_bist.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u6"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        },
+        "A_BM": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_BIST_CLK": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_EN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_MEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_WEN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_REN": {
+          "dir": "input",
+          "type": "i1",
+          "tie": "false"
+        },
+        "A_BIST_ADDR": {
+          "dir": "input",
+          "type": "u6",
+          "tie": "false"
+        },
+        "A_BIST_DIN": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        },
+        "A_BIST_BM": {
+          "dir": "input",
+          "type": "word_t",
+          "tie": "false"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2",
+            "A_BM": "18446744073709551615:u64"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i64",
+        "word_len": 64
+      }
+    },
+    "RM_IHPSG13_1P_8192x32_c4": {
+      "kind": "memory",
+      "parameters": {
+        "word_t": {
+          "kind": "type",
+          "required": true
+        },
+        "word_len": {
+          "kind": "int",
+          "required": true
+        }
+      },
+      "hdl": {
+        "language": "verilog",
+        "module": "RM_IHPSG13_1P_8192x32_c4",
+        "sources": [
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_8192x32_c4.v",
+          "${IHP130_PDK_ROOT}/ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_core_behavioral.v"
+        ],
+        "defines": [
+          "FUNCTIONAL"
+        ]
+      },
+      "ports": {
+        "A_CLK": {
+          "dir": "input",
+          "type": "clock"
+        },
+        "A_MEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_WEN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_REN": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_ADDR": {
+          "dir": "input",
+          "type": "u13"
+        },
+        "A_DIN": {
+          "dir": "input",
+          "type": "word_t"
+        },
+        "A_DLY": {
+          "dir": "input",
+          "type": "i1"
+        },
+        "A_DOUT": {
+          "dir": "output",
+          "type": "word_t"
+        }
+      },
+      "supports": {
+        "load": {
+          "ii": 1,
+          "d": 2,
+          "mode": "read",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "true",
+            "A_WEN": "false",
+            "A_ADDR": "operand1",
+            "A_DOUT": "result"
+          }
+        },
+        "store": {
+          "ii": 1,
+          "d": 1,
+          "mode": "write",
+          "bind": {
+            "A_DLY": "true",
+            "A_MEN": "true",
+            "A_REN": "false",
+            "A_WEN": "true",
+            "A_ADDR": "operand1",
+            "A_DIN": "operand2"
+          }
+        }
+      },
+      "memory": {
+        "word_t": "i32",
+        "word_len": 8192
+      }
+    }
+  }
+}

@@ -5,11 +5,13 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 import re
+from typing import Any
 
 from uhls.backend.hls.uglir.model import (
     UGLIRAddressMap,
     UGLIRAddressMapEntry,
     UGLIRAssign,
+    UGLIRAttach,
     UGLIRConstant,
     UGLIRDesign,
     UGLIRPort,
@@ -19,6 +21,14 @@ from uhls.backend.hls.uglir.model import (
 )
 
 from ..wrap import SlaveWrapperPlan
+from .memory_component import (
+    component_memory_control_literals,
+    component_memory_port_name,
+    component_semantic_port_signal,
+    component_tied_input_ports,
+    materialized_memory_instance_spec,
+    resolved_component_ports,
+)
 from .wishbone import ProtocolPort
 
 
@@ -126,6 +136,8 @@ def build_obi_slave_wrapper_uglir(
     core_design: UGLIRDesign,
     wrapper: SlaveWrapperPlan,
     protocol: OBISlaveProtocolPlan,
+    *,
+    component_library: dict[str, dict[str, Any]] | None = None,
 ) -> UGLIRDesign:
     """Merge one OBI subordinate wrapper around one core µglIR design."""
     design = deepcopy(core_design)
@@ -155,6 +167,19 @@ def build_obi_slave_wrapper_uglir(
     for window in protocol.memory_windows:
         design.constants.append(UGLIRConstant(window.symbol, f"OBI_BASE_ADDR + {_u32(window.base_address)}", "u32"))
     design.address_maps.append(_obi_address_map(protocol))
+
+    instantiated_memory_bases = tuple(
+        interface.base
+        for interface in wrapper.memory_interfaces
+        if _should_instantiate_memory_component(interface, component_library)
+    )
+    slow_memory_bases = tuple(
+        interface.base
+        for interface in wrapper.memory_interfaces
+        if _is_slow_instantiated_memory(interface, component_library)
+    )
+    if protocol.response_queue_depth > 1 and instantiated_memory_bases:
+        raise NotImplementedError("obi+burst does not yet support instantiated wrapper memories")
 
     design.resources.extend(
         [
@@ -189,18 +214,30 @@ def build_obi_slave_wrapper_uglir(
     for port in wrapper.scalar_outputs:
         design.resources.append(UGLIRResource("reg", f"{port.name}_q", port.type))
     for interface in wrapper.memory_interfaces:
-        depth = _memory_depth(interface)
-        design.resources.append(UGLIRResource("mem", f"{interface.base}_mem_q", f"{interface.data_type}[{depth}]"))
         design.resources.append(UGLIRResource("net", f"{interface.base}_bus_hit_n", "i1"))
         design.resources.append(UGLIRResource("net", f"{interface.base}_bus_word_addr_n", f"u{_memory_index_width(interface)}"))
+        if _should_instantiate_memory_component(interface, component_library):
+            design.resources.append(UGLIRResource("net", f"{interface.base}_mem_rdata_n", interface.data_type))
+            design.resources.append(
+                UGLIRResource(
+                    "inst",
+                    f"{interface.base}_mem_inst",
+                    _materialized_interface_component_spec(interface, component_library),
+                )
+            )
+        else:
+            depth = _memory_depth(interface)
+            design.resources.append(UGLIRResource("mem", f"{interface.base}_mem_q", f"{interface.data_type}[{depth}]"))
+        if interface.base in slow_memory_bases:
+            design.resources.append(UGLIRResource("reg", f"{interface.base}_bus_read_pending_q", "i1"))
 
     if protocol.response_queue_depth <= 1:
         design.assigns.extend(
             [
-                UGLIRAssign("obi_gnt_o", "obi_req_i & !obi_rsp_pending_q"),
+                UGLIRAssign("obi_gnt_o", _obi_gnt_expr(wrapper, protocol, component_library)),
                 UGLIRAssign("obi_accept_n", "obi_req_i & obi_gnt_o"),
-                UGLIRAssign("obi_rvalid_o", "obi_rsp_pending_q"),
-                UGLIRAssign("obi_rdata_o", "obi_rsp_rdata_q"),
+                UGLIRAssign("obi_rvalid_o", _obi_rvalid_expr(wrapper, protocol, component_library)),
+                UGLIRAssign("obi_rdata_o", _obi_rdata_output_expr(wrapper, protocol, component_library)),
                 UGLIRAssign("req_valid", "start_pending_q"),
                 UGLIRAssign("resp_ready", "true"),
             ]
@@ -225,7 +262,11 @@ def build_obi_slave_wrapper_uglir(
         design.assigns.append(
             UGLIRAssign(
                 f"{interface.base}_bus_hit_n",
-                f"obi_addr_i >= {window.symbol} && obi_addr_i < ({window.symbol} + {_u32(window.span_bytes)})",
+                (
+                    f"obi_addr_i >= {window.symbol} && obi_addr_i < ({window.symbol} + {_u32(window.span_bytes)})"
+                    if not _should_instantiate_memory_component(interface, component_library)
+                    else f"(obi_addr_i >= {window.symbol} && obi_addr_i < ({window.symbol} + {_u32(window.span_bytes)})) && !(busy_q | start_pending_q)"
+                ),
             )
         )
         design.assigns.append(
@@ -237,9 +278,29 @@ def build_obi_slave_wrapper_uglir(
         design.assigns.append(
             UGLIRAssign(
                 f"{interface.base}_rdata",
-                f"{interface.base}_mem_q[{_memory_index_expr(f'{interface.base}_addr', interface)}]",
+                (
+                    f"{interface.base}_mem_rdata_n"
+                    if _should_instantiate_memory_component(interface, component_library)
+                    else f"{interface.base}_mem_q[{_memory_index_expr(f'{interface.base}_addr', interface)}]"
+                ),
             )
         )
+        if _should_instantiate_memory_component(interface, component_library):
+            core_write_expr = f"{interface.base}_we" if interface.has_write else "false"
+            core_wdata_expr = (
+                f"{interface.base}_wdata"
+                if interface.has_write and interface.write_type is not None
+                else _zero_expr_for_type(interface.data_type)
+            )
+            _append_instantiated_wrapper_memory(
+                design,
+                interface,
+                component_library,
+                addr_expr=f"((busy_q | start_pending_q) ? {interface.base}_addr : {interface.base}_bus_word_addr_n)",
+                wdata_expr=f"((busy_q | start_pending_q) ? {core_wdata_expr} : {_unpack_from_obi('obi_wdata_i', interface.data_type)})",
+                active_expr=f"((busy_q | start_pending_q) || (obi_accept_n && {interface.base}_bus_hit_n))",
+                write_expr=f"((busy_q | start_pending_q) ? {core_write_expr} : ((obi_accept_n && obi_we_i) && {interface.base}_bus_hit_n))",
+            )
 
     seq = UGLIRSeqBlock(clock="clk", reset="rst")
     if protocol.response_queue_depth <= 1:
@@ -267,19 +328,27 @@ def build_obi_slave_wrapper_uglir(
         seq.reset_updates.append(UGLIRSeqUpdate(f"{port.name}_q", _zero_expr_for_type(port.type)))
     for port in wrapper.scalar_outputs:
         seq.reset_updates.append(UGLIRSeqUpdate(f"{port.name}_q", _zero_expr_for_type(port.type)))
+    for base in slow_memory_bases:
+        seq.reset_updates.append(UGLIRSeqUpdate(f"{base}_bus_read_pending_q", "false"))
 
     control_write_cond = "(obi_accept_n && obi_we_i) && (obi_addr_i == OBI_REG_CONTROL_STATUS) && obi_wdata_i[0]"
     if protocol.response_queue_depth <= 1:
         seq.updates.append(
             UGLIRSeqUpdate(
                 "obi_rsp_pending_q",
-                "(obi_accept_n ? true : ((obi_rsp_pending_q && obi_rready_i) ? false : obi_rsp_pending_q))",
+                (
+                    f"(obi_accept_n ? !({_obi_slow_memory_read_hit_expr(wrapper, component_library)}) "
+                    ": ((obi_rsp_pending_q && obi_rready_i) ? false : obi_rsp_pending_q))"
+                ),
             )
         )
         seq.updates.append(
             UGLIRSeqUpdate(
                 "obi_rsp_rdata_q",
-                f"(obi_accept_n ? {_obi_read_data_expr(wrapper, protocol)} : obi_rsp_rdata_q)",
+                (
+                    f"(obi_accept_n && !({_obi_slow_memory_read_hit_expr(wrapper, component_library)}) "
+                    f"? {_obi_read_data_expr(wrapper, protocol, component_library)} : obi_rsp_rdata_q)"
+                ),
             )
         )
     else:
@@ -343,26 +412,34 @@ def build_obi_slave_wrapper_uglir(
             )
         )
     for interface in wrapper.memory_interfaces:
-        seq.updates.append(
-            UGLIRSeqUpdate(
-                f"{interface.base}_mem_q[{interface.base}_bus_word_addr_n]",
-                _masked_write_expr(
-                    f"{interface.base}_mem_q[{interface.base}_bus_word_addr_n]",
-                    "obi_wdata_i",
-                    "obi_be_i",
-                    interface.data_type,
-                ),
-                f"(obi_accept_n && obi_we_i) && {interface.base}_bus_hit_n",
-            )
-        )
-        if interface.has_write:
+        if interface.base in slow_memory_bases:
             seq.updates.append(
                 UGLIRSeqUpdate(
-                    f"{interface.base}_mem_q[{_memory_index_expr(f'{interface.base}_addr', interface)}]",
-                    f"{interface.base}_wdata",
-                    f"{interface.base}_we",
+                    f"{interface.base}_bus_read_pending_q",
+                    f"((obi_accept_n && !obi_we_i) && {interface.base}_bus_hit_n) ? true : (({interface.base}_bus_read_pending_q && obi_rready_i) ? false : {interface.base}_bus_read_pending_q)",
                 )
             )
+        if not _should_instantiate_memory_component(interface, component_library):
+            seq.updates.append(
+                UGLIRSeqUpdate(
+                    f"{interface.base}_mem_q[{interface.base}_bus_word_addr_n]",
+                    _masked_write_expr(
+                        f"{interface.base}_mem_q[{interface.base}_bus_word_addr_n]",
+                        "obi_wdata_i",
+                        "obi_be_i",
+                        interface.data_type,
+                    ),
+                    f"(obi_accept_n && obi_we_i) && {interface.base}_bus_hit_n",
+                )
+            )
+            if interface.has_write:
+                seq.updates.append(
+                    UGLIRSeqUpdate(
+                        f"{interface.base}_mem_q[{_memory_index_expr(f'{interface.base}_addr', interface)}]",
+                        f"{interface.base}_wdata",
+                        f"{interface.base}_we",
+                    )
+                )
     design.seq_blocks.append(seq)
 
     _dedupe_resources(design)
@@ -465,6 +542,18 @@ def _pack_to_obi(signal: str, type_hint: str) -> str:
     return f"{{0:u{32 - width}, {signal}}}"
 
 
+def _unpack_from_obi(signal: str, type_hint: str) -> str:
+    match = re.fullmatch(r"([iu])(\d+)", type_hint)
+    if match is None:
+        return signal
+    width = int(match.group(2))
+    if width >= 32:
+        return signal if width == 32 else f"{signal}[{width - 1}:0]"
+    if width == 1:
+        return f"{signal}[0]"
+    return f"{signal}[{width - 1}:0]"
+
+
 def _memory_depth(interface) -> int:
     depth = getattr(interface, "depth", None)
     if isinstance(depth, int) and depth > 0:
@@ -500,12 +589,23 @@ def _memory_index_expr(address_expr: str, interface) -> str:
     return f"{address_expr}[{width - 1}:0]"
 
 
-def _obi_read_data_expr(wrapper: SlaveWrapperPlan, protocol: OBISlaveProtocolPlan) -> str:
+def _obi_read_data_expr(
+    wrapper: SlaveWrapperPlan,
+    protocol: OBISlaveProtocolPlan,
+    component_library: dict[str, dict[str, Any]] | None = None,
+) -> str:
     read_expr = "0:u32"
     for interface in reversed(wrapper.memory_interfaces):
+        if _is_slow_instantiated_memory(interface, component_library):
+            continue
+        source_expr = (
+            f"{interface.base}_mem_rdata_n"
+            if _should_instantiate_memory_component(interface, component_library)
+            else f"{interface.base}_mem_q[{interface.base}_bus_word_addr_n]"
+        )
         read_expr = (
             f"{interface.base}_bus_hit_n ? "
-            f"{_pack_to_obi(f'{interface.base}_mem_q[{interface.base}_bus_word_addr_n]', interface.data_type)} : "
+            f"{_pack_to_obi(source_expr, interface.data_type)} : "
             f"({read_expr})"
         )
     for port in reversed(protocol.scalar_outputs):
@@ -523,6 +623,80 @@ def _obi_hit_expr(protocol: OBISlaveProtocolPlan) -> str:
     terms.extend(f"(obi_addr_i == {port.symbol})" for port in protocol.scalar_outputs)
     terms.extend(f"{window.base}_bus_hit_n" for window in protocol.memory_windows)
     return " || ".join(terms) if terms else "false"
+
+
+def _obi_slow_memory_pending_expr(
+    wrapper: SlaveWrapperPlan,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> str:
+    terms = [
+        f"{interface.base}_bus_read_pending_q"
+        for interface in wrapper.memory_interfaces
+        if _is_slow_instantiated_memory(interface, component_library)
+    ]
+    return " | ".join(terms) if terms else "false"
+
+
+def _obi_slow_memory_read_hit_expr(
+    wrapper: SlaveWrapperPlan,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> str:
+    terms = [
+        f"{interface.base}_bus_hit_n"
+        for interface in wrapper.memory_interfaces
+        if _is_slow_instantiated_memory(interface, component_library)
+    ]
+    if not terms:
+        return "false"
+    return f"(!obi_we_i) & ({' | '.join(terms)})"
+
+
+def _obi_gnt_expr(
+    wrapper: SlaveWrapperPlan,
+    protocol: OBISlaveProtocolPlan,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> str:
+    pending_expr = _obi_slow_memory_pending_expr(wrapper, component_library)
+    if protocol.response_queue_depth <= 1:
+        if pending_expr == "false":
+            return "obi_req_i & !obi_rsp_pending_q"
+        return f"obi_req_i & !obi_rsp_pending_q & !({pending_expr})"
+    full_expr = _queue_full_expr(protocol)
+    if pending_expr == "false":
+        return f"obi_req_i & !({full_expr})"
+    return f"obi_req_i & !({full_expr}) & !({pending_expr})"
+
+
+def _obi_rvalid_expr(
+    wrapper: SlaveWrapperPlan,
+    protocol: OBISlaveProtocolPlan,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> str:
+    pending_expr = _obi_slow_memory_pending_expr(wrapper, component_library)
+    if protocol.response_queue_depth > 1:
+        return "obi_rsp_count_q != 0:u2"
+    if pending_expr == "false":
+        return "obi_rsp_pending_q"
+    return f"obi_rsp_pending_q | ({pending_expr})"
+
+
+def _obi_rdata_output_expr(
+    wrapper: SlaveWrapperPlan,
+    protocol: OBISlaveProtocolPlan,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> str:
+    if protocol.response_queue_depth > 1:
+        return "obi_rsp_fifo_q[obi_rsp_head_q]"
+    read_expr = "obi_rsp_rdata_q"
+    for interface in reversed(wrapper.memory_interfaces):
+        if not _is_slow_instantiated_memory(interface, component_library):
+            continue
+        read_expr = (
+            f"{interface.base}_bus_read_pending_q ? "
+            f"{_pack_to_obi(f'{interface.base}_mem_rdata_n', interface.data_type)} : "
+            f"({read_expr})"
+        )
+    return read_expr
 
 
 def _obi_address_map(protocol: OBISlaveProtocolPlan) -> UGLIRAddressMap:
@@ -609,3 +783,83 @@ def _bit_slice_expr(signal: str, hi: int, lo: int) -> str:
     if hi == lo:
         return f"{signal}[{hi}]"
     return f"{signal}[{hi}:{lo}]"
+
+
+def _should_instantiate_memory_component(
+    interface,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> bool:
+    return component_library is not None and interface.component_spec is not None
+
+
+def _is_slow_instantiated_memory(
+    interface,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> bool:
+    return _should_instantiate_memory_component(interface, component_library) and getattr(interface, "load_delay", 1) > 1
+
+
+def _materialized_interface_component_spec(
+    interface,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> str:
+    if component_library is None or interface.component_spec is None:
+        raise ValueError(f"wrapper memory '{interface.base}' requires one component library for instantiation")
+    return materialized_memory_instance_spec(component_library, interface.component_spec)
+
+
+def _append_instantiated_wrapper_memory(
+    design: UGLIRDesign,
+    interface,
+    component_library: dict[str, dict[str, Any]] | None,
+    *,
+    addr_expr: str,
+    wdata_expr: str,
+    active_expr: str,
+    write_expr: str,
+) -> None:
+    if component_library is None or interface.component_spec is None:
+        raise ValueError(f"wrapper memory '{interface.base}' requires one component library for instantiation")
+    instance_id = f"{interface.base}_mem_inst"
+    ports = resolved_component_ports(component_library, interface.component_spec)
+    ties = component_tied_input_ports(component_library, interface.component_spec)
+    addr_port = component_memory_port_name(component_library, interface.component_spec, "addr")
+    wdata_port = component_memory_port_name(component_library, interface.component_spec, "wdata")
+    rdata_port = component_memory_port_name(component_library, interface.component_spec, "rdata")
+    control_literals = component_memory_control_literals(component_library, interface.component_spec)
+    if rdata_port is None:
+        raise ValueError(f"wrapper memory '{interface.base}' must define one readable output port")
+
+    for port_name, payload in ports.items():
+        port_type = payload.get("type")
+        if not isinstance(port_type, str) or not port_type:
+            continue
+        semantic_signal = component_semantic_port_signal(component_library, interface.component_spec, port_name)
+        if semantic_signal is not None:
+            design.attachments.append(UGLIRAttach(instance_id, port_name, semantic_signal))
+            continue
+        if payload.get("dir") == "output":
+            if port_name == rdata_port:
+                design.attachments.append(UGLIRAttach(instance_id, port_name, f"{interface.base}_mem_rdata_n"))
+            continue
+        signal_name = f"{instance_id}_{port_name}_n"
+        design.resources.append(UGLIRResource("net", signal_name, port_type))
+        design.attachments.append(UGLIRAttach(instance_id, port_name, signal_name))
+        if port_name in ties:
+            design.assigns.append(UGLIRAssign(signal_name, ties[port_name]))
+            continue
+        if port_name == addr_port:
+            design.assigns.append(UGLIRAssign(signal_name, addr_expr))
+            continue
+        if port_name == wdata_port:
+            design.assigns.append(UGLIRAssign(signal_name, wdata_expr))
+            continue
+        load_expr, store_expr = control_literals.get(port_name, (None, None))
+        load_expr = load_expr or _zero_expr_for_type(port_type)
+        store_expr = store_expr or _zero_expr_for_type(port_type)
+        design.assigns.append(
+            UGLIRAssign(
+                signal_name,
+                f"({active_expr}) ? ({write_expr} ? ({store_expr}) : ({load_expr})) : ({_zero_expr_for_type(port_type)})",
+            )
+        )

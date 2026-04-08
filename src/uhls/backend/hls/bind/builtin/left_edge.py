@@ -43,7 +43,7 @@ class LeftEdgeBinder(OperationBinderBase):
             )
             color_to_resource: dict[int, str] = {}
             for color in sorted(set(colors.values())):
-                resource_id = f"{class_name.lower()}{next_resource_index[class_name]}"
+                resource_id = _functional_unit_resource_id(class_name, next_resource_index[class_name])
                 next_resource_index[class_name] += 1
                 color_to_resource[color] = resource_id
                 resources.append(UHIRResource("fu", resource_id, class_name))
@@ -103,6 +103,14 @@ def _register_resource_id(value_type: str, index: int) -> str:
     if not normalized:
         normalized = "value"
     return f"r_{normalized}_{index}"
+
+
+def _functional_unit_resource_id(class_name: str, index: int) -> str:
+    normalized = "".join(char if char.isalnum() else "_" for char in class_name).strip("_").lower()
+    normalized = "_".join(part for part in normalized.split("_") if part)
+    if not normalized:
+        normalized = "fu"
+    return f"{normalized}{index}"
 
 
 def _flattened_value_occurrence_items(

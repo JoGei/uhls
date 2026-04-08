@@ -1,0 +1,2 @@
+"""Vendor-specific implementation collateral."""
+

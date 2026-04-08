@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import re
 import sys
 from dataclasses import dataclass
 from inspect import Parameter as InspectParameter
@@ -21,6 +23,7 @@ from uhls.backend.hls import (
     FSM_ENCODINGS,
     GLUE_PROTOCOLS,
     GLUE_WRAPS,
+    MEM_POLICIES,
     RTL_HDLS,
     VerilatorWrappedRunner,
     bind_dump_to_dot,
@@ -35,12 +38,17 @@ from uhls.backend.hls import (
     lower_bind_to_fsm,
     lower_fsm_to_uglir,
     lower_uglir_to_rtl,
+    parse_memory_policy,
     protocol_spec_help,
     parse_bind_dump_spec,
     validate_uglir_for_rtl,
     wrap_uglir_design,
 )
-from uhls.backend.hls.lib import import_verilog_component_stub, validate_component_library
+from uhls.backend.hls.lib import (
+    import_verilog_component_stub_from_files,
+    merged_component_library_payload,
+    validate_component_library,
+)
 from uhls.backend.hls.uglir import (
     UGLIRParseError,
     format_uglir,
@@ -371,30 +379,41 @@ def lint_cmd(input_path: Path) -> None:
 
 @cli.command(
     "lib",
+    context_settings={"allow_extra_args": True},
     help=(
-        "Import one foreign HDL module interface into one component-library JSON stub.\n"
+        "Import foreign HDL module interfaces and merge component-library JSON files.\n"
         "\n"
         "Examples:\n"
         "\n"
         "\b\n"
-        "  uhls lib ressources.json --import fu.v --module ALU\n"
+        "  uhls lib resources.json --import fu.v --module ALU\n"
         "\n"
         "\b\n"
-        "  uhls lib ressources.json --import fu.v --module ALU --ops add,sub,lt -o updated.json\n"
+        "  uhls lib resources.json --import fu.v --module ALU --ops add,sub,lt -o updated.json\n"
+        "\n"
+        "\b\n"
+        "  uhls lib resources.json --merge vendor.json -o merged.json\n"
     ),
 )
+@click.pass_context
 @click.argument("input_path", metavar="input.json", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--import",
-    "import_path",
-    required=True,
+    "import_paths",
+    multiple=True,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Foreign HDL source file to inspect.",
+    help="Foreign HDL source file to inspect. Pass multiple times to include related submodule files.",
+)
+@click.option(
+    "--merge",
+    "merge_paths",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Additional component-library JSON to merge into the base input. Later files win on name collisions.",
 )
 @click.option(
     "--module",
     "module_name",
-    required=True,
     help="Verilog module name to import from the HDL source.",
 )
 @click.option(
@@ -402,13 +421,40 @@ def lint_cmd(input_path: Path) -> None:
     default="",
     help="Optional comma-separated list of canonical µIR ops to pre-seed in the supports table.",
 )
+@click.option(
+    "--kind",
+    "component_kind",
+    type=click.Choice(["combinational", "sequential", "pipelined", "memory", "fifo", "stream"], case_sensitive=False),
+    default="combinational",
+    show_default=True,
+    help="Component kind to assign to the imported HDL stub.",
+)
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
-def lib_cmd(input_path: Path, import_path: Path, module_name: str, ops: str, output: Path | None) -> None:
+def lib_cmd(
+    ctx: click.Context,
+    input_path: Path,
+    import_paths: tuple[Path, ...],
+    merge_paths: tuple[Path, ...],
+    module_name: str,
+    ops: str,
+    component_kind: str,
+    output: Path | None,
+) -> None:
     """Extend one component-library JSON with one imported HDL module stub."""
-    try:
-        payload = json.loads(input_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CLIError(f"failed to load component library '{input_path}': {exc}") from exc
+    if not import_paths and not merge_paths:
+        raise CLIError("'lib' requires at least one --import <hdl.v> or --merge <library.json>")
+    if import_paths and not module_name:
+        raise CLIError("'lib' with --import requires --module <module_name>")
+    if module_name and not import_paths:
+        raise CLIError("'lib' only accepts --module when --import is used")
+    target_output = output if output is not None else input_path
+    if merge_paths:
+        payload = merged_component_library_payload([input_path, *merge_paths], target_output)
+    else:
+        try:
+            payload = _load_json_with_env(input_path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise CLIError(f"failed to load component library '{input_path}': {exc}") from exc
     if not isinstance(payload, dict):
         raise CLIError(f"component library '{input_path}' must be a JSON object")
     components = payload.get("components")
@@ -417,21 +463,33 @@ def lib_cmd(input_path: Path, import_path: Path, module_name: str, ops: str, out
         payload["components"] = components
     if not isinstance(components, dict):
         raise CLIError(f"component library '{input_path}' must define object-valued 'components'")
-    if module_name in components:
-        raise CLIError(f"component library '{input_path}' already defines component '{module_name}'")
-    try:
-        source_text = import_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise CLIError(f"failed to read HDL source '{import_path}': {exc}") from exc
+    extra_imports: list[Path] = []
+    for extra_arg in ctx.args:
+        extra_path = Path(extra_arg)
+        if not extra_path.is_file():
+            raise CLIError(f"'lib' extra import path '{extra_arg}' does not exist or is not one file")
+        extra_imports.append(extra_path)
     requested_ops = tuple(op.strip() for op in ops.split(",") if op.strip())
+    if import_paths:
+        if module_name in components:
+            raise CLIError(f"component library '{input_path}' already defines component '{module_name}'")
+        try:
+            source_files = tuple(
+                (import_path, import_path.read_text(encoding="utf-8"))
+                for import_path in (*import_paths, *extra_imports)
+            )
+            imported = import_verilog_component_stub_from_files(
+                source_files=source_files,
+                module_name=module_name,
+                ops=requested_ops,
+                kind=component_kind,
+            )
+            components[module_name] = imported
+        except OSError as exc:
+            raise CLIError(f"failed to read HDL source '{exc.filename}': {exc}") from exc
+        except ValueError as exc:
+            raise CLIError(str(exc)) from exc
     try:
-        imported = import_verilog_component_stub(
-            verilog_text=source_text,
-            module_name=module_name,
-            source_path=import_path,
-            ops=requested_ops,
-        )
-        components[module_name] = imported
         payload["components"] = validate_component_library(components)
     except ValueError as exc:
         raise CLIError(str(exc)) from exc
@@ -527,12 +585,30 @@ def seq_cmd(
     show_default=True,
     help="Allocation strategy used when choosing one FU candidate per opcode.",
 )
+@click.option(
+    "--mem",
+    "memory_policy_spec",
+    default="ffonly",
+    show_default=True,
+    help=(
+        "Memory implementation policy. "
+        "Use ffonly or autoram[+<bits>] (threshold in total memory bits, default 1024)."
+    ),
+)
+@click.option(
+    "--vendor",
+    "memory_vendor",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Vendor component library used by --mem=autoram.",
+)
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def alloc_cmd(
     input_path: Path | None,
     executability_graph_path: Path | None,
     gen_dummy_exg: bool,
     allocation_algorithm: str,
+    memory_policy_spec: str,
+    memory_vendor: Path | None,
     output: Path | None,
 ) -> None:
     """Lower seq-stage µhIR to alloc-stage µhIR."""
@@ -549,10 +625,19 @@ def alloc_cmd(
     design = parse_uhir_file(input_path)
     if design.stage != "seq":
         raise CLIError(f"'alloc' expects seq-stage µhIR input, got stage '{design.stage}'")
+    try:
+        memory_policy = parse_memory_policy(memory_policy_spec)
+    except ValueError as exc:
+        raise CLIError(str(exc)) from exc
+    if memory_policy.mode == "autoram" and memory_vendor is None:
+        raise CLIError("'alloc' with --mem=autoram requires --vendor=<vendor_res.json>")
+    vendor_components = _load_component_library(memory_vendor) if memory_vendor is not None else None
     allocated = lower_seq_to_alloc(
         design,
         executability_graph=_load_executability_graph(executability_graph_path),
         algorithm=allocation_algorithm,
+        memory_policy=memory_policy,
+        memory_vendor_components=vendor_components,
     )
     _write_or_print_text(format_uhir(allocated), output)
 
@@ -970,7 +1055,12 @@ def glue_cmd(
     else:
         raise CLIError(f"'glue' expects fsm-stage µhIR or µglIR input, got stage '{design.stage}'")
     try:
-        lowered = wrap_uglir_design(lowered, wrap=wrap, protocol=protocol)
+        lowered = wrap_uglir_design(
+            lowered,
+            wrap=wrap,
+            protocol=protocol,
+            component_library=_load_component_library(resources_path) if resources_path is not None else None,
+        )
     except (NotImplementedError, ValueError) as exc:
         raise CLIError(str(exc)) from exc
     _write_or_print_text(_format_hls_exchange_design(lowered), output)
@@ -1371,8 +1461,8 @@ def _load_executability_graph(path: Path) -> ExecutabilityGraph:
             raise CLIError(f"failed to load executability graph '{path}': {exc}") from exc
 
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = _load_json_with_env(path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise CLIError(f"failed to load executability graph '{path}': {exc}") from exc
 
     if not isinstance(payload, dict):
@@ -1489,8 +1579,8 @@ def _load_executability_graph(path: Path) -> ExecutabilityGraph:
 
 def _load_component_library(path: Path) -> dict[str, dict[str, object]]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = _load_json_with_env(path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise CLIError(f"failed to load component library '{path}': {exc}") from exc
 
     if not isinstance(payload, dict):
@@ -1505,6 +1595,44 @@ def _load_component_library(path: Path) -> dict[str, dict[str, object]]:
         return validate_component_library(components)
     except ValueError as exc:
         raise CLIError(f"component library '{path}' is invalid: {exc}") from exc
+
+
+def _load_json_with_env(path: Path) -> object:
+    return _expand_env_in_json(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _expand_env_in_json(value: object) -> object:
+    if isinstance(value, str):
+        return _expand_env_string(value)
+    if isinstance(value, list):
+        return [_expand_env_in_json(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _expand_env_in_json(item) for key, item in value.items()}
+    return value
+
+
+_ENV_REF_RE = re.compile(
+    r"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|(?P<plain>[A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_(]))"
+)
+
+
+def _expand_env_string(text: str) -> str:
+    missing: list[str] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group("braced") or match.group("plain")
+        assert name is not None
+        value = os.environ.get(name)
+        if value is None:
+            missing.append(name)
+            return match.group(0)
+        return value
+
+    expanded = _ENV_REF_RE.sub(_replace, text)
+    if missing:
+        missing_text = ", ".join(sorted(dict.fromkeys(missing)))
+        raise ValueError(f"undefined environment variable(s): {missing_text}")
+    return expanded
 
 
 def _format_executability_graph_json(graph: ExecutabilityGraph) -> str:

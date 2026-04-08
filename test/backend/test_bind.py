@@ -327,6 +327,72 @@ class BindingLoweringTests(unittest.TestCase):
             [(resource.kind, resource.id, resource.value, resource.target) for resource in bind_design.resources],
         )
 
+    def test_bind_preserves_memory_component_parameters_when_inferencing_port_resource(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design static_mem_bind
+            stage sched
+            schedule kind=control_steps
+            input  A : memref<i32, 4>
+            input  i : i32
+            output result : i32
+
+            region proc_static_mem_bind kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = load A, i : i32 class=GEN_FF_MEM<word_t=i32,word_len=4> ii=1 delay=1 start=0 end=0
+              node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+
+              steps [0:1]
+              latency 2
+            }
+            """
+        )
+
+        bind_design = lower_sched_to_bind(sched_design)
+
+        self.assertIn(
+            ("port", "A", "GEN_FF_MEM<word_t=i32,word_len=4>", "A"),
+            [(resource.kind, resource.id, resource.value, resource.target) for resource in bind_design.resources],
+        )
+
+    def test_lower_sched_to_bind_sanitizes_parameterized_fu_resource_ids(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design read1
+            stage sched
+            schedule kind=control_steps
+            input  A : memref<i32, 4>
+            input  i : i32
+            output result : i32
+
+            region proc_read1 kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = load A, i : i32 class=RM_IHPSG13_1P_256x32_c2_bm_bist<word_t=i32,word_len=4> ii=1 delay=2 start=0 end=1
+              node v2 = ret v1 class=CTRL ii=0 delay=0 start=2 end=2
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+
+              steps [0:2]
+              latency 3
+            }
+            """
+        )
+
+        bind_design = lower_sched_to_bind(sched_design)
+
+        self.assertEqual(
+            [resource.id for resource in bind_design.resources if resource.kind == "fu"],
+            ["rm_ihpsg13_1p_256x32_c2_bm_bist_word_t_i32_word_len_40"],
+        )
+
     def test_lower_sched_to_bind_rejects_symbolic_sched_timing(self) -> None:
         sched_design = parse_uhir(
             """

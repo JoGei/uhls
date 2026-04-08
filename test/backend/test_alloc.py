@@ -12,6 +12,8 @@ from uhls.backend.hls.uhir import (
     parse_uhir,
 )
 from uhls.backend.hls.alloc import executability_graph_to_dot, format_executability_graph
+from uhls.backend.hls.impl import MemoryPolicy
+from uhls.backend.hls.lib import validate_component_library
 from uhls.middleend.uir import COMPACT_OPCODE_LABELS, BinaryOp, Block, CallOp, Function, Module, Parameter, ReturnOp
 
 
@@ -25,6 +27,40 @@ def _full_executability_graph() -> ExecutabilityGraph:
         functional_units=("fu_generic", "fu_fast_add"),
         operations=operations,
         edges=tuple(weighted_edges),
+    )
+
+
+def _memory_executability_graph() -> ExecutabilityGraph:
+    operations = tuple(sorted(COMPACT_OPCODE_LABELS))
+    weighted_edges = [("fu_generic", operation, 1, 1) for operation in operations]
+    weighted_edges = [edge for edge in weighted_edges if edge[1] not in {"load", "store"}]
+    weighted_edges.append(("MEM", "load", 1, 1))
+    weighted_edges.append(("MEM", "store", 1, 1))
+    return ExecutabilityGraph(
+        functional_units=("fu_generic", "MEM"),
+        operations=operations,
+        edges=tuple(weighted_edges),
+    )
+
+
+def _vendor_memory_components() -> dict[str, dict[str, object]]:
+    return validate_component_library(
+        {
+            "RM_IHPSG13_1P_64x64_c2_bm_bist": {
+                "kind": "memory",
+                "memory": {"word_t": "i64", "word_len": 64},
+                "ports": {
+                    "addr": {"dir": "input", "type": "i32"},
+                    "wdata": {"dir": "input", "type": "i64"},
+                    "we": {"dir": "input", "type": "i1"},
+                    "rdata": {"dir": "output", "type": "i64"},
+                },
+                "supports": {
+                    "load": {"ii": 1, "d": 2},
+                    "store": {"ii": 1, "d": 1},
+                },
+            }
+        }
     )
 
 
@@ -249,6 +285,109 @@ class AllocationLoweringTests(unittest.TestCase):
         self.assertEqual(div_i32.attributes["class"], "DIV<base_t=i32>")
         self.assertEqual(div_i8.attributes["delay"], 3)
         self.assertEqual(div_i32.attributes["ii"], 1)
+
+    def test_lower_seq_to_alloc_autoram_selects_vendor_memory_macro(self) -> None:
+        seq_design = parse_uhir(
+            """
+            design memdemo
+            stage seq
+            input  A : memref<i64, 64>
+            input  i : i32
+            output result : i64
+
+            region proc_memdemo kind=procedure {
+              node v0 = nop role=source
+              node v1 = load A, i : i64
+              node v2 = ret v1
+              node v3 = nop role=sink
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+            }
+            """
+        )
+
+        alloc_design = lower_seq_to_alloc(
+            seq_design,
+            executability_graph=_memory_executability_graph(),
+            memory_policy=MemoryPolicy(mode="autoram", threshold_bits=1024),
+            memory_vendor_components=_vendor_memory_components(),
+        )
+        proc = alloc_design.get_region("proc_memdemo")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        load_node = next(node for node in proc.nodes if node.opcode == "load")
+
+        self.assertEqual(
+            load_node.attributes["class"],
+            "RM_IHPSG13_1P_64x64_c2_bm_bist<word_t=i64,word_len=64>",
+        )
+        self.assertEqual(load_node.attributes["ii"], 1)
+        self.assertEqual(load_node.attributes["delay"], 2)
+
+    def test_lower_seq_to_alloc_autoram_falls_back_to_generic_ff_for_unsupported_width(self) -> None:
+        seq_design = parse_uhir(
+            """
+            design memdemo
+            stage seq
+            input  A : memref<i32, 64>
+            input  i : i32
+            output result : i32
+
+            region proc_memdemo kind=procedure {
+              node v0 = nop role=source
+              node v1 = load A, i : i32
+              node v2 = ret v1
+              node v3 = nop role=sink
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+            }
+            """
+        )
+
+        alloc_design = lower_seq_to_alloc(
+            seq_design,
+            executability_graph=_memory_executability_graph(),
+            memory_policy=MemoryPolicy(mode="autoram", threshold_bits=1024),
+            memory_vendor_components=_vendor_memory_components(),
+        )
+        proc = alloc_design.get_region("proc_memdemo")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        load_node = next(node for node in proc.nodes if node.opcode == "load")
+
+        self.assertEqual(load_node.attributes["class"], "GEN_FF_MEM<word_t=i32,word_len=64>")
+        self.assertEqual(load_node.attributes["delay"], 1)
+
+    def test_lower_seq_to_alloc_autoram_rejects_unbanked_vendor_memory_overflow(self) -> None:
+        seq_design = parse_uhir(
+            """
+            design memdemo
+            stage seq
+            input  A : memref<i64, 4096>
+            input  i : i32
+            output result : i64
+
+            region proc_memdemo kind=procedure {
+              node v0 = nop role=source
+              node v1 = load A, i : i64
+              node v2 = ret v1
+              node v3 = nop role=sink
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+            }
+            """
+        )
+
+        with self.assertRaisesRegex(ValueError, "banked memories are not supported yet"):
+            lower_seq_to_alloc(
+                seq_design,
+                executability_graph=_memory_executability_graph(),
+                memory_policy=MemoryPolicy(mode="autoram", threshold_bits=1024),
+                memory_vendor_components=_vendor_memory_components(),
+            )
 
     def test_lower_seq_to_alloc_allocates_call_as_structural_ctrl_vertex(self) -> None:
         seq_design = lower_module_to_seq(

@@ -17,7 +17,13 @@ GLUE_WRAPS: tuple[str, ...] = ("none", "slave", "master")
 GLUE_PROTOCOLS: tuple[str, ...] = ("memory", "wishbone", "obi")
 
 
-def wrap_uglir_design(design: UGLIRDesign, wrap: str | None = None, protocol: str | None = None) -> UGLIRDesign:
+def wrap_uglir_design(
+    design: UGLIRDesign,
+    wrap: str | None = None,
+    protocol: str | None = None,
+    *,
+    component_library: dict[str, dict[str, object]] | None = None,
+) -> UGLIRDesign:
     """Apply one optional wrapper/protocol composition to one µglIR design."""
     if design.stage != "uglir":
         raise ValueError(f"µglIR wrapping expects µglIR input, got stage '{design.stage}'")
@@ -31,15 +37,29 @@ def wrap_uglir_design(design: UGLIRDesign, wrap: str | None = None, protocol: st
     if normalized_wrap == "none" and normalized_protocol.base == "memory" and not normalized_protocol.features:
         return to_uglir_design(design)
     if normalized_wrap == "slave" and normalized_protocol.base == "wishbone":
-        wrapper_plan = plan_slave_wrapper(design, normalized_protocol.base)
+        wrapper_plan = plan_slave_wrapper(design, normalized_protocol.base, component_library=component_library)
         protocol_plan = plan_wishbone_slave_protocol(wrapper_plan, features=normalized_protocol.features)
-        wrapped = to_uglir_design(build_wishbone_slave_wrapper_uglir(design, wrapper_plan, protocol_plan))
+        wrapped = to_uglir_design(
+            build_wishbone_slave_wrapper_uglir(
+                design,
+                wrapper_plan,
+                protocol_plan,
+                component_library=component_library,
+            )
+        )
         validate_uglir_for_rtl(wrapped)
         return wrapped
     if normalized_wrap == "slave" and normalized_protocol.base == "obi":
-        wrapper_plan = plan_slave_wrapper(design, normalized_protocol.base)
+        wrapper_plan = plan_slave_wrapper(design, normalized_protocol.base, component_library=component_library)
         protocol_plan = plan_obi_slave_protocol(wrapper_plan, features=normalized_protocol.features)
-        wrapped = to_uglir_design(build_obi_slave_wrapper_uglir(design, wrapper_plan, protocol_plan))
+        wrapped = to_uglir_design(
+            build_obi_slave_wrapper_uglir(
+                design,
+                wrapper_plan,
+                protocol_plan,
+                component_library=component_library,
+            )
+        )
         validate_uglir_for_rtl(wrapped)
         return wrapped
     if normalized_wrap == "master":

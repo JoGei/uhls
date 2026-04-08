@@ -2,6 +2,7 @@
 
 from .alloc import ExecutabilityGraph, dummy_executability_graph, executability_graph_from_uhir, lower_seq_to_alloc
 from .drv import DRV_LANGS, emit_uglir_driver
+from .impl import MEM_POLICIES, MemoryPolicy, parse_memory_policy, select_memory_implementation
 from .bind import (
     BIND_DUMP_KINDS,
     CompatibilityBinder,
@@ -55,6 +56,8 @@ __all__ = [
     "GLUE_PROTOCOLS",
     "GLUE_WRAPS",
     "LeftEdgeBinder",
+    "MEM_POLICIES",
+    "MemoryPolicy",
     "OperationBinder",
     "OperationBinderBase",
     "OperationBindingResult",
@@ -85,6 +88,7 @@ __all__ = [
     "lower_module_to_seq",
     "lower_sched_to_bind",
     "lower_seq_to_alloc",
+    "parse_memory_policy",
     "parse_protocol_spec",
     "parse_bind_dump_spec",
     "plan_master_wrapper",
@@ -92,4 +96,5 @@ __all__ = [
     "plan_slave_wrapper",
     "plan_wishbone_slave_protocol",
     "protocol_spec_help",
+    "select_memory_implementation",
 ]

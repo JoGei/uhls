@@ -106,6 +106,37 @@ class RTLLoweringTests(unittest.TestCase):
         self.assertIn("always @(posedge clk or negedge rst) begin", verilog)
         self.assertIn("if (!(rst)) begin", verilog)
 
+    def test_lower_uglir_to_verilog_emits_parameterized_instance_overrides(self) -> None:
+        uglir_design = parse_uglir(
+            """
+            design typed_div
+            stage uglir
+            input  clk : clock
+            input  rst : i1
+            input  a : i8
+            input  b : i8
+            output y : i8
+            resources {
+              net div0_div_n : i8
+              inst div0 : DIV<W=8>
+            }
+            div0.clk(clk)
+            div0.rst(rst)
+            div0.a(a)
+            div0.b(b)
+            div0.div(div0_div_n)
+            assign y = div0_div_n
+            seq clk {
+            }
+            """
+        )
+
+        verilog = lower_uglir_to_rtl(uglir_design, hdl="verilog")
+
+        self.assertIn("DIV #(", verilog)
+        self.assertIn(".W(8)", verilog)
+        self.assertIn(") div0 (", verilog)
+
     def test_lower_uglir_to_verilog_emits_wishbone_slave_wrapper(self) -> None:
         fsm_design = parse_uhir(
             """

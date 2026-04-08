@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from uhls.backend.hls.lib import import_verilog_component_stub, validate_component_library
+from uhls.backend.hls.lib import (
+    import_verilog_component_stub,
+    materialize_hdl_component_spec,
+    resolve_component_type,
+    validate_component_library,
+)
 
 
 class ComponentLibraryImportTests(unittest.TestCase):
@@ -102,3 +107,39 @@ class ComponentLibraryImportTests(unittest.TestCase):
         )
 
         self.assertEqual(validated["DIV"]["kind"], "pipelined")
+
+    def test_materialize_hdl_component_spec_maps_semantic_base_type_to_verilog_width(self) -> None:
+        library = validate_component_library(
+            {
+                "DIV": {
+                    "kind": "pipelined",
+                    "hdl": {
+                        "language": "verilog",
+                        "module": "DIV",
+                        "source": "test_div.v",
+                        "parameters": {
+                            "W": "$bits(base_t)",
+                        },
+                    },
+                    "parameters": {
+                        "base_t": {"kind": "type", "required": True},
+                    },
+                    "ports": {
+                        "a": {"dir": "input", "type": "base_t"},
+                        "div": {"dir": "output", "type": "base_t"},
+                    },
+                    "supports": {
+                        "div": {
+                            "ii": 1,
+                            "d": 3,
+                            "types": {"operand0": "base_t", "operand1": "base_t", "result": "base_t"},
+                            "bind": {"a": "operand0", "div": "result"},
+                        }
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(resolve_component_type("base_t", {"base_t": "i8"}), "i8")
+        self.assertEqual(materialize_hdl_component_spec(library, "DIV<base_t=i8>"), "DIV<W=8>")
+        self.assertEqual(materialize_hdl_component_spec(library, "DIV<base_t=i32>"), "DIV<W=32>")

@@ -8,7 +8,9 @@ from typing import Any
 
 from uhls.backend.hls.lib import (
     format_component_spec,
+    materialize_hdl_component_spec,
     parse_component_spec,
+    resolve_component_type,
     resolve_component_definition,
 )
 from uhls.backend.hls.uhir.model import UHIRDesign
@@ -85,7 +87,10 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         if resource.kind == "fu":
             component_kind = None if component_library is None else _component_kind(component_library, resource.value)
             if component_kind != "memory":
-                lowered.resources.append(UGLIRResource("inst", resource.id, resource.value))
+                instance_value = resource.value
+                if component_library is not None:
+                    instance_value = _materialized_instance_spec(component_library, resource.value)
+                lowered.resources.append(UGLIRResource("inst", resource.id, instance_value))
             if component_library is None:
                 lowered.resources.append(UGLIRResource("net", f"{resource.id}_go", "i1"))
                 result_type = _instance_result_type(design, resource.id)
@@ -892,6 +897,21 @@ def _component_definition(
     return base_name, component
 
 
+def _component_params(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+) -> dict[str, str]:
+    _base_name, params, _component = resolve_component_definition(component_library, component_name)
+    return params
+
+
+def _materialized_instance_spec(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+) -> str:
+    return materialize_hdl_component_spec(component_library, component_name)
+
+
 def _parse_component_spec(component_name: str) -> tuple[str, dict[str, str]]:
     return parse_component_spec(component_name)
 
@@ -1512,6 +1532,7 @@ def _instance_port_names(component_library: dict[str, dict[str, Any]], component
 
 def _instance_ports(component_library: dict[str, dict[str, Any]], component_name: str) -> tuple[tuple[str, str], ...]:
     _, component = _component_definition(component_library, component_name)
+    params = _component_params(component_library, component_name)
     ports = component.get("ports")
     if not isinstance(ports, dict):
         raise ValueError(f"component '{component_name}' must define object-valued 'ports'")
@@ -1522,12 +1543,13 @@ def _instance_ports(component_library: dict[str, dict[str, Any]], component_name
         port_type = port_payload.get("type")
         if not isinstance(port_type, str) or not port_type:
             raise ValueError(f"component '{component_name}' port '{port_name}' must define string 'type'")
-        normalized.append((str(port_name), port_type))
+        normalized.append((str(port_name), resolve_component_type(port_type, params)))
     return tuple(normalized)
 
 
 def _instance_input_ports(component_library: dict[str, dict[str, Any]], component_name: str) -> tuple[tuple[str, str], ...]:
     _, component = _component_definition(component_library, component_name)
+    params = _component_params(component_library, component_name)
     ports = component.get("ports")
     if not isinstance(ports, dict):
         raise ValueError(f"component '{component_name}' must define object-valued 'ports'")
@@ -1538,7 +1560,7 @@ def _instance_input_ports(component_library: dict[str, dict[str, Any]], componen
         direction = port_payload.get("dir")
         port_type = port_payload.get("type")
         if direction == "input" and isinstance(port_type, str) and port_type:
-            inputs.append((str(port_name), port_type))
+            inputs.append((str(port_name), resolve_component_type(port_type, params)))
     return tuple(inputs)
 
 

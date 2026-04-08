@@ -694,6 +694,97 @@ region proc_add1 kind=procedure {
             self.assertIn("node v1 = add x, 1 : i32 class=ALU ii=1 delay=1", alloc_text)
             self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0", alloc_text)
 
+    def test_alloc_command_infers_base_type_parameter_from_component_library_support_types(self) -> None:
+        seq = """design typed_div
+stage seq
+input  ai : i8
+input  bi : i8
+input  ax : i32
+input  bx : i32
+output result : i32
+
+region proc_typed_div kind=procedure {
+  node v0 = nop role=source
+  node v1 = div ai, bi : i8
+  node v2 = div ax, bx : i32
+  node v3 = ret v2
+  node v4 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  edge data v3 -> v4
+}
+"""
+        library = """
+{
+  "components": {
+    "GENERIC": {
+      "kind": "combinational",
+      "ports": {
+        "a": { "dir": "input", "type": "i32" },
+        "b": { "dir": "input", "type": "i32" },
+        "y": { "dir": "output", "type": "i32" }
+      },
+      "supports": {
+        "add": { "ii": 1, "d": 1 },
+        "and": { "ii": 1, "d": 1 },
+        "eq": { "ii": 1, "d": 1 },
+        "ge": { "ii": 1, "d": 1 },
+        "gt": { "ii": 1, "d": 1 },
+        "le": { "ii": 1, "d": 1 },
+        "lt": { "ii": 1, "d": 1 },
+        "mov": { "ii": 1, "d": 1 },
+        "mul": { "ii": 1, "d": 2 },
+        "ne": { "ii": 1, "d": 1 },
+        "neg": { "ii": 1, "d": 1 },
+        "not": { "ii": 1, "d": 1 },
+        "or": { "ii": 1, "d": 1 },
+        "shl": { "ii": 1, "d": 1 },
+        "shr": { "ii": 1, "d": 1 },
+        "load": { "ii": 1, "d": 1 },
+        "store": { "ii": 1, "d": 1 },
+        "mod": { "ii": 1, "d": 1 },
+        "sub": { "ii": 1, "d": 1 },
+        "xor": { "ii": 1, "d": 1 }
+      }
+    },
+    "DIV": {
+      "kind": "pipelined",
+      "parameters": {
+        "base_t": { "kind": "type", "required": true }
+      },
+      "ports": {
+        "a": { "dir": "input", "type": "base_t" },
+        "b": { "dir": "input", "type": "base_t" },
+        "div": { "dir": "output", "type": "base_t" }
+      },
+      "supports": {
+        "div": {
+          "ii": 1,
+          "d": 3,
+          "types": { "operand0": "base_t", "operand1": "base_t", "result": "base_t" },
+          "bind": { "a": "operand0", "b": "operand1", "div": "result" }
+        }
+      }
+    }
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seq_path = root / "typed_div.seq.uhir"
+            library_path = root / "ressources.json"
+            alloc_path = root / "typed_div.alloc.uhir"
+            seq_path.write_text(seq, encoding="utf-8")
+            library_path.write_text(library, encoding="utf-8")
+
+            self.assertEqual(main(["alloc", str(seq_path), "-exg", str(library_path), "-o", str(alloc_path)]), 0)
+
+            alloc_text = alloc_path.read_text(encoding="utf-8")
+            self.assertIn("node v1 = div ai, bi : i8 class=DIV<base_t=i8> ii=1 delay=3", alloc_text)
+            self.assertIn("node v2 = div ax, bx : i32 class=DIV<base_t=i32> ii=1 delay=3", alloc_text)
+
     def test_alloc_command_rejects_invalid_component_parameter_schema(self) -> None:
         seq = """design add1
 stage seq

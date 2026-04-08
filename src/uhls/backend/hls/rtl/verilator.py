@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from uhls.backend.hls.lib import resolve_component_definition
+from uhls.backend.hls.lib import parse_component_spec, resolve_component_definition
 from uhls.backend.hls.uglir import UGLIRAddressMap, UGLIRAddressMapEntry, UGLIRDesign
 from uhls.interpreter import CallHookResult
 
@@ -504,7 +504,7 @@ def _collect_verilog_support_files(
             raise ValueError(
                 f"Verilator run backend requires --resources for instance '{resource.id}: {resource.value}'"
             )
-        base_name, _params, component = resolve_component_definition(component_library, resource.value)
+        base_name, component = _resolve_instance_component(component_library, resource.value)
         hdl = component.get("hdl")
         if not isinstance(hdl, dict):
             raise ValueError(
@@ -531,6 +531,26 @@ def _collect_verilog_support_files(
             seen.add(source_path)
             sources.append(source_path)
     return sources
+
+
+def _resolve_instance_component(
+    component_library: dict[str, dict[str, object]],
+    instance_spec: str,
+) -> tuple[str, dict[str, object]]:
+    try:
+        base_name, _params, component = resolve_component_definition(component_library, instance_spec)
+        return base_name, component
+    except ValueError:
+        module_name, _params = parse_component_spec(instance_spec)
+        for component_name, component in component_library.items():
+            if not isinstance(component, dict):
+                continue
+            hdl = component.get("hdl")
+            if not isinstance(hdl, dict):
+                continue
+            if str(hdl.get("module", "")) == module_name:
+                return str(component_name), component
+        raise
 
 
 __all__ = ["VerilatorWrappedRunner"]

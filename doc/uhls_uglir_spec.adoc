@@ -137,6 +137,29 @@ Lowering should validate concrete resource specs such as
 `MEM<word_t=i32,word_len=4>` against that declaration instead of treating the
 parameter list as an opaque string.
 
+The same mechanism also applies to typed arithmetic components.
+
+Example:
+
+[source,json]
+----
+"DIV": {
+  "parameters": {
+    "base_t": { "kind": "type", "required": true }
+  }
+}
+----
+
+One concrete bound resource may then carry a semantic specialization such as:
+
+[source,text]
+----
+DIV<base_t=i8>
+----
+
+This is intentionally written in terms of `µIR`-level types such as `i8`,
+`i16`, or `i32`, not in terms of foreign-HDL parameter names such as `W`.
+
 The shared component library may also carry foreign HDL linkage metadata for
 components that are implemented externally and should not be lowered into
 `µglIR` internals. A typical imported entry may include:
@@ -160,6 +183,74 @@ This linkage metadata identifies:
 
 `µglIR` should use that information only as component linkage metadata. It
 should not import or rewrite the foreign HDL implementation itself.
+
+For parameterized foreign modules, the library may additionally define an HDL
+parameter mapping from semantic component parameters to concrete HDL instance
+parameters.
+
+Example:
+
+[source,json]
+----
+"DIV": {
+  "hdl": {
+    "language": "verilog",
+    "module": "DIV",
+    "source": "test_div.v",
+    "parameters": {
+      "W": "$bits(base_t)"
+    }
+  }
+}
+----
+
+In that example:
+
+* `base_t` is the semantic component parameter used by `µhLS`
+* `W` is the Verilog module parameter used by the foreign HDL
+* `$bits(base_t)` maps one semantic type such as `i8` to one concrete integer
+  width such as `8`
+
+So one semantic resource choice like:
+
+[source,text]
+----
+DIV<base_t=i8>
+----
+
+may become one concrete HDL instance like:
+
+[source,text]
+----
+DIV<W=8>
+----
+
+The component library may also constrain which typed `µIR` operations one
+parameterized component instance may execute.
+
+Example:
+
+[source,json]
+----
+"supports": {
+  "div": {
+    "ii": 1,
+    "d": 3,
+    "types": {
+      "operand0": "base_t",
+      "operand1": "base_t",
+      "result": "base_t"
+    }
+  }
+}
+----
+
+This means:
+
+* `DIV<base_t=i8>` matches `div(i8, i8) -> i8`
+* `DIV<base_t=i32>` matches `div(i32, i32) -> i32`
+* `alloc` must not place one mismatched `i32` operation onto one `DIV<base_t=i8>`
+  instance
 
 When the shared component library classifies components by `kind`, that kind
 should reflect the execution contract rather than only the implementation
@@ -249,6 +340,28 @@ So, for example, a divider with `ii=1` and `d=3` may still be classified as
 `combinational` if that delay is realized without internal state. It should be
 classified as `pipelined` only when overlapping operation or internal pipeline
 state is part of the contract.
+
+== Typed Component Parameterization
+
+The preferred style for parameterized functional units is:
+
+* use semantic component parameters such as `base_t`
+* express support compatibility in terms of `µIR` operand/result types
+* map semantic parameters to foreign-HDL parameters only at the HDL linkage
+  boundary
+
+This keeps:
+
+* `alloc`
+  * aware of typed compatibility
+* `µglIR`
+  * aware of concrete semantic specialization such as `DIV<base_t=i8>`
+* `rtl`
+  * responsible for translating that specialization to the concrete HDL module
+    parameter override such as `DIV #(.W(8)) ...`
+
+This split avoids making front-end and allocation logic depend directly on
+Verilog-specific parameter names.
 
 Current assumption:
 

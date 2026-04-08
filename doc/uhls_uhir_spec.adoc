@@ -1098,6 +1098,24 @@ MEM<word_t=i32,word_len=4>
 This lets later stages preserve memory shape and word type directly on the
 bound resource instead of reconstructing them from separate side metadata.
 
+The same parameterization form may also be used for non-memory components when
+allocation has selected one typed instance class.
+
+Example:
+
+[source,text]
+----
+DIV<base_t=i8>
+----
+
+This means:
+
+* the bound resource is still one `DIV`
+* but it has been specialized for one concrete `µIR` base type such as `i8`
+* later stages may use that semantic parameterization to:
+  * resolve port types such as `base_t`
+  * select one foreign-HDL parameter override such as `W=8`
+
 Examples:
 
 [source,text]

@@ -30,6 +30,84 @@ fsm.uhir
 
 instead of lowering directly from FSMD to one HDL syntax.
 
+== Parameterized Foreign Modules
+
+The shared component library may describe one foreign HDL module in two layers:
+
+* semantic component parameters used by `µhLS`
+* concrete HDL parameters used by the foreign module implementation
+
+The most common use case is FU bit width.
+
+Example library shape:
+
+[source,json]
+----
+"DIV": {
+  "parameters": {
+    "base_t": { "kind": "type", "required": true }
+  },
+  "hdl": {
+    "language": "verilog",
+    "module": "DIV",
+    "source": "test_div.v",
+    "parameters": {
+      "W": "$bits(base_t)"
+    }
+  }
+}
+----
+
+In that example:
+
+* `base_t`
+  * is the semantic `µIR` type specialization used by allocation and glue
+* `W`
+  * is the foreign Verilog module parameter
+
+So one semantic FU specialization such as:
+
+[source,text]
+----
+DIV<base_t=i8>
+----
+
+should become one concrete RTL instance such as:
+
+[source,verilog]
+----
+DIV #(
+  .W(8)
+) div0 (
+  ...
+);
+----
+
+This split is intentional:
+
+* `alloc`
+  * should reason about `µIR`-level types such as `i8` or `i32`
+* `glue`
+  * should preserve one semantic specialization such as `DIV<base_t=i8>`
+* `rtl`
+  * should translate that specialization into one concrete HDL parameter
+    override such as `W=8`
+
+The component-library support entries may further constrain type compatibility,
+for example:
+
+[source,json]
+----
+"types": {
+  "operand0": "base_t",
+  "operand1": "base_t",
+  "result": "base_t"
+}
+----
+
+This means that one `DIV<base_t=i8>` instance is eligible only for one
+`div(i8, i8) -> i8` operation, not for one `i32` division.
+
 == Goals
 
 The `rtl` stage should:

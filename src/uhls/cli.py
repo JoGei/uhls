@@ -1433,6 +1433,7 @@ def _load_executability_graph(path: Path) -> ExecutabilityGraph:
         functional_units: list[str] = []
         operation_order: dict[str, None] = {}
         normalized_edges: list[tuple[str, str, int, int]] = []
+        support_types: list[tuple[str, str, tuple[tuple[str, str], ...]]] = []
 
         for component_name, component_payload in components.items():
             if not isinstance(component_payload, dict):
@@ -1460,11 +1461,25 @@ def _load_executability_graph(path: Path) -> ExecutabilityGraph:
                         f"executability graph '{path}' component '{component_name}' support '{operation_name}' must define integer ii/d"
                     )
                 normalized_edges.append((str(component_name), operation_name, ii, delay))
+                typed_bindings = weight.get("types")
+                if typed_bindings is not None:
+                    if not isinstance(typed_bindings, dict):
+                        raise CLIError(
+                            f"executability graph '{path}' component '{component_name}' support '{operation_name}' must use object-valued 'types'"
+                        )
+                    support_types.append(
+                        (
+                            str(component_name),
+                            operation_name,
+                            tuple((str(binding_name), str(binding_type)) for binding_name, binding_type in typed_bindings.items()),
+                        )
+                    )
 
         return ExecutabilityGraph(
             functional_units=tuple(functional_units),
             operations=tuple(operation_order),
             edges=tuple(normalized_edges),
+            support_types=tuple(support_types),
         )
 
     raise CLIError(

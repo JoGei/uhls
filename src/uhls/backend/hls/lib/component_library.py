@@ -33,6 +33,38 @@ def format_component_spec(base_name: str, params: dict[str, str]) -> str:
     return f"{base_name}<{','.join(parts)}>"
 
 
+def resolve_component_type(type_name: str, params: dict[str, str]) -> str:
+    """Resolve one semantic component type against one parameter environment."""
+    return params.get(type_name, type_name)
+
+
+def materialize_hdl_component_spec(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+) -> str:
+    """Resolve one semantic component spec into one concrete HDL instance spec."""
+    base_name, params, component = resolve_component_definition(component_library, component_name)
+    hdl = component.get("hdl")
+    if not isinstance(hdl, dict):
+        return component_name
+    module_name = hdl.get("module")
+    if not isinstance(module_name, str) or not module_name.strip():
+        return component_name
+    hdl_parameters = hdl.get("parameters")
+    if hdl_parameters is None:
+        return module_name
+    if not isinstance(hdl_parameters, dict):
+        raise ValueError(f"component '{base_name}' hdl.parameters must be an object")
+    resolved: dict[str, str] = {}
+    for parameter_name, parameter_expr in hdl_parameters.items():
+        if not isinstance(parameter_expr, str) or not parameter_expr.strip():
+            raise ValueError(
+                f"component '{base_name}' hdl.parameters '{parameter_name}' must be one non-empty string"
+            )
+        resolved[str(parameter_name)] = _resolve_hdl_parameter_expr(base_name, parameter_expr.strip(), params)
+    return format_component_spec(module_name, resolved)
+
+
 def resolve_component_definition(
     component_library: dict[str, dict[str, Any]],
     component_name: str,
@@ -74,6 +106,15 @@ def validate_component_library(components: dict[str, object]) -> dict[str, dict[
             source = hdl.get("source")
             if source is not None and (not isinstance(source, str) or not source.strip()):
                 raise ValueError(f"component '{component_name}' hdl.source must be one non-empty string")
+            hdl_parameters = hdl.get("parameters")
+            if hdl_parameters is not None:
+                if not isinstance(hdl_parameters, dict):
+                    raise ValueError(f"component '{component_name}' hdl.parameters must be an object")
+                for parameter_name, parameter_expr in hdl_parameters.items():
+                    if not isinstance(parameter_expr, str) or not parameter_expr.strip():
+                        raise ValueError(
+                            f"component '{component_name}' hdl.parameters '{parameter_name}' must be one non-empty string"
+                        )
         parameters = component_payload.get("parameters")
         if parameters is not None:
             if not isinstance(parameters, dict):
@@ -102,6 +143,17 @@ def validate_component_library(components: dict[str, object]) -> dict[str, dict[
                     raise ValueError(
                         f"component '{component_name}' support '{operation_name}' must be a JSON object"
                     )
+                support_types = support_payload.get("types")
+                if support_types is not None:
+                    if not isinstance(support_types, dict):
+                        raise ValueError(
+                            f"component '{component_name}' support '{operation_name}' must use object-valued 'types'"
+                        )
+                    for binding_name, binding_type in support_types.items():
+                        if not isinstance(binding_type, str) or not binding_type:
+                            raise ValueError(
+                                f"component '{component_name}' support '{operation_name}' types '{binding_name}' must be a non-empty string"
+                            )
                 _validate_component_support(component_name, str(kind) if kind is not None else None, operation_name, support_payload)
         ports = component_payload.get("ports")
         if ports is not None:
@@ -233,6 +285,30 @@ def _validate_component_param_value(
     raise ValueError(
         f"component '{component_name}' parameter '{parameter_name}' must use kind=type|int|bool|string"
     )
+
+
+def _resolve_hdl_parameter_expr(component_name: str, expr: str, params: dict[str, str]) -> str:
+    bits_match = re.fullmatch(r"\$bits\(([^()\s]+)\)", expr)
+    if bits_match is not None:
+        semantic_name = bits_match.group(1)
+        semantic_type = params.get(semantic_name)
+        if semantic_type is None:
+            raise ValueError(
+                f"component '{component_name}' hdl parameter expression '{expr}' references unknown semantic parameter '{semantic_name}'"
+            )
+        return str(_uir_type_bits(component_name, semantic_name, semantic_type))
+    if expr in params:
+        return params[expr]
+    return expr
+
+
+def _uir_type_bits(component_name: str, parameter_name: str, type_name: str) -> int:
+    match = re.fullmatch(r"[iu](\d+)", type_name)
+    if match is None:
+        raise ValueError(
+            f"component '{component_name}' hdl parameter '{parameter_name}' uses unsupported $bits type '{type_name}'"
+        )
+    return int(match.group(1))
 
 
 def _split_component_params(params_text: str) -> list[str]:

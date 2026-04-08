@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+from uhls.backend.hls.lib import format_component_spec
 from uhls.backend.hls.uhir.model import (
     UHIRConstant,
     UHIRDesign,
@@ -66,6 +67,7 @@ class ExecutabilityGraph:
     functional_units: tuple[str, ...]
     operations: tuple[str, ...]
     edges: tuple[tuple[str, str, int, int], ...]
+    support_types: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = ()
 
     def __post_init__(self) -> None:
         normalized_fus = tuple(dict.fromkeys(_normalize_fu_name(fu) for fu in self.functional_units))
@@ -82,9 +84,19 @@ class ExecutabilityGraph:
                 normalized_edges.append((_normalize_operation_name(source_name), _normalize_fu_name(target_name), ii, delay))
             else:
                 normalized_edges.append((source_name, target_name, ii, delay))
+        normalized_support_types: list[tuple[str, str, tuple[tuple[str, str], ...]]] = []
+        for functional_unit, operation, bindings in self.support_types:
+            normalized_support_types.append(
+                (
+                    _normalize_fu_name(functional_unit),
+                    _normalize_operation_name(operation),
+                    tuple((str(binding_name), str(binding_type)) for binding_name, binding_type in bindings),
+                )
+            )
         object.__setattr__(self, "functional_units", normalized_fus)
         object.__setattr__(self, "operations", normalized_ops)
         object.__setattr__(self, "edges", tuple(normalized_edges))
+        object.__setattr__(self, "support_types", tuple(normalized_support_types))
 
     @classmethod
     def from_mapping(
@@ -110,6 +122,16 @@ class ExecutabilityGraph:
             operations=tuple(operation_order),
             edges=tuple(normalized_edges),
         )
+
+
+@dataclass(slots=True, frozen=True)
+class AllocationCandidate:
+    """One typed allocation candidate for one opcode."""
+
+    functional_unit: str
+    ii: int
+    delay: int
+    type_constraints: tuple[tuple[str, str], ...] = ()
 
 
 def executability_graph_from_uhir(design: UHIRDesign) -> ExecutabilityGraph:
@@ -162,7 +184,8 @@ def lower_seq_to_alloc(
         raise ValueError(f"alloc lowering expects seq-stage µhIR input, got stage '{design.stage}'")
 
     graph = _normalize_executability_graph(executability_graph)
-    selections = _validate_and_select_allocations(graph, algorithm=algorithm)
+    candidates = _validate_and_collect_allocations(graph, algorithm=algorithm)
+    value_types = _design_value_types(design)
 
     allocated = UHIRDesign(name=design.name, stage="alloc")
     allocated.inputs = [_clone_port(port) for port in design.inputs]
@@ -170,7 +193,7 @@ def lower_seq_to_alloc(
     allocated.constants = [_clone_constant(constant) for constant in design.constants]
     allocated.schedule = _clone_schedule(design.schedule)
     allocated.resources = [_clone_resource(resource) for resource in design.resources]
-    allocated.regions = [_allocate_region(region, selections) for region in design.regions]
+    allocated.regions = [_allocate_region(region, candidates, value_types, algorithm=algorithm) for region in design.regions]
     allocated.regions.extend(
         _embed_executability_regions(
             graph,
@@ -240,11 +263,11 @@ def _normalize_executability_graph(
     return ExecutabilityGraph.from_mapping(graph)
 
 
-def _validate_and_select_allocations(
+def _validate_and_collect_allocations(
     graph: ExecutabilityGraph,
     *,
     algorithm: str,
-) -> dict[str, tuple[str, int, int]]:
+) -> dict[str, list[AllocationCandidate]]:
     if algorithm not in _ALLOCATION_ALGORITHMS:
         supported = ", ".join(sorted(_ALLOCATION_ALGORITHMS))
         raise ValueError(f"unsupported allocation algorithm '{algorithm}'; expected one of: {supported}")
@@ -256,7 +279,11 @@ def _validate_and_select_allocations(
         names = ", ".join(sorted(overlap))
         raise ValueError(f"executability graph is not bipartite: shared FU/op vertices: {names}")
 
-    executable_on: dict[str, list[tuple[int, int, str]]] = {operation: [] for operation in operations}
+    support_type_map = {
+        (functional_unit, operation): dict(bindings)
+        for functional_unit, operation, bindings in graph.support_types
+    }
+    executable_on: dict[str, list[AllocationCandidate]] = {operation: [] for operation in operations}
     for source, target, ii, delay in graph.edges:
         if ii <= 0:
             raise ValueError(f"executability graph edge {source!r} -> {target!r} has non-positive ii {ii}")
@@ -265,10 +292,14 @@ def _validate_and_select_allocations(
         if ii > delay:
             raise ValueError(f"executability graph edge {source!r} -> {target!r} violates ii<=d: ii={ii}, d={delay}")
         if source in functional_units and target in operations:
-            executable_on[target].append((delay, ii, source))
+            executable_on[target].append(
+                AllocationCandidate(source, ii, delay, tuple(sorted(support_type_map.get((source, target), {}).items())))
+            )
             continue
         if source in operations and target in functional_units:
-            executable_on[source].append((delay, ii, target))
+            executable_on[source].append(
+                AllocationCandidate(target, ii, delay, tuple(sorted(support_type_map.get((target, source), {}).items())))
+            )
             continue
         if source in functional_units or target in functional_units or source in operations or target in operations:
             raise ValueError(
@@ -285,24 +316,18 @@ def _validate_and_select_allocations(
         names = ", ".join(missing)
         raise ValueError(f"executability graph does not cover all canonical µIR operations: {names}")
 
-    selected: dict[str, tuple[str, int, int]] = {}
-    for operation, candidates in executable_on.items():
-        if not candidates:
-            continue
-        delay, ii, functional_unit = _choose_allocation_candidate(candidates, algorithm=algorithm)
-        selected[operation] = (functional_unit, ii, delay)
-    return selected
+    return executable_on
 
 
 def _choose_allocation_candidate(
-    candidates: list[tuple[int, int, str]],
+    candidates: list[AllocationCandidate],
     *,
     algorithm: str,
-) -> tuple[int, int, str]:
+) -> AllocationCandidate:
     if algorithm == "min_delay":
-        return min(candidates, key=lambda item: (item[0], item[1], item[2]))
+        return min(candidates, key=lambda item: (item.delay, item.ii, item.functional_unit))
     if algorithm == "min_ii":
-        return min(candidates, key=lambda item: (item[1], item[0], item[2]))
+        return min(candidates, key=lambda item: (item.ii, item.delay, item.functional_unit))
     raise AssertionError(f"unreachable allocation algorithm '{algorithm}'")
 
 
@@ -400,10 +425,16 @@ def _canonicalize_executability_edge(
     return target, source, ii, delay
 
 
-def _allocate_region(region: UHIRRegion, selections: dict[str, tuple[str, int, int]]) -> UHIRRegion:
+def _allocate_region(
+    region: UHIRRegion,
+    candidates: dict[str, list[AllocationCandidate]],
+    value_types: dict[str, str],
+    *,
+    algorithm: str,
+) -> UHIRRegion:
     allocated = UHIRRegion(id=region.id, kind=region.kind, parent=region.parent)
     allocated.region_refs = [UHIRRegionRef(ref.target) for ref in region.region_refs]
-    allocated.nodes = [_allocate_node(node, selections) for node in region.nodes]
+    allocated.nodes = [_allocate_node(node, candidates, value_types, algorithm=algorithm) for node in region.nodes]
     allocated.edges = [UHIREdge(edge.kind, edge.source, edge.target, dict(edge.attributes)) for edge in region.edges]
     allocated.mappings = [UHIRSourceMap(mapping.node_id, mapping.source_id) for mapping in region.mappings]
     allocated.value_bindings = [
@@ -417,7 +448,13 @@ def _allocate_region(region: UHIRRegion, selections: dict[str, tuple[str, int, i
     return allocated
 
 
-def _allocate_node(node: UHIRNode, selections: dict[str, tuple[str, int, int]]) -> UHIRNode:
+def _allocate_node(
+    node: UHIRNode,
+    candidates: dict[str, list[AllocationCandidate]],
+    value_types: dict[str, str],
+    *,
+    algorithm: str,
+) -> UHIRNode:
     attributes = dict(node.attributes)
     fixed = _FIXED_ALLOCATIONS.get(node.opcode)
     if fixed is not None:
@@ -429,11 +466,152 @@ def _allocate_node(node: UHIRNode, selections: dict[str, tuple[str, int, int]]) 
         attributes["class"], attributes["ii"], attributes["delay"] = (_CONTROL_FU, 0, 0)
         return UHIRNode(node.id, node.opcode, node.operands, node.result_type, attributes)
 
-    selected = selections.get(operation)
-    if selected is None:
+    node_candidates = candidates.get(operation)
+    if node_candidates is None:
         raise ValueError(f"no executability allocation available for node '{node.id}' with operation '{operation}'")
-    attributes["class"], attributes["ii"], attributes["delay"] = selected
+    compatible = [
+        (_infer_candidate_params(candidate, node, value_types), candidate)
+        for candidate in node_candidates
+    ]
+    compatible = [(params, candidate) for params, candidate in compatible if params is not None]
+    if not compatible:
+        raise ValueError(
+            f"no typed executability allocation available for node '{node.id}' with operation '{operation}'"
+        )
+    chosen_params, chosen_candidate = _choose_typed_allocation_candidate(compatible, algorithm=algorithm)
+    attributes["class"] = format_component_spec(chosen_candidate.functional_unit, chosen_params)
+    attributes["ii"] = chosen_candidate.ii
+    attributes["delay"] = chosen_candidate.delay
     return UHIRNode(node.id, node.opcode, node.operands, node.result_type, attributes)
+
+
+def _choose_typed_allocation_candidate(
+    compatible: list[tuple[dict[str, str], AllocationCandidate]],
+    *,
+    algorithm: str,
+) -> tuple[dict[str, str], AllocationCandidate]:
+    chosen_params, chosen_candidate = min(
+        compatible,
+        key=lambda item: (
+            item[1].delay if algorithm == "min_delay" else item[1].ii,
+            item[1].ii if algorithm == "min_delay" else item[1].delay,
+            item[1].functional_unit,
+            tuple(sorted(item[0].items())),
+        ),
+    )
+    return chosen_params, chosen_candidate
+
+
+def _design_value_types(design: UHIRDesign) -> dict[str, str]:
+    value_types: dict[str, str] = {}
+    for port in [*design.inputs, *design.outputs]:
+        value_types[port.name] = port.type
+    for constant in design.constants:
+        value_types[constant.name] = constant.type
+    for region in design.regions:
+        for node in region.nodes:
+            if node.result_type is not None:
+                value_types[node.id] = node.result_type
+    return value_types
+
+
+def _infer_candidate_params(
+    candidate: AllocationCandidate,
+    node: UHIRNode,
+    value_types: dict[str, str],
+) -> dict[str, str] | None:
+    if not candidate.type_constraints:
+        return {}
+    node_types = _node_binding_types(node, value_types)
+    inferred: dict[str, str] = {}
+    for binding_name, expected_type in candidate.type_constraints:
+        actual_type = node_types.get(binding_name)
+        if actual_type is None:
+            return None
+        if _looks_like_concrete_type(expected_type):
+            if actual_type != expected_type:
+                return None
+            continue
+        previous = inferred.get(expected_type)
+        if previous is None:
+            inferred[expected_type] = actual_type
+        elif previous != actual_type:
+            return None
+    return inferred
+
+
+def _node_binding_types(node: UHIRNode, value_types: dict[str, str]) -> dict[str, str]:
+    binding_types: dict[str, str] = {}
+    if node.result_type is not None:
+        binding_types["result"] = node.result_type
+    operand_types: list[str | None] = []
+    for operand in node.operands:
+        operand_types.append(_operand_type(operand, node, value_types))
+    inferred_literal_type = _infer_literal_operand_type(operand_types, node)
+    for index, operand_type in enumerate(operand_types):
+        if operand_type is None:
+            operand_type = inferred_literal_type
+        if operand_type is not None:
+            binding_types[f"operand{index}"] = operand_type
+    return binding_types
+
+
+def _operand_type(operand: str, node: UHIRNode, value_types: dict[str, str]) -> str | None:
+    resolved = value_types.get(operand)
+    if resolved is not None:
+        return resolved
+    typed_literal = _typed_literal_type(operand)
+    if typed_literal is not None:
+        return typed_literal
+    if _looks_like_literal_operand(operand):
+        return None
+    if node.opcode in {"load", "store"} and operand == node.operands[0]:
+        return None
+    return value_types.get(operand)
+
+
+def _infer_literal_operand_type(operand_types: list[str | None], node: UHIRNode) -> str | None:
+    resolved = [operand_type for operand_type in operand_types if operand_type is not None]
+    if len(set(resolved)) == 1 and resolved:
+        return resolved[0]
+    if node.result_type is not None and node.opcode in {
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "mod",
+        "and",
+        "or",
+        "xor",
+        "shl",
+        "shr",
+        "mov",
+        "neg",
+        "not",
+    }:
+        return node.result_type
+    return None
+
+
+def _typed_literal_type(operand: str) -> str | None:
+    head, sep, tail = operand.partition(":")
+    if sep != ":":
+        return None
+    if not head:
+        return None
+    return tail or None
+
+
+def _looks_like_literal_operand(operand: str) -> bool:
+    typed = _typed_literal_type(operand)
+    if typed is not None:
+        return True
+    text = operand[1:] if operand.startswith("-") else operand
+    return text.isdigit() or operand in {"true", "false"}
+
+
+def _looks_like_concrete_type(type_name: str) -> bool:
+    return bool(type_name) and type_name[0] in {"i", "u"} and type_name[1:].isdigit()
 
 
 def _normalize_weight(weight: object) -> tuple[int, int]:

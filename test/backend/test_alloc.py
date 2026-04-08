@@ -200,6 +200,56 @@ class AllocationLoweringTests(unittest.TestCase):
         self.assertEqual(add_node.attributes["ii"], 1)
         self.assertEqual(add_node.attributes["delay"], 3)
 
+    def test_lower_seq_to_alloc_infers_semantic_base_type_parameters_per_node(self) -> None:
+        seq_design = lower_module_to_seq(
+            Module(
+                functions=[
+                    Function(
+                        name="typed_div",
+                        params=[
+                            Parameter("ai", "i8"),
+                            Parameter("bi", "i8"),
+                            Parameter("ax", "i32"),
+                            Parameter("bx", "i32"),
+                        ],
+                        return_type="i32",
+                        blocks=[
+                            Block(
+                                "entry",
+                                instructions=[
+                                    BinaryOp("div", "v1", "i8", "ai", "bi"),
+                                    BinaryOp("div", "v2", "i32", "ax", "bx"),
+                                ],
+                                terminator=ReturnOp("v2"),
+                            )
+                        ],
+                    )
+                ],
+            )
+        )
+
+        operations = tuple(sorted(COMPACT_OPCODE_LABELS))
+        graph = ExecutabilityGraph(
+            functional_units=("fu_generic", "DIV"),
+            operations=operations,
+            edges=tuple(("fu_generic", operation, 2, 4) for operation in operations if operation != "div")
+            + (("fu_generic", "div", 2, 4), ("DIV", "div", 1, 3)),
+            support_types=(("DIV", "div", (("operand0", "base_t"), ("operand1", "base_t"), ("result", "base_t"))),),
+        )
+
+        alloc_design = lower_seq_to_alloc(seq_design, executability_graph=graph)
+        proc = alloc_design.get_region("proc_typed_div")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+
+        div_i8 = next(node for node in proc.nodes if node.id == "v1")
+        div_i32 = next(node for node in proc.nodes if node.id == "v2")
+
+        self.assertEqual(div_i8.attributes["class"], "DIV<base_t=i8>")
+        self.assertEqual(div_i32.attributes["class"], "DIV<base_t=i32>")
+        self.assertEqual(div_i8.attributes["delay"], 3)
+        self.assertEqual(div_i32.attributes["ii"], 1)
+
     def test_lower_seq_to_alloc_allocates_call_as_structural_ctrl_vertex(self) -> None:
         seq_design = lower_module_to_seq(
             Module(

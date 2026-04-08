@@ -6,6 +6,7 @@ from math import ceil, log2
 import re
 from typing import TYPE_CHECKING
 
+from uhls.backend.hls.lib import parse_component_spec
 from uhls.backend.hls.uglir.model import UGLIRDesign, UGLIRMux, UGLIRPort, UGLIRResource, UGLIRSeqBlock, UGLIRSeqUpdate
 
 if TYPE_CHECKING:
@@ -127,7 +128,7 @@ def emit_uglir_to_verilog(
     for resource in design.resources:
         if resource.kind != "inst":
             continue
-        lines.append(f"  {resource.value} {resource.id} (")
+        lines.extend(_format_instance_header(resource))
         instance_ports = attachments_by_instance.get(resource.id, [])
         for index, (port_name, signal_name) in enumerate(instance_ports):
             suffix = "," if index < len(instance_ports) - 1 else ""
@@ -143,6 +144,19 @@ def emit_uglir_to_verilog(
         lines.pop()
     lines.append("endmodule")
     return "\n".join(lines)
+
+
+def _format_instance_header(resource: UGLIRResource) -> list[str]:
+    module_name, params = parse_component_spec(resource.value)
+    if not params:
+        return [f"  {module_name} {resource.id} ("]
+    lines = [f"  {module_name} #("]
+    items = list(params.items())
+    for index, (parameter_name, parameter_value) in enumerate(items):
+        suffix = "," if index < len(items) - 1 else ""
+        lines.append(f"    .{parameter_name}({parameter_value}){suffix}")
+    lines.append(f"  ) {resource.id} (")
+    return lines
 
 
 def _infer_module_parameters(design: UGLIRDesign) -> list[str] | None:

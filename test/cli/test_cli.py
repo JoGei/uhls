@@ -1022,8 +1022,85 @@ region proc_add1 kind=procedure {
 
             alloc_text = alloc_path.read_text(encoding="utf-8")
             self.assertIn("stage alloc", alloc_text)
+            self.assertIn('component_library "ressources.json"', alloc_text)
             self.assertIn("node v1 = add x, 1 : i32 class=ALU ii=1 delay=1", alloc_text)
             self.assertIn("node v2 = ret v1 class=CTRL ii=0 delay=0", alloc_text)
+
+    def test_alloc_command_records_component_library_relative_to_output_directory(self) -> None:
+        seq = """design add1
+stage seq
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        library = """
+{
+  "components": {
+    "ALU": {
+      "kind": "combinational",
+      "ports": {
+        "a": { "dir": "input", "type": "i32" },
+        "b": { "dir": "input", "type": "i32" },
+        "op": { "dir": "input", "type": "u4" },
+        "y": { "dir": "output", "type": "i32" }
+      },
+      "supports": {
+        "add": { "ii": 1, "d": 1, "opcode": 0 },
+        "sub": { "ii": 1, "d": 1, "opcode": 1 },
+        "mul": { "ii": 1, "d": 1, "opcode": 2 },
+        "div": { "ii": 1, "d": 1, "opcode": 3 },
+        "mod": { "ii": 1, "d": 1, "opcode": 4 },
+        "and": { "ii": 1, "d": 1, "opcode": 5 },
+        "or": { "ii": 1, "d": 1, "opcode": 6 },
+        "xor": { "ii": 1, "d": 1, "opcode": 7 },
+        "shl": { "ii": 1, "d": 1, "opcode": 8 },
+        "shr": { "ii": 1, "d": 1, "opcode": 9 },
+        "eq": { "ii": 1, "d": 1, "opcode": 10 },
+        "ne": { "ii": 1, "d": 1, "opcode": 11 },
+        "lt": { "ii": 1, "d": 1, "opcode": 12 },
+        "le": { "ii": 1, "d": 1, "opcode": 13 },
+        "gt": { "ii": 1, "d": 1, "opcode": 14 },
+        "ge": { "ii": 1, "d": 1, "opcode": 15 },
+        "neg": { "ii": 1, "d": 1, "opcode": 16 },
+        "not": { "ii": 1, "d": 1, "opcode": 17 },
+        "mov": { "ii": 1, "d": 1, "opcode": 18 },
+        "const": { "ii": 1, "d": 1, "opcode": 19 },
+        "load": { "ii": 1, "d": 1, "opcode": 20 },
+        "store": { "ii": 1, "d": 1, "opcode": 21 },
+        "phi": { "ii": 1, "d": 1, "opcode": 22 },
+        "call": { "ii": 1, "d": 1, "opcode": 23 },
+        "print": { "ii": 1, "d": 1, "opcode": 24 },
+        "param": { "ii": 1, "d": 1, "opcode": 25 },
+        "br": { "ii": 1, "d": 1, "opcode": 26 },
+        "cbr": { "ii": 1, "d": 1, "opcode": 27 },
+        "ret": { "ii": 1, "d": 1, "opcode": 28 }
+      }
+    }
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            build_dir = root / "build"
+            build_dir.mkdir()
+            seq_path = build_dir / "add1.seq.uhir"
+            library_path = root / "ressources.json"
+            alloc_path = build_dir / "add1.alloc.uhir"
+            seq_path.write_text(seq, encoding="utf-8")
+            library_path.write_text(library, encoding="utf-8")
+
+            self.assertEqual(main(["alloc", str(seq_path), "-exg", str(library_path), "-o", str(alloc_path)]), 0)
+
+            alloc_text = alloc_path.read_text(encoding="utf-8")
+            self.assertIn('component_library "../ressources.json"', alloc_text)
 
     def test_alloc_command_infers_base_type_parameter_from_component_library_support_types(self) -> None:
         seq = """design typed_div
@@ -2132,6 +2209,8 @@ seq clk {
     def test_view_command_renders_uglir_mmio_pretty(self) -> None:
         uglir = """design wrapped
 stage uglir
+component_library "gen.uhlslib.json"
+component_library "ihp130.uhlslib.json"
 input  clk : clock
 input  rst : i1
 input  obi_req_i : i1
@@ -2171,6 +2250,8 @@ seq clk {
 
             rendered = stdout.getvalue()
             self.assertIn("design wrapped mmio", rendered)
+            self.assertIn('component_library "gen.uhlslib.json"', rendered)
+            self.assertIn('component_library "ihp130.uhlslib.json"', rendered)
             self.assertIn("map obi", rendered)
             self.assertIn("register control_status range=[0x0 : 0x3] access=rw", rendered)
             self.assertIn("bit[0] done: read-only completion-latched status; write 1 starts execution and clears done", rendered)
@@ -2183,6 +2264,7 @@ seq clk {
     def test_view_command_renders_uglir_mmio_dot(self) -> None:
         uglir = """design wrapped
 stage uglir
+component_library "gen.uhlslib.json"
 input  clk : clock
 input  rst : i1
 input  wb_cyc_i : i1
@@ -2226,6 +2308,7 @@ seq clk {
             self.assertIn("<TD>reg</TD><TD>control_status</TD><TD>[0x0 : 0x3]</TD><TD>rw</TD>", rendered)
             self.assertIn("<TD>mem</TD><TD>A</TD><TD>[0x1000 : 0x100f]</TD><TD>rw</TD>", rendered)
             self.assertIn('bus -> mmio_map [label="address map"];', rendered)
+            self.assertIn('provenance [shape=note, label="component libraries\\ngen.uhlslib.json"];', rendered)
             self.assertIn('core [label="HLS core\\nwrapped_core"];', rendered)
             self.assertIn('label="memory A', rendered)
             self.assertNotIn('label="external ports', rendered)
@@ -2498,6 +2581,128 @@ block entry:
             with redirect_stdout(stdout):
                 self.assertEqual(main(["view", str(path), "--what", "cfg", "--dot"]), 0)
             self.assertIn('digraph "add1"', stdout.getvalue())
+
+    def test_asic_command_emits_ihp130_flow_bundle(self) -> None:
+        uglir = """design add1
+stage uglir
+input  clk : clock
+input  rst : i1
+input  x : i32
+output y : i32
+resources {
+  inst gen_alu0 : GEN_ALU
+}
+assign y = x
+"""
+        library = {
+            "components": {
+                "GEN_ALU": {
+                    "kind": "combinational",
+                    "hdl": {
+                        "language": "verilog",
+                        "module": "GEN_ALU",
+                        "source": "src/uhls/backend/hls/impl/generic/gen_alu.v",
+                    },
+                    "ports": {
+                        "a": {"dir": "input", "type": "i32"},
+                        "y": {"dir": "output", "type": "i32"},
+                    },
+                    "supports": {"add": {"ii": 1, "d": 1}},
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uglir_path = root / "add1.uglir"
+            lib_path = root / "gen.uhlslib.json"
+            outdir = root / "asic"
+            uglir_path.write_text(uglir, encoding="utf-8")
+            lib_path.write_text(json.dumps(library), encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(
+                    main(
+                        [
+                            "asic",
+                            str(uglir_path),
+                            "--target",
+                            "ihp130",
+                            "--resources",
+                            str(lib_path),
+                            "--outdir",
+                            str(outdir),
+                            "--clock-period",
+                            "5.0",
+                        ]
+                    ),
+                    0,
+                )
+
+            self.assertEqual(stdout.getvalue().strip(), str(outdir.resolve()))
+            self.assertTrue((outdir / "add1.v").is_file())
+            self.assertTrue((outdir / "constraints.sdc").is_file())
+            self.assertTrue((outdir / "orfs.mk").is_file())
+            self.assertTrue((outdir / "macros.json").is_file())
+            self.assertIn("create_clock [get_ports {clk}] -name clk -period 5", (outdir / "constraints.sdc").read_text(encoding="utf-8"))
+            self.assertIn("export PLATFORM = ihp-sg13g2", (outdir / "orfs.mk").read_text(encoding="utf-8"))
+
+    def test_asic_command_uses_embedded_component_library_provenance(self) -> None:
+        uglir = """design add1
+stage uglir
+component_library "gen.uhlslib.json"
+input  clk : clock
+input  rst : i1
+input  x : i32
+output y : i32
+resources {
+  inst gen_alu0 : GEN_ALU
+}
+assign y = x
+"""
+        library = {
+            "components": {
+                "GEN_ALU": {
+                    "kind": "combinational",
+                    "hdl": {
+                        "language": "verilog",
+                        "module": "GEN_ALU",
+                        "source": "src/uhls/backend/hls/impl/generic/gen_alu.v",
+                    },
+                    "ports": {
+                        "a": {"dir": "input", "type": "i32"},
+                        "y": {"dir": "output", "type": "i32"},
+                    },
+                    "supports": {"add": {"ii": 1, "d": 1}},
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uglir_path = root / "add1.uglir"
+            lib_path = root / "gen.uhlslib.json"
+            outdir = root / "asic"
+            uglir_path.write_text(uglir, encoding="utf-8")
+            lib_path.write_text(json.dumps(library), encoding="utf-8")
+
+            self.assertEqual(
+                main(
+                    [
+                        "asic",
+                        str(uglir_path),
+                        "--target",
+                        "ihp130",
+                        "--outdir",
+                        str(outdir),
+                    ]
+                ),
+                0,
+            )
+
+            self.assertTrue((outdir / "add1.v").is_file())
+            self.assertTrue((outdir / "constraints.sdc").is_file())
+            self.assertTrue((outdir / "orfs.mk").is_file())
+            self.assertTrue((outdir / "macros.json").is_file())
 
     def test_view_command_infers_seq_dot_for_seq_uhir(self) -> None:
         seq = """design add1
@@ -3518,6 +3723,88 @@ region proc_add1 kind=procedure {
             self.assertIn("ewms0.op(ewms0_op_q)", uglir_text)
             self.assertIn("assign sel_ewms0_op_n = state_q == 2 ? SRC_0 : ZERO", uglir_text)
             self.assertNotIn("ewms0.go(", uglir_text)
+
+    def test_glue_command_uses_embedded_component_library_provenance(self) -> None:
+        fsm = """design add1
+stage fsm
+component_library "ressources.json"
+schedule kind=control_steps
+input  x : i32
+output result : i32
+resources {
+  fu ewms0 : ALU
+  reg r_i32_0 : i32
+}
+controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+  input  req_valid : i1
+  input  resp_ready : i1
+  output req_ready : i1
+  output resp_valid : i1
+  state IDLE code=1
+  state T0 code=2
+  state T1 code=4
+  state T2 code=8
+  state DONE code=16
+  transition IDLE -> T0 when=req_valid && req_ready
+  transition T0 -> T1
+  transition T1 -> T2
+  transition T2 -> DONE
+  transition DONE -> IDLE when=resp_valid && resp_ready
+  emit IDLE req_ready=true
+  emit T0 issue=[ewms0<-v1]
+  emit T1 latch=[r_i32_0]
+  emit DONE resp_valid=true
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  steps [0:1]
+  latency 2
+  value v1 -> r_i32_0 live=[1:1]
+}
+"""
+        component_library = {
+            "components": {
+                "ALU": {
+                    "kind": "combinational",
+                    "ports": {
+                        "a": {"dir": "input", "type": "i32"},
+                        "b": {"dir": "input", "type": "i32"},
+                        "op": {"dir": "input", "type": "u5"},
+                        "y": {"dir": "output", "type": "i32"},
+                    },
+                    "supports": {
+                        "add": {
+                            "ii": 1,
+                            "d": 1,
+                            "opcode": 0,
+                            "bind": {"a": "operand0", "b": "operand1", "y": "result"},
+                        },
+                    },
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fsm_path = root / "add1.fsm.uhir"
+            library_path = root / "ressources.json"
+            uglir_path = root / "add1.uglir"
+            fsm_path.write_text(fsm, encoding="utf-8")
+            library_path.write_text(json.dumps(component_library), encoding="utf-8")
+
+            self.assertEqual(main(["glue", str(fsm_path), "-o", str(uglir_path)]), 0)
+
+            uglir_text = uglir_path.read_text(encoding="utf-8")
+            self.assertIn('component_library "ressources.json"', uglir_text)
+            self.assertIn("ewms0.a(ewms0_a_q)", uglir_text)
+            self.assertIn("ewms0.b(ewms0_b_q)", uglir_text)
+            self.assertIn("ewms0.op(ewms0_op_q)", uglir_text)
 
     def test_rtl_command_lowers_uglir_to_verilog(self) -> None:
         uglir = """design add1

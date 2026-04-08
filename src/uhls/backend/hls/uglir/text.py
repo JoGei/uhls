@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -24,6 +25,7 @@ _IDENT_RE = r"[A-Za-z_][\w$]*"
 _RESOURCE_VALUE_RE = r"[A-Za-z_][\w$]*(?:<[^>\n]+>)?"
 _DESIGN_RE = re.compile(rf"^design\s+({_IDENT_RE})$")
 _STAGE_RE = re.compile(r"^stage\s+(uglir)$")
+_COMPONENT_LIBRARY_RE = re.compile(r"^component_library\s+(.+)$")
 _PORT_RE = re.compile(rf"^(input|output)\s+({_IDENT_RE})\s*:\s*(.+)$")
 _CONST_RE = re.compile(rf"^const\s+({_IDENT_RE})\s*=\s*(.+?)\s*:\s*(.+)$")
 _ADDRESS_MAP_START_RE = re.compile(rf"^address_map\s+({_IDENT_RE})\s*\{{$")
@@ -31,7 +33,7 @@ _ADDRESS_MAP_ENTRY_RE = re.compile(rf"^(register|memory)\s+({_IDENT_RE})(?:\s+(.
 _REG_RE = re.compile(rf"^reg\s+({_IDENT_RE})\s*:\s*([A-Za-z0-9_<>\[\]]+)$")
 _NET_RE = re.compile(rf"^net\s+({_IDENT_RE})\s*:\s*([A-Za-z0-9_<>\[\]]+)$")
 _MEM_RE = re.compile(rf"^mem\s+({_IDENT_RE})\s*:\s*([A-Za-z0-9_<>\[\]]+)$")
-_INST_RE = re.compile(rf"^inst\s+({_IDENT_RE})\s*:\s*({_RESOURCE_VALUE_RE})$")
+_INST_RE = re.compile(rf"^inst\s+({_IDENT_RE})\s*:\s*({_RESOURCE_VALUE_RE})(?:\s+({_RESOURCE_VALUE_RE}))?$")
 _MUX_RESOURCE_RE = re.compile(rf"^mux\s+({_IDENT_RE})\s*:\s*([A-Za-z0-9_<>\[\]]+)$")
 _PORT_RESOURCE_RE = re.compile(rf"^port\s+({_IDENT_RE})\s*:\s*({_RESOURCE_VALUE_RE})(?:\s+({_IDENT_RE}))?$")
 _ASSIGN_RE = re.compile(rf"^assign\s+({_IDENT_RE})\s*=\s*(.+)$")
@@ -67,6 +69,10 @@ def parse_uglir(text: str) -> UGLIRDesign:
     while index < len(lines):
         line = lines[index]
         line_number = index + 1
+        if component_library := _try_parse_component_library(line):
+            design.component_libraries.append(component_library)
+            index += 1
+            continue
         if port := _try_parse_port(line):
             if port.direction == "input":
                 design.inputs.append(port)
@@ -231,6 +237,24 @@ def _try_parse_port(line: str) -> UGLIRPort | None:
     return UGLIRPort(direction, name, type_hint.strip())
 
 
+def _try_parse_component_library(line: str) -> str | None:
+    match = _COMPONENT_LIBRARY_RE.fullmatch(line)
+    if match is None:
+        return None
+    value = match.group(1).strip()
+    if value.startswith('"'):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise UGLIRParseError(f"component_library expects one valid string path, got {value!r}") from exc
+        if not isinstance(parsed, str):
+            raise UGLIRParseError(f"component_library expects one string path, got {value!r}")
+        return parsed
+    if value.startswith("'") and value.endswith("'") and len(value) >= 2:
+        return value[1:-1]
+    return value
+
+
 def _try_parse_const(line: str) -> UGLIRConstant | None:
     match = _CONST_RE.fullmatch(line)
     if match is None:
@@ -254,7 +278,7 @@ def _parse_resources_block(lines: list[str], index: int) -> tuple[list[UGLIRReso
         elif match := _MEM_RE.fullmatch(line):
             resources.append(UGLIRResource("mem", match.group(1), match.group(2)))
         elif match := _INST_RE.fullmatch(line):
-            resources.append(UGLIRResource("inst", match.group(1), match.group(2)))
+            resources.append(UGLIRResource("inst", match.group(1), match.group(2), match.group(3)))
         elif match := _MUX_RESOURCE_RE.fullmatch(line):
             resources.append(UGLIRResource("mux", match.group(1), match.group(2)))
         elif match := _PORT_RESOURCE_RE.fullmatch(line):

@@ -196,7 +196,7 @@ def lower_seq_to_alloc(
         memory_vendor_components=memory_vendor_components,
     )
 
-    allocated = UHIRDesign(name=design.name, stage="alloc")
+    allocated = UHIRDesign(name=design.name, stage="alloc", component_libraries=list(design.component_libraries))
     allocated.inputs = [_clone_port(port) for port in design.inputs]
     allocated.outputs = [_clone_port(port) for port in design.outputs]
     allocated.constants = [_clone_constant(constant) for constant in design.constants]

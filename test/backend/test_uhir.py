@@ -161,6 +161,30 @@ class UHIRParserTests(unittest.TestCase):
         self.assertEqual(str(design.regions[0].nodes[0].attributes["delay"]), "T * ii + rd")
         self.assertEqual(str(design.regions[0].nodes[0].attributes["end"]), "T * ii + rd - 1")
 
+    def test_parse_and_format_uhir_preserve_component_library_provenance(self) -> None:
+        design = parse_uhir(
+            """
+            design add1
+            stage seq
+            component_library "../lib/gen.uhlslib.json"
+            component_library "/abs/vendor.uhlslib.json"
+
+            region proc_add1 kind=procedure {
+              node v0 = nop role=source
+            }
+            """
+        )
+
+        self.assertEqual(
+            design.component_libraries,
+            ["../lib/gen.uhlslib.json", "/abs/vendor.uhlslib.json"],
+        )
+        rendered = format_uhir(design)
+        self.assertIn('component_library "../lib/gen.uhlslib.json"', rendered)
+        self.assertIn('component_library "/abs/vendor.uhlslib.json"', rendered)
+        reparsed = parse_uhir(rendered)
+        self.assertEqual(reparsed.component_libraries, design.component_libraries)
+
     def test_parse_fsm_uhir_with_controller_shell(self) -> None:
         design = parse_uhir(
             """

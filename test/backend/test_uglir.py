@@ -99,6 +99,32 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertIn("mux mx_r_i32_0_n : i32 sel=sel_r_i32_0_n {", rendered)
         self.assertIn("seq clk {", rendered)
 
+    def test_parse_and_format_uglir_preserve_component_library_provenance(self) -> None:
+        design = parse_uglir(
+            """
+            design add1
+            stage uglir
+            component_library "../lib/gen.uhlslib.json"
+            component_library "/abs/vendor.uhlslib.json"
+            input  clk : clock
+            output y : i32
+            resources {
+              net y_n : i32
+            }
+            assign y = 0:i32
+            """
+        )
+
+        self.assertEqual(
+            design.component_libraries,
+            ["../lib/gen.uhlslib.json", "/abs/vendor.uhlslib.json"],
+        )
+        rendered = format_uglir(design)
+        self.assertIn('component_library "../lib/gen.uhlslib.json"', rendered)
+        self.assertIn('component_library "/abs/vendor.uhlslib.json"', rendered)
+        reparsed = parse_uglir(rendered)
+        self.assertEqual(reparsed.component_libraries, design.component_libraries)
+
     def test_lower_fsm_to_uglir_uses_component_library_ports(self) -> None:
         fsm_design = parse_uhir(
             """
@@ -1180,6 +1206,42 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertEqual(design.resources[1].kind, "mem")
         self.assertEqual(design.seq_blocks[0].updates[0].target, "A_mem_q[idx]")
         self.assertIn("address_map wishbone {", format_uglir(design))
+
+    def test_parse_and_format_uglir_preserve_instance_target(self) -> None:
+        design = parse_uglir(
+            """
+            design wrapped
+            stage uglir
+            input  clk : clock
+            resources {
+              inst A_mem_inst : RM_IHPSG13_1P_64x64_c2_bm_bist<W=64,DEPTH=64> RM_IHPSG13_1P_64x64_c2_bm_bist<word_t=i64,word_len=64>
+            }
+            seq clk {
+            }
+            """
+        )
+
+        self.assertEqual(
+            [(resource.kind, resource.id, resource.value, resource.target) for resource in design.resources],
+            [
+                (
+                    "inst",
+                    "A_mem_inst",
+                    "RM_IHPSG13_1P_64x64_c2_bm_bist<W=64,DEPTH=64>",
+                    "RM_IHPSG13_1P_64x64_c2_bm_bist<word_t=i64,word_len=64>",
+                )
+            ],
+        )
+        rendered = format_uglir(design)
+        self.assertIn(
+            "inst A_mem_inst : RM_IHPSG13_1P_64x64_c2_bm_bist<W=64,DEPTH=64> RM_IHPSG13_1P_64x64_c2_bm_bist<word_t=i64,word_len=64>",
+            rendered,
+        )
+        reparsed = parse_uglir(rendered)
+        self.assertEqual(
+            [(resource.kind, resource.id, resource.value, resource.target) for resource in reparsed.resources],
+            [(resource.kind, resource.id, resource.value, resource.target) for resource in design.resources],
+        )
 
     def test_parse_uglir_accepts_expression_sequential_enable(self) -> None:
         design = parse_uglir(

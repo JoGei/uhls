@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -33,6 +34,7 @@ _IDENT_RE = r"[A-Za-z_][\w$]*"
 _RESOURCE_VALUE_RE = r"[A-Za-z_][\w$]*(?:<[^>\n]+>)?"
 _DESIGN_RE = re.compile(rf"^design\s+({_IDENT_RE})$")
 _STAGE_RE = re.compile(r"^stage\s+(seq|exg|alloc|sched|bind|fsm)$")
+_COMPONENT_LIBRARY_RE = re.compile(r"^component_library\s+(.+)$")
 _PORT_RE = re.compile(rf"^(input|output)\s+({_IDENT_RE})\s*:\s*(.+)$")
 _CONTROLLER_START_RE = re.compile(rf"^controller\s+({_IDENT_RE})(?:\s+(.*?))?\{{$")
 _STATE_RE = re.compile(rf"^state\s+({_IDENT_RE})(?:\s+(.*))?$")
@@ -84,6 +86,10 @@ def parse_uhir(text: str) -> UHIRDesign:
     while index < len(lines):
         line = lines[index]
         line_number = index + 1
+        if component_library := _try_parse_component_library(line):
+            design.component_libraries.append(component_library)
+            index += 1
+            continue
         if port := _try_parse_port(line):
             if port.direction == "input":
                 design.inputs.append(port)
@@ -243,6 +249,24 @@ def _try_parse_port(line: str) -> UHIRPort | None:
         return None
     direction, name, type_hint = match.groups()
     return UHIRPort(direction, name, type_hint.strip())
+
+
+def _try_parse_component_library(line: str) -> str | None:
+    match = _COMPONENT_LIBRARY_RE.fullmatch(line)
+    if match is None:
+        return None
+    value = match.group(1).strip()
+    if value.startswith('"'):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise UHIRParseError(f"component_library expects one valid string path, got {value!r}") from exc
+        if not isinstance(parsed, str):
+            raise UHIRParseError(f"component_library expects one string path, got {value!r}")
+        return parsed
+    if value.startswith("'") and value.endswith("'") and len(value) >= 2:
+        return value[1:-1]
+    return value
 
 
 def _try_parse_const(line: str) -> UHIRConstant | None:

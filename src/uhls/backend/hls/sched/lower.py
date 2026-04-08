@@ -31,7 +31,7 @@ def lower_alloc_to_sched(
 
     flat_scheduler = _resolve_scheduler(scheduler=scheduler, algorithm=algorithm)
 
-    scheduled = UHIRDesign(name=design.name, stage="sched")
+    scheduled = UHIRDesign(name=design.name, stage="sched", component_libraries=list(design.component_libraries))
     scheduled.inputs = [_clone_port(port) for port in design.inputs]
     scheduled.outputs = [_clone_port(port) for port in design.outputs]
     scheduled.constants = [_clone_constant(constant) for constant in design.constants]

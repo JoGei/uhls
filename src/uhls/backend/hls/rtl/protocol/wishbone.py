@@ -204,6 +204,7 @@ def build_wishbone_slave_wrapper_uglir(
                     "inst",
                     f"{interface.base}_mem_inst",
                     _materialized_interface_component_spec(interface, component_library),
+                    interface.component_spec,
                 )
             )
         else:

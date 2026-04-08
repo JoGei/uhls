@@ -212,6 +212,44 @@ class ComponentLibraryImportTests(unittest.TestCase):
         self.assertEqual(validated["SRAM"]["hdl"]["include_dirs"], ["rtl/include"])
         self.assertEqual(validated["SRAM"]["hdl"]["defines"], ["FUNCTIONAL", "USE_BIST=1"])
 
+    def test_validate_component_library_accepts_hdl_physical_collateral(self) -> None:
+        validated = validate_component_library(
+            {
+                "SRAM": {
+                    "kind": "memory",
+                    "hdl": {
+                        "language": "verilog",
+                        "module": "SRAM",
+                        "sources": ["rtl/core.v", "rtl/top.v"],
+                        "lef_files": ["phys/SRAM.lef"],
+                        "liberty_files": ["timing/SRAM_fast.lib", "timing/SRAM_slow.lib"],
+                        "gds_files": ["layout/SRAM.gds"],
+                    },
+                    "memory": {
+                        "word_t": "i64",
+                        "word_len": 64,
+                    },
+                    "ports": {
+                        "addr": {"dir": "input", "type": "i32"},
+                        "wdata": {"dir": "input", "type": "i64"},
+                        "we": {"dir": "input", "type": "i1"},
+                        "rdata": {"dir": "output", "type": "i64"},
+                    },
+                    "supports": {
+                        "load": {"ii": 1, "d": 2},
+                        "store": {"ii": 1, "d": 1},
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(validated["SRAM"]["hdl"]["lef_files"], ["phys/SRAM.lef"])
+        self.assertEqual(
+            validated["SRAM"]["hdl"]["liberty_files"],
+            ["timing/SRAM_fast.lib", "timing/SRAM_slow.lib"],
+        )
+        self.assertEqual(validated["SRAM"]["hdl"]["gds_files"], ["layout/SRAM.gds"])
+
     def test_validate_component_library_accepts_tied_input_ports(self) -> None:
         validated = validate_component_library(
             {
@@ -276,8 +314,8 @@ class ComponentLibraryImportTests(unittest.TestCase):
                 "language": "verilog",
                 "module": "RM_IHPSG13_1P_64x64_c2_bm_bist",
                 "sources": [
-                    "RM_IHPSG13_1P_core_behavioral_bm_bist.v",
-                    "RM_IHPSG13_1P_64x64_c2_bm_bist.v",
+                    "RM_IHPSG13_1P_64x64_c2_bm_bist_parent/verilog/RM_IHPSG13_1P_core_behavioral_bm_bist.v",
+                    "RM_IHPSG13_1P_64x64_c2_bm_bist_parent/verilog/RM_IHPSG13_1P_64x64_c2_bm_bist.v",
                 ],
             },
             "ports": {
@@ -305,6 +343,22 @@ class ComponentLibraryImportTests(unittest.TestCase):
         _enrich_ihp_memory_stub(component, "RM_IHPSG13_1P_64x64_c2_bm_bist")
 
         self.assertEqual(component["hdl"]["defines"], ["FUNCTIONAL"])
+        self.assertEqual(
+            component["hdl"]["lef_files"],
+            ["RM_IHPSG13_1P_64x64_c2_bm_bist_parent/lef/RM_IHPSG13_1P_64x64_c2_bm_bist.lef"],
+        )
+        self.assertEqual(
+            component["hdl"]["liberty_files"],
+            [
+                "RM_IHPSG13_1P_64x64_c2_bm_bist_parent/lib/RM_IHPSG13_1P_64x64_c2_bm_bist_fast_1p32V_m55C.lib",
+                "RM_IHPSG13_1P_64x64_c2_bm_bist_parent/lib/RM_IHPSG13_1P_64x64_c2_bm_bist_slow_1p08V_125C.lib",
+                "RM_IHPSG13_1P_64x64_c2_bm_bist_parent/lib/RM_IHPSG13_1P_64x64_c2_bm_bist_typ_1p20V_25C.lib",
+            ],
+        )
+        self.assertEqual(
+            component["hdl"]["gds_files"],
+            ["RM_IHPSG13_1P_64x64_c2_bm_bist_parent/gds/RM_IHPSG13_1P_64x64_c2_bm_bist.gds"],
+        )
         self.assertEqual(
             component["parameters"],
             {
@@ -353,6 +407,27 @@ class ComponentLibraryImportTests(unittest.TestCase):
                 },
             },
         )
+
+    def test_rewrite_hdl_paths_with_env_rewrites_physical_collateral(self) -> None:
+        component = {
+            "hdl": {
+                "source": "/tmp/ihp130/verilog/macro.v",
+                "sources": ["/tmp/ihp130/verilog/dep.v"],
+                "include_dirs": ["/tmp/ihp130/verilog/include"],
+                "lef_files": ["/tmp/ihp130/lef/macro.lef"],
+                "liberty_files": ["/tmp/ihp130/lib/macro_typ.lib"],
+                "gds_files": ["/tmp/ihp130/gds/macro.gds"],
+            }
+        }
+
+        _rewrite_hdl_paths_with_env(component, {"IHP130_PDK_ROOT": Path("/tmp/ihp130")})
+
+        self.assertEqual(component["hdl"]["source"], "${IHP130_PDK_ROOT}/verilog/macro.v")
+        self.assertEqual(component["hdl"]["sources"], ["${IHP130_PDK_ROOT}/verilog/dep.v"])
+        self.assertEqual(component["hdl"]["include_dirs"], ["${IHP130_PDK_ROOT}/verilog/include"])
+        self.assertEqual(component["hdl"]["lef_files"], ["${IHP130_PDK_ROOT}/lef/macro.lef"])
+        self.assertEqual(component["hdl"]["liberty_files"], ["${IHP130_PDK_ROOT}/lib/macro_typ.lib"])
+        self.assertEqual(component["hdl"]["gds_files"], ["${IHP130_PDK_ROOT}/gds/macro.gds"])
 
     def test_materialize_hdl_component_spec_maps_semantic_base_type_to_verilog_width(self) -> None:
         library = validate_component_library(

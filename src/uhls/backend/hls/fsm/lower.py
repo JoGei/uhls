@@ -43,7 +43,7 @@ def lower_bind_to_fsm(design: UHIRDesign, *, encoding: str = "binary") -> UHIRDe
     else:
         _validate_concrete_bind_timing(design)
 
-    lowered = UHIRDesign(name=design.name, stage="fsm")
+    lowered = UHIRDesign(name=design.name, stage="fsm", component_libraries=list(design.component_libraries))
     lowered.inputs = [_clone_port(port) for port in design.inputs]
     lowered.outputs = [_clone_port(port) for port in design.outputs]
     lowered.constants = [_clone_constant(constant) for constant in design.constants]

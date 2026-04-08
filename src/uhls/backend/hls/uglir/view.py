@@ -31,6 +31,8 @@ def render_uglir_view(design: UGLIRDesign, *, backend: str, view_name: str) -> s
 def format_uglir_mmio(design: UGLIRDesign) -> str:
     """Render one software-facing MMIO summary for wrapped µglIR."""
     lines: list[str] = [f"design {design.name} mmio"]
+    for component_library in design.component_libraries:
+        lines.append(f'component_library "{component_library}"')
     for address_map in design.address_maps:
         lines.append(f"map {address_map.name}")
         for entry in address_map.entries:
@@ -68,6 +70,10 @@ def format_uglir_mmio_dot(design: UGLIRDesign) -> str:
     if address_map is not None:
         lines.extend(_format_mmio_dot_table("mmio_map", address_map))
         lines.append('    bus -> mmio_map [label="address map"];')
+    if design.component_libraries:
+        lines.append(
+            f'    provenance [shape=note, label="{_dot_label_escape(_format_component_library_note(design.component_libraries))}"];'
+        )
     lines.append(f'    core [label="HLS core\\n{design.name}_core"];')
     if scalar_reg_nodes:
         scalar_label = "\\n".join(
@@ -186,6 +192,14 @@ def _format_mmio_dot_table(node_name: str, address_map) -> list[str]:
 
 def _dot_html_escape(text: object) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def _dot_label_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _format_component_library_note(paths: list[str]) -> str:
+    return "component libraries\n" + "\n".join(paths)
 
 
 def _format_mmio_range(offset: object, span: object) -> str:

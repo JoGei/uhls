@@ -28,6 +28,8 @@ from .model import (
 def format_uhir(design: UHIRDesign) -> str:
     """Render one textual µhIR design."""
     lines = [f"design {design.name}", f"stage {design.stage}"]
+    for component_library in design.component_libraries:
+        lines.append(f"component_library {_format_string_literal(component_library)}")
 
     for port in design.inputs:
         lines.append(f"input  {port.name} : {port.type}")
@@ -246,6 +248,11 @@ def _format_expr_statement(prefix: str, expr: str, *, suffix: str = "", width: i
 
 def _indent_lines(lines: list[str], indent: str) -> list[str]:
     return [f"{indent}{line}" for line in lines]
+
+
+def _format_string_literal(text: str) -> str:
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def _order_region_nodes(region: UHIRRegion) -> list[UHIRNode]:

@@ -37,7 +37,7 @@ def lower_sched_to_bind(
     resolved_binder = _resolve_binder(binder=binder, algorithm=algorithm)
     binding = resolved_binder.bind_operations(design)
 
-    bound = UHIRDesign(name=design.name, stage="bind")
+    bound = UHIRDesign(name=design.name, stage="bind", component_libraries=list(design.component_libraries))
     bound.inputs = [_clone_port(port) for port in design.inputs]
     bound.outputs = [_clone_port(port) for port in design.outputs]
     bound.constants = [_clone_constant(constant) for constant in design.constants]

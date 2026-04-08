@@ -110,6 +110,7 @@ class UGLIRDesign:
 
     name: str
     stage: str = "uglir"
+    component_libraries: list[str] = field(default_factory=list)
     inputs: list[UGLIRPort] = field(default_factory=list)
     outputs: list[UGLIRPort] = field(default_factory=list)
     constants: list[UGLIRConstant] = field(default_factory=list)
@@ -128,6 +129,7 @@ def to_uglir_design(design) -> UGLIRDesign:
     return UGLIRDesign(
         name=design.name,
         stage=design.stage,
+        component_libraries=list(getattr(design, "component_libraries", ())),
         inputs=[UGLIRPort(port.direction, port.name, port.type) for port in design.inputs],
         outputs=[UGLIRPort(port.direction, port.name, port.type) for port in design.outputs],
         constants=[UGLIRConstant(const.name, const.value, const.type) for const in design.constants],

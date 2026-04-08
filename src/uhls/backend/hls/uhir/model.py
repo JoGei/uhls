@@ -184,6 +184,7 @@ class UHIRDesign:
 
     name: str
     stage: str
+    component_libraries: list[str] = field(default_factory=list)
     inputs: list[UHIRPort] = field(default_factory=list)
     outputs: list[UHIRPort] = field(default_factory=list)
     constants: list[UHIRConstant] = field(default_factory=list)

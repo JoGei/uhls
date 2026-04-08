@@ -39,7 +39,7 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         controller.name: {state.name: state.attributes["code"] for state in controller.states}
         for controller in design.controllers
     }
-    lowered = UGLIRDesign(name=design.name)
+    lowered = UGLIRDesign(name=design.name, component_libraries=list(design.component_libraries))
     helper_signal_ids: dict[tuple[str, str], str] = {}
     held_input_updates: list[tuple[str, str, str, str]] = []
     memory_interfaces = _memory_interfaces(design, component_library)
@@ -90,7 +90,7 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                 instance_value = resource.value
                 if component_library is not None:
                     instance_value = _materialized_instance_spec(component_library, resource.value)
-                lowered.resources.append(UGLIRResource("inst", resource.id, instance_value))
+                lowered.resources.append(UGLIRResource("inst", resource.id, instance_value, resource.value))
             if component_library is None:
                 lowered.resources.append(UGLIRResource("net", f"{resource.id}_go", "i1"))
                 result_type = _instance_result_type(design, resource.id)
@@ -344,7 +344,11 @@ def _apply_signal_naming_convention(design: UGLIRDesign) -> UGLIRDesign:
     if not rename_map:
         return design
 
-    normalized = UGLIRDesign(name=design.name, stage=design.stage)
+    normalized = UGLIRDesign(
+        name=design.name,
+        stage=design.stage,
+        component_libraries=list(getattr(design, "component_libraries", ())),
+    )
     normalized.inputs = list(design.inputs)
     normalized.outputs = list(design.outputs)
     normalized.constants = list(design.constants)

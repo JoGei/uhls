@@ -25,6 +25,8 @@ def format_uglir(design: UGLIRDesign) -> str:
         raise ValueError(f"µglIR formatter expects stage 'uglir', got stage '{design.stage}'")
 
     lines = [f"design {design.name}", "stage uglir"]
+    for component_library in design.component_libraries:
+        lines.append(f"component_library {_format_string_literal(component_library)}")
     for port in design.inputs:
         lines.append(f"input  {port.name} : {port.type}")
     for port in design.outputs:
@@ -83,7 +85,8 @@ def format_resource(resource: UGLIRResource) -> str:
     if resource.kind == "mem":
         return f"mem {resource.id} : {resource.value}"
     if resource.kind == "inst":
-        return f"inst {resource.id} : {resource.value}"
+        suffix = "" if resource.target is None else f" {resource.target}"
+        return f"inst {resource.id} : {resource.value}{suffix}"
     if resource.kind == "mux":
         return f"mux {resource.id} : {resource.value}"
     if resource.kind == "port":
@@ -185,6 +188,11 @@ def _format_expr_statement(prefix: str, expr: str, *, suffix: str = "", width: i
 
 def _indent_lines(lines: list[str], indent: str) -> list[str]:
     return [f"{indent}{line}" for line in lines]
+
+
+def _format_string_literal(text: str) -> str:
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 __all__ = ["format_uglir"]

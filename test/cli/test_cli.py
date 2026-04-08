@@ -336,6 +336,69 @@ class CLITests(unittest.TestCase):
                 [str(leaf_path), str(mid_path), str(top_path)],
             )
 
+    def test_lib_command_merges_component_libraries_and_rewrites_relative_hdl_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            base_root = root / "base"
+            vendor_root = root / "vendor"
+            out_root = root / "out"
+            base_root.mkdir()
+            vendor_root.mkdir()
+            out_root.mkdir()
+            base_path = base_root / "ressources.json"
+            vendor_path = vendor_root / "ihp130.uhlslib.json"
+            output_path = out_root / "merged.json"
+            base_path.write_text(
+                json.dumps(
+                    {
+                        "components": {
+                            "GEN_ALU": {
+                                "kind": "combinational",
+                                "hdl": {"language": "verilog", "module": "GEN_ALU", "source": "rtl/gen_alu.v"},
+                                "ports": {"a": {"dir": "input", "type": "i32"}, "y": {"dir": "output", "type": "i32"}},
+                                "supports": {"add": {"ii": 1, "d": 1}},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            vendor_path.write_text(
+                json.dumps(
+                    {
+                        "components": {
+                            "IHP_MEM": {
+                                "kind": "memory",
+                                "hdl": {
+                                    "language": "verilog",
+                                    "module": "IHP_MEM",
+                                    "sources": ["verilog/mem_top.v", "${IHP130_PDK_ROOT}/verilog/mem_dep.v"],
+                                    "include_dirs": ["verilog/include"],
+                                },
+                                "ports": {"A_CLK": {"dir": "input", "type": "clock"}, "A_DOUT": {"dir": "output", "type": "i32"}},
+                                "supports": {"load": {"ii": 1, "d": 2}, "store": {"ii": 1, "d": 1}},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                main(["lib", str(base_path), "--merge", str(vendor_path), "-o", str(output_path)]),
+                0,
+            )
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertIn("GEN_ALU", payload["components"])
+            self.assertIn("IHP_MEM", payload["components"])
+            self.assertEqual(payload["components"]["GEN_ALU"]["hdl"]["source"], "../base/rtl/gen_alu.v")
+            self.assertEqual(
+                payload["components"]["IHP_MEM"]["hdl"]["sources"],
+                ["../vendor/verilog/mem_top.v", "${IHP130_PDK_ROOT}/verilog/mem_dep.v"],
+            )
+            self.assertEqual(payload["components"]["IHP_MEM"]["hdl"]["include_dirs"], ["../vendor/verilog/include"])
+
     def test_parse_lint_and_view_cfg_dfg_cdfg_round_trip(self) -> None:
         source = """
         int32_t add1(int32_t x) {
@@ -2284,7 +2347,113 @@ seq clk {
                     0,
                 )
 
-            self.assertEqual(stdout.getvalue().strip(), "8")
+            rendered = stdout.getvalue().strip().splitlines()
+            self.assertEqual(rendered[0], "8")
+            self.assertEqual(rendered[1], "verilator invocation report:")
+            self.assertIn("1. add1 in: x=7 out: return=8", rendered[2])
+            self.assertIn("latency=", rendered[2])
+            self.assertIn("ii=", rendered[2])
+
+    def test_run_command_supports_verilator_vcd_output(self) -> None:
+        uir = """func add1(x:i32) -> i32
+
+block entry:
+    y:i32 = add x, 1
+    ret y
+
+func main() -> i32
+
+block entry:
+    t0_0:i32 = call add1(7:i32)
+    t0_1:i32 = call add1(8:i32)
+    t0_2:i32 = add t0_0, t0_1
+    ret t0_2
+"""
+        uglir = """design add1
+stage uglir
+input  clk : clock
+input  rst : i1
+input  wb_cyc_i : i1
+input  wb_stb_i : i1
+input  wb_we_i : i1
+input  wb_adr_i : u32
+input  wb_dat_i : u32
+input  wb_sel_i : u4
+output wb_dat_o : u32
+output wb_ack_o : i1
+address_map wishbone {
+  register control_status offset=32'h0000_0000 access=rw symbol=WB_REG_CONTROL_STATUS
+  register x offset=32'h0000_0100 access=rw symbol=WB_REG_IN_X type=i32
+  register result offset=32'h0000_0200 access=ro symbol=WB_REG_OUT_RESULT type=i32
+}
+resources {
+  reg start_pending_q : i1
+  reg busy_q : i1
+  reg done_q : i1
+  reg x_q : i32
+  reg result_q : i32
+}
+assign wb_ack_o = wb_cyc_i & wb_stb_i
+assign wb_dat_o = (
+  (wb_adr_i == 32'h0000_0000) ? {0:u28, true, start_pending_q, busy_q, done_q} :
+  ((wb_adr_i == 32'h0000_0100) ? x_q :
+   ((wb_adr_i == 32'h0000_0200) ? result_q : 0:u32))
+)
+seq clk {
+  if rst {
+    start_pending_q <= false
+    busy_q <= false
+    done_q <= false
+    x_q <= 0:i32
+    result_q <= 0:i32
+  } else {
+    x_q <= ((wb_cyc_i & wb_stb_i) && wb_we_i && (wb_adr_i == 32'h0000_0100)) ? wb_dat_i : x_q
+    start_pending_q <= false
+    busy_q <= false
+    done_q <= ((wb_cyc_i & wb_stb_i) && wb_we_i && (wb_adr_i == 32'h0000_0000) && wb_dat_i[0]) ? true : done_q
+    result_q <= ((wb_cyc_i & wb_stb_i) && wb_we_i && (wb_adr_i == 32'h0000_0000) && wb_dat_i[0]) ? (x_q + 1:i32) : result_q
+  }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uir_path = root / "prog.uir"
+            uglir_path = root / "add1.uglir"
+            vcd_path = root / "trace.vcd"
+            uir_path.write_text(uir, encoding="utf-8")
+            uglir_path.write_text(uglir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(
+                    main(
+                        [
+                            "run",
+                            str(uir_path),
+                            "--function",
+                            "main",
+                            "--backend",
+                            "verilator",
+                            "--uglir",
+                            str(uglir_path),
+                            "--vcd",
+                            str(vcd_path),
+                        ]
+                    ),
+                    0,
+                )
+
+            rendered = stdout.getvalue().strip().splitlines()
+            self.assertEqual(rendered[0], "17")
+            self.assertEqual(rendered[1], "verilator invocation report:")
+            self.assertIn("1. add1 in: x=7 out: return=8", rendered[2])
+            self.assertIn(f"vcd={vcd_path}", rendered[2])
+            self.assertIn("2. add1 in: x=8 out: return=9", rendered[3])
+            self.assertIn(f"vcd={root / 'trace_2.vcd'}", rendered[3])
+            self.assertTrue(vcd_path.is_file())
+            self.assertTrue((root / "trace_2.vcd").is_file())
+            self.assertGreater(vcd_path.stat().st_size, 0)
+            self.assertGreater((root / "trace_2.vcd").stat().st_size, 0)
 
     def test_lint_accepts_component_library_json(self) -> None:
         library = {

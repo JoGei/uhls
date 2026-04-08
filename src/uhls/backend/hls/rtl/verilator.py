@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import shutil
 import subprocess
 import tempfile
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from uhls.backend.hls.lib import parse_component_spec, resolve_component_definition
-from uhls.backend.hls.uglir import UGLIRAddressMap, UGLIRAddressMapEntry, UGLIRDesign
+from uhls.backend.hls.uglir import UGLIRAddressMap, UGLIRAddressMapEntry, UGLIRAssign, UGLIRDesign, UGLIRPort
 from uhls.interpreter import CallHookResult
 
 from .lower import lower_uglir_to_rtl
@@ -50,6 +51,7 @@ class VerilatorWrappedRunner:
         component_library: dict[str, dict[str, object]] | None = None,
         library_root: Path | None = None,
         reset: str = "sync+active_hi",
+        vcd_path: Path | None = None,
     ) -> None:
         if shutil.which("verilator") is None:
             raise ValueError("verilator is not available on PATH")
@@ -63,11 +65,14 @@ class VerilatorWrappedRunner:
         if self.protocol not in {"wishbone", "obi"}:
             raise ValueError(f"Verilator run backend currently supports wrapped wishbone/obi µglIR, got '{self.address_map.name}'")
         self.reset = reset
+        self.vcd_path = vcd_path
         self.scalar_inputs, self.scalar_outputs, self.memory_windows = _collect_mmio(self.address_map)
         self.result_register = next((register for register in self.scalar_outputs if register.name == "result"), None)
         self.support_assets = _collect_verilog_support_assets(design, component_library, self.library_root)
         self._tempdir: tempfile.TemporaryDirectory[str] | None = None
         self._binary_path: Path | None = None
+        self._invoke_count = 0
+        self._instrumented_design = _instrument_verilator_design(design)
 
     def close(self) -> None:
         """Release any build artifacts owned by this runner."""
@@ -90,9 +95,15 @@ class VerilatorWrappedRunner:
         request_path = workdir / "request.txt"
         response_path = workdir / "response.txt"
         request_path.write_text(_encode_request(scalar_arguments, arrays_by_alias), encoding="utf-8")
+        self._invoke_count += 1
+        vcd_path = _derive_invoke_vcd_path(self.vcd_path, self._invoke_count)
+        command = [str(self._binary_path), str(request_path), str(response_path)]
+        if vcd_path is not None:
+            vcd_path.parent.mkdir(parents=True, exist_ok=True)
+            command.append(str(vcd_path))
         try:
             completed = subprocess.run(
-                [str(self._binary_path), str(request_path), str(response_path)],
+                command,
                 cwd=workdir,
                 check=True,
                 text=True,
@@ -107,7 +118,13 @@ class VerilatorWrappedRunner:
         return CallHookResult(
             return_value=response["return_value"],
             updated_arrays=response["arrays"],
-            metadata={"backend": "verilog", "cycles": response["cycles"]},
+            metadata={
+                "backend": "verilator",
+                "cycles": response["cycles"],
+                "latency_cycles": response["latency_cycles"],
+                "ii_cycles": response["ii_cycles"],
+                **({"vcd": str(vcd_path)} if vcd_path is not None else {}),
+            },
         )
 
     def _ensure_built(self) -> None:
@@ -117,13 +134,24 @@ class VerilatorWrappedRunner:
         workdir = Path(self._tempdir.name)
         verilog_path = workdir / f"{self.design.name}.v"
         harness_path = workdir / f"{self.design.name}_sim.cpp"
-        verilog_path.write_text(lower_uglir_to_rtl(self.design, hdl="verilog", reset=self.reset), encoding="utf-8")
-        harness_path.write_text(_emit_verilator_harness(self.design, self.address_map, self.scalar_inputs, self.scalar_outputs, self.memory_windows), encoding="utf-8")
+        verilog_path.write_text(lower_uglir_to_rtl(self._instrumented_design, hdl="verilog", reset=self.reset), encoding="utf-8")
+        harness_path.write_text(
+            _emit_verilator_harness(
+                self.design,
+                self.address_map,
+                self.scalar_inputs,
+                self.scalar_outputs,
+                self.memory_windows,
+                enable_trace=self.vcd_path is not None,
+            ),
+            encoding="utf-8",
+        )
         try:
             subprocess.run(
                 [
                     "verilator",
                     "--cc",
+                    *(["--trace"] if self.vcd_path is not None else []),
                     "-Wno-WIDTHTRUNC",
                     "-Wno-WIDTHEXPAND",
                     str(verilog_path),
@@ -213,7 +241,7 @@ def _encode_request(scalars: Mapping[str, int], arrays: Mapping[str, Sequence[in
 
 
 def _decode_response(text: str) -> dict[str, object]:
-    result: dict[str, object] = {"return_value": None, "cycles": 0, "arrays": {}}
+    result: dict[str, object] = {"return_value": None, "cycles": 0, "latency_cycles": 0, "ii_cycles": 0, "arrays": {}}
     arrays: dict[str, list[int]] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -224,6 +252,10 @@ def _decode_response(text: str) -> dict[str, object]:
             result["return_value"] = int(parts[1])
         elif parts[0] == "cycles":
             result["cycles"] = int(parts[1])
+        elif parts[0] == "latency":
+            result["latency_cycles"] = int(parts[1])
+        elif parts[0] == "ii":
+            result["ii_cycles"] = int(parts[1])
         elif parts[0] == "array":
             name = parts[1]
             count = int(parts[2])
@@ -238,6 +270,8 @@ def _emit_verilator_harness(
     scalar_inputs: list[_ScalarRegister],
     scalar_outputs: list[_ScalarRegister],
     memory_windows: list[_MemoryWindow],
+    *,
+    enable_trace: bool,
 ) -> str:
     top = design.name
     protocol = address_map.name.strip().lower()
@@ -277,8 +311,47 @@ def _emit_verilator_harness(
     if result_register is not None:
         result_lines.append(f'  out << "return " << sim.read32({_cpp_hex(result_register.offset)}) << "\\n";')
     result_lines.extend(array_read_lines)
+    trace_include = '#include "verilated_vcd_c.h"\n' if enable_trace else ""
+    trace_fields = ""
+    trace_eval = ""
+    trace_tick_low = ""
+    trace_tick_high = ""
+    trace_tick_fall = ""
+    trace_setup = ""
+    trace_close = ""
+    argc_check = "  if (argc != 3) {"
+    if enable_trace:
+        trace_fields = """  uint64_t time = 0;
+  VerilatedVcdC *trace = nullptr;
+
+  void dump_trace() {
+    if (trace != nullptr) {
+      trace->dump(time);
+    }
+  }
+
+"""
+        trace_eval = "    dump_trace();\n"
+        trace_tick_low = "    dump_trace();\n    ++time;\n"
+        trace_tick_high = "    dump_trace();\n    ++time;\n"
+        trace_tick_fall = "    dump_trace();\n    ++time;\n"
+        trace_setup = """  VerilatedVcdC trace;
+  if (argc == 4) {
+    Verilated::traceEverOn(true);
+    sim.dut.trace(&trace, 99);
+    trace.open(argv[3]);
+    sim.trace = &trace;
+  }
+"""
+        trace_close = """  if (sim.trace != nullptr) {
+    sim.trace->flush();
+    sim.trace->close();
+  }
+"""
+        argc_check = "  if (argc != 3 && argc != 4) {"
     return f'''#include "V{top}.h"
 #include "verilated.h"
+{trace_include}
 
 #include <cstdint>
 #include <cstdlib>
@@ -328,20 +401,65 @@ static Request parse_request(const char *path) {{
 struct Sim {{
   V{top} dut;
   uint64_t cycles = 0;
+  bool perf_armed = false;
+  bool launch_seen = false;
+  bool req_blocked_seen = false;
+  bool ready_seen = false;
+  bool done_seen = false;
+  uint64_t launch_cycle = 0;
+  uint64_t ready_cycle = 0;
+  uint64_t done_cycle = 0;
+{trace_fields}
+
+  void observe_perf() {{
+    if (!perf_armed) {{
+      return;
+    }}
+    if (!launch_seen && dut.uhls_dbg_req_fire_o) {{
+      launch_seen = true;
+      launch_cycle = cycles;
+    }}
+    if (launch_seen && !req_blocked_seen && cycles > launch_cycle && !dut.uhls_dbg_req_ready_o) {{
+      req_blocked_seen = true;
+    }}
+    if (launch_seen && !done_seen && dut.uhls_dbg_resp_fire_o) {{
+      done_seen = true;
+      done_cycle = cycles;
+    }}
+    if (launch_seen && req_blocked_seen && !ready_seen && cycles > launch_cycle && dut.uhls_dbg_req_ready_o) {{
+      ready_seen = true;
+      ready_cycle = cycles;
+    }}
+  }}
+
+  void arm_perf() {{
+    perf_armed = true;
+    launch_seen = false;
+    req_blocked_seen = false;
+    ready_seen = false;
+    done_seen = false;
+    launch_cycle = 0;
+    ready_cycle = 0;
+    done_cycle = 0;
+  }}
 
   void eval() {{
     dut.eval();
-  }}
+    observe_perf();
+{trace_eval}  }}
 
   void tick() {{
     dut.clk = 0;
     dut.eval();
-    dut.clk = 1;
+    observe_perf();
+{trace_tick_low}    dut.clk = 1;
     dut.eval();
-    ++cycles;
+    observe_perf();
+{trace_tick_high}    ++cycles;
     dut.clk = 0;
     dut.eval();
-  }}
+    observe_perf();
+{trace_tick_fall}  }}
 
   void reset() {{
     dut.clk = 0;
@@ -362,26 +480,80 @@ struct Sim {{
 
 int main(int argc, char **argv) {{
   Verilated::commandArgs(argc, argv);
-  if (argc != 3) {{
+{argc_check}
     return 2;
   }}
   const Request request = parse_request(argv[1]);
   Sim sim;
-  sim.reset();
+{trace_setup}  sim.reset();
   const auto &scalars = request.scalars;
   const auto &arrays = request.arrays;
 {chr(10).join(scalar_write_lines) if scalar_write_lines else ""}
 {chr(10).join(array_write_lines) if array_write_lines else ""}
+  sim.arm_perf();
+  const uint64_t invoke_start_cycles = sim.cycles;
   sim.write32(0x0u, 1u);
   while ((sim.read32(0x0u) & 0x1u) == 0u) {{
   }}
+  const uint64_t invoke_done_cycles = sim.cycles;
+  const uint64_t latency_cycles = sim.done_seen ? (sim.done_cycle - sim.launch_cycle) : (invoke_done_cycles - invoke_start_cycles);
+  const uint64_t ii_cycles = sim.ready_seen ? (sim.ready_cycle - sim.launch_cycle) : latency_cycles;
   std::ofstream out(argv[2]);
   if (!out) throw std::runtime_error("failed to open response file");
   out << "cycles " << sim.cycles << "\\n";
+  out << "latency " << latency_cycles << "\\n";
+  out << "ii " << ii_cycles << "\\n";
 {chr(10).join(result_lines) if result_lines else ""}
-  return 0;
+{trace_close}  return 0;
 }}
 '''
+
+
+def _derive_invoke_vcd_path(base_path: Path | None, invoke_index: int) -> Path | None:
+    if base_path is None:
+        return None
+    if invoke_index <= 1:
+        return base_path
+    stem = base_path.stem
+    suffix = base_path.suffix or ".vcd"
+    return base_path.with_name(f"{stem}_{invoke_index}{suffix}")
+
+
+def _instrument_verilator_design(design: UGLIRDesign) -> UGLIRDesign:
+    instrumented = deepcopy(design)
+    available_signals = {
+        *[port.name for port in instrumented.inputs],
+        *[port.name for port in instrumented.outputs],
+        *[resource.id for resource in instrumented.resources],
+        *[constant.name for constant in instrumented.constants],
+        *[assign.target for assign in instrumented.assigns],
+    }
+    req_valid_expr = "req_valid" if "req_valid" in available_signals else ("start_pending_q" if "start_pending_q" in available_signals else "false")
+    req_ready_expr = "req_ready" if "req_ready" in available_signals else ("!busy_q" if "busy_q" in available_signals else "false")
+    resp_valid_expr = "resp_valid" if "resp_valid" in available_signals else ("done_q" if "done_q" in available_signals else "false")
+    resp_ready_expr = "resp_ready" if "resp_ready" in available_signals else "true"
+    busy_expr = "busy_q" if "busy_q" in available_signals else "false"
+    done_expr = "done_q" if "done_q" in available_signals else "false"
+    start_pending_expr = "start_pending_q" if "start_pending_q" in available_signals else "false"
+    tap_map = (
+        ("uhls_dbg_req_valid_o", "i1", req_valid_expr),
+        ("uhls_dbg_req_ready_o", "i1", req_ready_expr),
+        ("uhls_dbg_resp_valid_o", "i1", resp_valid_expr),
+        ("uhls_dbg_resp_ready_o", "i1", resp_ready_expr),
+        ("uhls_dbg_req_fire_o", "i1", f"({req_valid_expr}) & ({req_ready_expr})"),
+        ("uhls_dbg_resp_fire_o", "i1", f"({resp_valid_expr}) & ({resp_ready_expr})"),
+        ("uhls_dbg_busy_o", "i1", busy_expr),
+        ("uhls_dbg_done_o", "i1", done_expr),
+        ("uhls_dbg_start_pending_o", "i1", start_pending_expr),
+    )
+    existing_outputs = {port.name for port in instrumented.outputs}
+    existing_assigns = {assign.target for assign in instrumented.assigns}
+    for name, type_name, expr in tap_map:
+        if name not in existing_outputs:
+            instrumented.outputs.append(UGLIRPort("output", name, type_name))
+        if name not in existing_assigns:
+            instrumented.assigns.append(UGLIRAssign(name, expr))
+    return instrumented
 
 
 def _emit_zero_bus(protocol: str) -> str:

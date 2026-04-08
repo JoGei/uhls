@@ -825,6 +825,12 @@ def gopt_cmd(
 )
 @click.option("--array", "legacy_arrays", multiple=True, hidden=True)
 @click.option("--trace", is_flag=True)
+@click.option(
+    "--vcd",
+    "vcd_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Optional VCD dump path for verilator-backed execution. Multiple hardware-backed calls append _2, _3, ...",
+)
 def run_cmd(
     input_path: Path,
     function_name: str | None,
@@ -834,6 +840,7 @@ def run_cmd(
     arguments: tuple[str, ...],
     legacy_arrays: tuple[str, ...],
     trace: bool,
+    vcd_path: Path | None,
 ) -> None:
     """Execute canonical µIR with the selected backend."""
     module = _load_ir_file(input_path)
@@ -846,6 +853,8 @@ def run_cmd(
     if backend_name == "verilator":
         if uglir_path is None:
             raise CLIError("'run --backend=verilator' requires --uglir <wrapped.uglir>")
+        if vcd_path is not None:
+            vcd_path = vcd_path.resolve()
         uglir_design = parse_uglir_file(uglir_path)
         if uglir_design.stage != "uglir":
             raise CLIError(f"'run --backend=verilator' expects µglIR input, got stage '{uglir_design.stage}'")
@@ -854,7 +863,12 @@ def run_cmd(
         _validate_verilog_run_target(module, uglir_design.name)
         component_library = _load_component_library(resources_path) if resources_path is not None else None
         library_root = Path.cwd() if resources_path is None else resources_path.parent.resolve()
-        call_hook = _make_verilog_run_call_hook(uglir_design, component_library=component_library, library_root=library_root)
+        call_hook = _make_verilog_run_call_hook(
+            uglir_design,
+            component_library=component_library,
+            library_root=library_root,
+            vcd_path=vcd_path,
+        )
     cleanup = getattr(call_hook, "_uhls_cleanup", None) if call_hook is not None else None
     try:
         result = run_uir(function, arguments=scalar_arguments, arrays=array_arguments, module=module, trace=trace, call_hook=call_hook)
@@ -872,6 +886,12 @@ def run_cmd(
         click.echo(line)
     if result.return_value is not None:
         click.echo(result.return_value)
+    if backend_name == "verilator":
+        reports = getattr(call_hook, "_uhls_reports", None) if call_hook is not None else None
+        if reports:
+            click.echo("verilator invocation report:")
+            for index, report in enumerate(reports, start=1):
+                click.echo(f"{index}. {_format_verilator_invocation_report(report)}")
 
 
 @cli.command("sched")
@@ -1894,9 +1914,21 @@ def _validate_verilog_run_target(module: object, design_name: str) -> None:
     )
 
 
-def _make_verilog_run_call_hook(uglir_design, *, component_library=None, library_root: Path | None = None):
-    runner = VerilatorWrappedRunner(uglir_design, component_library=component_library, library_root=library_root)
+def _make_verilog_run_call_hook(
+    uglir_design,
+    *,
+    component_library=None,
+    library_root: Path | None = None,
+    vcd_path: Path | None = None,
+):
+    runner = VerilatorWrappedRunner(
+        uglir_design,
+        component_library=component_library,
+        library_root=library_root,
+        vcd_path=vcd_path,
+    )
     target_name = uglir_design.name
+    reports: list[dict[str, object]] = []
 
     def _hook(callee_name: str, callee: object, scalar_arguments: dict[str, int], array_arguments: dict[str, dict[str, object]], state) -> object | None:
         del callee
@@ -1910,6 +1942,24 @@ def _make_verilog_run_call_hook(uglir_design, *, component_library=None, library
                 raise CLIError(f"call argument '{alias}' for hardware-backed function '{callee_name}' is not bound in memory")
             arrays_by_alias[parameter_name] = snapshot[alias]
         hook_result = runner.invoke(scalar_arguments, arrays_by_alias)
+        report_outputs: dict[str, object] = {}
+        if hook_result.return_value is not None:
+            report_outputs["return"] = int(hook_result.return_value)
+        for parameter_name, values in sorted(hook_result.updated_arrays.items()):
+            report_outputs[parameter_name] = list(values)
+        report: dict[str, object] = {
+            "function": callee_name,
+            "inputs": {name: int(value) for name, value in sorted(scalar_arguments.items())},
+            "outputs": report_outputs,
+        }
+        if arrays_by_alias:
+            report["inputs"] = {
+                **report["inputs"],
+                **{name: list(values) for name, values in sorted(arrays_by_alias.items())},
+            }
+        if hook_result.metadata:
+            report.update(hook_result.metadata)
+        reports.append(report)
         if hook_result.updated_arrays:
             alias_updates: dict[str, list[int]] = {}
             for parameter_name, values in hook_result.updated_arrays.items():
@@ -1926,7 +1976,37 @@ def _make_verilog_run_call_hook(uglir_design, *, component_library=None, library
         return hook_result
 
     setattr(_hook, "_uhls_cleanup", runner.close)
+    setattr(_hook, "_uhls_reports", reports)
     return _hook
+
+
+def _format_verilator_invocation_report(report: dict[str, object]) -> str:
+    function_name = str(report.get("function", "<unknown>"))
+    inputs = _format_report_mapping(report.get("inputs"))
+    outputs = _format_report_mapping(report.get("outputs"))
+    latency = report.get("latency_cycles")
+    ii_cycles = report.get("ii_cycles")
+    fragments = [f"{function_name} in: {inputs}", f"out: {outputs}"]
+    if latency is not None:
+        fragments.append(f"latency={latency}")
+    if ii_cycles is not None:
+        fragments.append(f"ii={ii_cycles}")
+    vcd = report.get("vcd")
+    if vcd:
+        fragments.append(f"vcd={vcd}")
+    return " ".join(fragments)
+
+
+def _format_report_mapping(value: object) -> str:
+    if not isinstance(value, dict) or not value:
+        return "-"
+    return ", ".join(f"{key}={_format_report_value(entry)}" for key, entry in sorted(value.items()))
+
+
+def _format_report_value(value: object) -> str:
+    if isinstance(value, list):
+        return "[" + ",".join(str(item) for item in value) + "]"
+    return str(value)
 
 
 def _lookup_flat_sgu_scheduler(name: str | None, scheduler_kwargs: dict[str, object] | None = None) -> object:

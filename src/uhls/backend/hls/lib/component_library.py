@@ -103,6 +103,11 @@ def validate_component_library(components: dict[str, object]) -> dict[str, dict[
                         f"component '{component_name}' support '{operation_name}' must be a JSON object"
                     )
                 _validate_component_support(component_name, str(kind) if kind is not None else None, operation_name, support_payload)
+        ports = component_payload.get("ports")
+        if ports is not None:
+            if not isinstance(ports, dict):
+                raise ValueError(f"component '{component_name}' must define object-valued 'ports'")
+            _validate_component_ports(component_name, ports)
         normalized[str(component_name)] = component_payload
     return normalized
 
@@ -121,14 +126,51 @@ def _validate_component_support(
         raise ValueError(
             f"component '{component_name}' support '{operation_name}' must define positive integer ii/d"
         )
-    if kind == "combinational" and (ii != 1 or delay != 1):
-        raise ValueError(
-            f"component '{component_name}' is kind=combinational but support '{operation_name}' uses ii={ii}, d={delay}"
-        )
     if kind == "sequential" and ii < delay:
         raise ValueError(
             f"component '{component_name}' is kind=sequential but support '{operation_name}' uses ii={ii} < d={delay}"
         )
+
+
+def _validate_component_ports(component_name: str, ports: dict[str, object]) -> None:
+    seen_clock = 0
+    seen_reset = 0
+    for port_name, port_payload in ports.items():
+        if not isinstance(port_payload, dict):
+            raise ValueError(f"component '{component_name}' port '{port_name}' must be a JSON object")
+        direction = port_payload.get("dir")
+        if direction not in {"input", "output"}:
+            raise ValueError(f"component '{component_name}' port '{port_name}' dir must be 'input' or 'output'")
+        type_name = port_payload.get("type")
+        if not isinstance(type_name, str) or not type_name:
+            raise ValueError(f"component '{component_name}' port '{port_name}' must define string 'type'")
+        if type_name == "clock":
+            if direction != "input":
+                raise ValueError(f"component '{component_name}' clock port '{port_name}' must be an input")
+            seen_clock += 1
+        elif type_name == "reset":
+            if direction != "input":
+                raise ValueError(f"component '{component_name}' reset port '{port_name}' must be an input")
+            seen_reset += 1
+            reset_kind = port_payload.get("kind")
+            reset_active = port_payload.get("active")
+            if reset_kind not in {"sync", "async"}:
+                raise ValueError(
+                    f"component '{component_name}' reset port '{port_name}' must define kind=sync|async"
+                )
+            if reset_active not in {"hi", "lo"}:
+                raise ValueError(
+                    f"component '{component_name}' reset port '{port_name}' must define active=hi|lo"
+                )
+        else:
+            if "kind" in port_payload or "active" in port_payload:
+                raise ValueError(
+                    f"component '{component_name}' non-reset port '{port_name}' must not define reset kind/active"
+                )
+    if seen_clock > 1:
+        raise ValueError(f"component '{component_name}' may define at most one clock port")
+    if seen_reset > 1:
+        raise ValueError(f"component '{component_name}' may define at most one reset port")
 
 
 def _validate_component_spec_params(base_name: str, params: dict[str, str], component: dict[str, Any]) -> None:

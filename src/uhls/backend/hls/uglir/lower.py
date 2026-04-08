@@ -39,7 +39,9 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
     }
     lowered = UGLIRDesign(name=design.name)
     helper_signal_ids: dict[tuple[str, str], str] = {}
+    held_input_updates: list[tuple[str, str, str, str]] = []
     memory_interfaces = _memory_interfaces(design, component_library)
+    phi_carries = _phi_carry_specs(design)
     _validate_memory_interface_schedule(top_controller, memory_interfaces)
     lowered.inputs = [
         UGLIRPort("input", "clk", "clock"),
@@ -60,6 +62,8 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
 
     lowered.resources.append(UGLIRResource("net", "req_fire", "i1"))
     lowered.resources.append(UGLIRResource("net", "resp_fire", "i1"))
+    if component_library is not None and _needs_active_low_reset_helper(design, component_library):
+        lowered.resources.append(UGLIRResource("net", "rst_n", "i1"))
     for interface in memory_interfaces.values():
         lowered.resources.append(UGLIRResource("port", interface["memory_name"], interface["component_name"], interface["memory_name"]))
     for controller in design.controllers:
@@ -88,10 +92,21 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                 if result_type is not None:
                     lowered.resources.append(UGLIRResource("net", f"{resource.id}_y", result_type))
             else:
+                should_hold_inputs = _component_should_hold_inputs(component_kind)
+                held_input_names = {
+                    port_name
+                    for port_name, _ in _component_routed_input_ports(component_library, resource.value)
+                    if should_hold_inputs
+                }
                 for port_name, port_type in _instance_ports(component_library, resource.value):
-                    lowered.resources.append(UGLIRResource("net", f"{resource.id}_{port_name}", port_type))
+                    if _is_semantic_component_port_type(port_type):
+                        continue
+                    kind = "reg" if port_name in held_input_names else "net"
+                    lowered.resources.append(UGLIRResource(kind, f"{resource.id}_{port_name}", port_type))
         elif resource.kind == "reg":
             lowered.resources.append(UGLIRResource("reg", resource.id, resource.value))
+    for carry in phi_carries.values():
+        lowered.resources.append(UGLIRResource("reg", carry["register"], carry["type"]))
 
     latch_targets = sorted(
         {
@@ -112,6 +127,8 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
             UGLIRAssign("resp_fire", "resp_valid & resp_ready"),
         ]
     )
+    if any(resource.id == "rst_n" for resource in lowered.resources):
+        lowered.assigns.append(UGLIRAssign("rst_n", "!rst"))
     for controller in design.controllers:
         for port in controller.outputs:
             lowered.assigns.append(
@@ -140,10 +157,8 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
             continue
 
         if _component_kind(component_library, resource.value) == "memory":
-            for port_name, port_type in _instance_input_ports(component_library, resource.value):
-                if port_name == "op" or port_name in _component_issue_bindings(component_library, resource.value):
-                    continue
-                _lower_explicit_input_mux(
+            for port_name, port_type in _component_routed_input_ports(component_library, resource.value):
+                mux_name = _lower_explicit_input_mux(
                     lowered,
                     design,
                     top_controller,
@@ -154,9 +169,20 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                     resource.value,
                     port_name,
                     port_type,
+                    latched=_component_should_hold_inputs(_component_kind(component_library, resource.value)),
                 )
+                if _component_should_hold_inputs(_component_kind(component_library, resource.value)):
+                    held_input_updates.append(
+                        (
+                            f"{resource.id}_{port_name}",
+                            mux_name,
+                            _issue_expr(design.controllers, top_controller, resource.id, controller_codes),
+                            _default_net_expr(port_type),
+                        )
+                    )
             continue
 
+        should_hold_inputs = _component_should_hold_inputs(_component_kind(component_library, resource.value))
         port_names = _instance_port_names(component_library, resource.value)
         issue_bindings = _component_issue_bindings(component_library, resource.value)
         for port_name, binding_key in issue_bindings.items():
@@ -177,17 +203,34 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                     ),
                 )
             )
-        if "op" in port_names:
-            lowered.assigns.append(
-                UGLIRAssign(
-                    f"{resource.id}_op",
-                    _opcode_expr(design, design.controllers, top_controller, resource.id, resource.value, controller_codes, component_library),
-                )
+        if "op" in {
+            port_name
+            for port_name, _ in _component_routed_input_ports(component_library, resource.value)
+        }:
+            mux_name = _lower_opcode_input_mux(
+                lowered,
+                design,
+                top_controller,
+                controller_codes,
+                component_library,
+                helper_signal_ids,
+                resource.id,
+                resource.value,
+                latched=should_hold_inputs,
             )
-        for port_name, port_type in _instance_input_ports(component_library, resource.value):
-            if port_name == "op" or port_name in issue_bindings:
+            if should_hold_inputs:
+                held_input_updates.append(
+                    (
+                        f"{resource.id}_op",
+                        mux_name,
+                        _issue_expr(design.controllers, top_controller, resource.id, controller_codes),
+                        _default_net_expr(_port_type(component_library, resource.value, "op")),
+                    )
+                )
+        for port_name, port_type in _component_routed_input_ports(component_library, resource.value):
+            if port_name == "op":
                 continue
-            _lower_explicit_input_mux(
+            mux_name = _lower_explicit_input_mux(
                 lowered,
                 design,
                 top_controller,
@@ -198,12 +241,31 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                 resource.value,
                 port_name,
                 port_type,
+                latched=should_hold_inputs,
             )
+            if should_hold_inputs:
+                held_input_updates.append(
+                    (
+                        f"{resource.id}_{port_name}",
+                        mux_name,
+                        _issue_expr(design.controllers, top_controller, resource.id, controller_codes),
+                        _default_net_expr(port_type),
+                    )
+                )
         for port_name in port_names:
+            semantic_signal = _semantic_component_port_signal(component_library, resource.value, port_name)
+            if semantic_signal is not None:
+                lowered.attachments.append(UGLIRAttach(resource.id, port_name, semantic_signal))
+                continue
             lowered.attachments.append(UGLIRAttach(resource.id, port_name, f"{resource.id}_{port_name}"))
 
     for register in latch_targets:
-        lowered.assigns.append(UGLIRAssign(f"latch_{register}", _latch_expr(design.controllers, top_controller, register, controller_codes)))
+        lowered.assigns.append(
+            UGLIRAssign(
+                f"latch_{register}",
+                _latch_expr(design, design.controllers, top_controller, register, controller_codes, component_library),
+            )
+        )
         lowered.assigns.append(
             UGLIRAssign(
                 f"sel_{register}",
@@ -224,6 +286,29 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         reset_updates=[UGLIRSeqUpdate(_controller_state_id(top_controller, top_controller), str(controller_codes[top_controller.name]["IDLE"]))],
         updates=[UGLIRSeqUpdate(_controller_state_id(top_controller, top_controller), _controller_next_state_id(top_controller, top_controller))],
     )
+    for carry in phi_carries.values():
+        init_expr = _resolve_value_signal(design, carry["init"], component_library, 0)
+        source_expr = _resolve_producer_signal(design, carry["backedge"], component_library)
+        if source_expr is None:
+            source_expr = _resolve_value_signal(design, carry["backedge"], component_library)
+        backedge_steps = sorted(_value_live_starts(design, carry["backedge"]))
+        backedge_conditions = [
+            _state_eq_expr(
+                _controller_state_id(top_controller, top_controller),
+                controller_codes[top_controller.name][f"T{step}"],
+            )
+            for step in backedge_steps
+            if f"T{step}" in controller_codes[top_controller.name]
+        ]
+        enable_expr = "req_fire"
+        if backedge_conditions:
+            enable_expr = f"req_fire | {' | '.join(backedge_conditions)}"
+        value_expr = f"(req_fire) ? {init_expr} : {source_expr}"
+        top_seq_block.reset_updates.append(UGLIRSeqUpdate(carry["register"], init_expr))
+        top_seq_block.updates.append(UGLIRSeqUpdate(carry["register"], value_expr, enable_expr))
+    for target, value, enable, reset_value in held_input_updates:
+        top_seq_block.reset_updates.append(UGLIRSeqUpdate(target, reset_value))
+        top_seq_block.updates.append(UGLIRSeqUpdate(target, value, enable))
     for register in latch_targets:
         top_seq_block.updates.append(UGLIRSeqUpdate(register, f"mx_{register}", f"latch_{register}"))
     lowered.seq_blocks.append(top_seq_block)
@@ -453,16 +538,26 @@ def _issue_port_expr(
     return f"({active_condition}) ? {binding_key} : {_default_net_expr(port_type)}"
 
 
-def _latch_expr(controllers, top_controller, register: str, controller_codes: dict[str, dict[str, int]]) -> str:
-    active_states = [
-        _state_eq_expr(_controller_state_id(controller, top_controller), controller_codes[controller.name][emit.state])
-        for controller in controllers
-        for emit in controller.emits
-        if register in emit.attributes.get("latch", ())
-    ]
+def _latch_expr(
+    design: UHIRDesign,
+    controllers,
+    top_controller,
+    register: str,
+    controller_codes: dict[str, dict[str, int]],
+    component_library: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    active_states = [condition for condition, _source in _register_state_sources(
+        design,
+        controllers,
+        top_controller,
+        register,
+        controller_codes,
+        component_library,
+    )]
     if not active_states:
         return "false"
-    return " | ".join(active_states)
+    ordered_conditions = list(dict.fromkeys(active_states))
+    return " | ".join(ordered_conditions)
 
 
 def _select_expr(
@@ -666,7 +761,7 @@ def _register_state_sources(
     for controller in controllers:
         if not controller.attributes.get("region"):
             continue
-        live_start_to_source: dict[int, str] = {}
+        capture_step_to_source: dict[int, str] = {}
         for region_id in _controller_region_ids(controller, design):
             region = region_by_id.get(region_id)
             if region is None:
@@ -677,20 +772,43 @@ def _register_state_sources(
                 source = _resolve_producer_signal(design, binding.producer, component_library)
                 if source is None:
                     continue
-                live_start_to_source[binding.live_start] = source
-        for emit in controller.emits:
-            if register not in emit.attributes.get("latch", ()):
+                for live_start, _live_end in binding.live_intervals:
+                    capture_step = _value_capture_step(design, binding.producer, live_start, component_library)
+                    capture_step_to_source[capture_step] = source
+        for capture_step, source in sorted(capture_step_to_source.items()):
+            state_name = f"T{capture_step}"
+            if state_name not in controller_codes[controller.name]:
                 continue
-            if emit.state.startswith("T"):
-                time_step = int(emit.state[1:])
-                source = live_start_to_source.get(time_step)
-                if source is not None:
-                    condition = _state_eq_expr(
-                        _controller_state_id(controller, top_controller),
-                        controller_codes[controller.name][emit.state],
-                    )
-                    choices.append((condition, source))
+            condition = _state_eq_expr(
+                _controller_state_id(controller, top_controller),
+                controller_codes[controller.name][state_name],
+            )
+            choices.append((condition, source))
     return choices
+
+
+def _value_capture_step(
+    design: UHIRDesign,
+    value_id: str,
+    live_start: int,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> int:
+    if component_library is None:
+        return live_start
+    producer_node = _producer_node_map(design).get(value_id)
+    if producer_node is None:
+        return live_start
+    bind = producer_node.attributes.get("bind")
+    if not isinstance(bind, str):
+        return live_start
+    try:
+        component_name = _resource_value(design, bind)
+    except ValueError:
+        return live_start
+    component_kind = _component_kind(component_library, component_name)
+    if component_kind in {"pipelined", "sequential"}:
+        return max(live_start - 1, 0)
+    return live_start
 
 
 def _producer_register_map(design: UHIRDesign) -> dict[str, str]:
@@ -699,6 +817,44 @@ def _producer_register_map(design: UHIRDesign) -> dict[str, str]:
         for binding in region.value_bindings:
             mapping.setdefault(binding.producer, binding.register)
     return mapping
+
+
+def _phi_carry_specs(design: UHIRDesign) -> dict[str, dict[str, str]]:
+    specs: dict[str, dict[str, str]] = {}
+    for region in design.regions:
+        source_by_node = {
+            source_map.node_id: source_map.source_id
+            for source_map in region.mappings
+        }
+        for node in region.nodes:
+            if node.opcode != "phi" or len(node.operands) < 2:
+                continue
+            source_id = source_by_node.get(node.id)
+            if not isinstance(source_id, str) or not source_id:
+                continue
+            if not isinstance(node.result_type, str) or not node.result_type:
+                continue
+            specs[source_id] = {
+                "register": _phi_carry_register_id(source_id),
+                "type": node.result_type,
+                "init": node.operands[0],
+                "backedge": node.operands[1],
+            }
+    return specs
+
+
+def _phi_carry_register_id(source_id: str) -> str:
+    return f"phi_{source_id}"
+
+
+def _value_live_starts(design: UHIRDesign, value_id: str) -> set[int]:
+    live_starts: set[int] = set()
+    for region in design.regions:
+        for binding in region.value_bindings:
+            if binding.producer == value_id:
+                for live_start, _live_end in binding.live_intervals:
+                    live_starts.add(live_start)
+    return live_starts
 
 
 def _resource_value(design: UHIRDesign, resource_id: str) -> str:
@@ -1080,8 +1236,50 @@ def _operand_port_choices(
     return choices
 
 
+def _opcode_port_choices(
+    design: UHIRDesign,
+    controllers,
+    top_controller,
+    resource_id: str,
+    component_name: str,
+    controller_codes: dict[str, dict[str, int]],
+    component_library: dict[str, dict[str, Any]],
+) -> list[tuple[str, str]]:
+    node_opcode = {
+        node.id: node.opcode
+        for region in design.regions
+        for node in region.nodes
+    }
+    _, component = _component_definition(component_library, component_name)
+    supports = component.get("supports")
+    if not isinstance(supports, dict):
+        raise ValueError(f"component '{component_name}' must define object-valued 'supports'")
+    choices: list[tuple[str, str]] = []
+    for controller in controllers:
+        for emit in controller.emits:
+            for issue in _iter_issue_actions(emit.attributes):
+                instance, _, node_id = issue.partition("<-")
+                if instance != resource_id or not node_id:
+                    continue
+                opcode_name = node_opcode.get(_issued_node_base_id(node_id))
+                if opcode_name is None:
+                    continue
+                support = supports.get(opcode_name)
+                if not isinstance(support, dict):
+                    continue
+                opcode_literal = support.get("opcode")
+                if not isinstance(opcode_literal, int):
+                    continue
+                condition = _state_eq_expr(
+                    _controller_state_id(controller, top_controller),
+                    controller_codes[controller.name][emit.state],
+                )
+                choices.append((condition, str(opcode_literal)))
+    return choices
+
+
 def _lower_explicit_input_mux(
-    lowered: UHIRDesign,
+    lowered: UGLIRDesign,
     design: UHIRDesign,
     top_controller,
     controller_codes: dict[str, dict[str, int]],
@@ -1091,7 +1289,73 @@ def _lower_explicit_input_mux(
     component_name: str,
     port_name: str,
     port_type: str,
-) -> None:
+    *,
+    latched: bool,
+) -> str:
+    operand_choices = _operand_port_choices(
+        design,
+        design.controllers,
+        top_controller,
+        resource_id,
+        component_name,
+        port_name,
+        controller_codes,
+        component_library,
+    )
+    return _lower_input_choices_mux(
+        lowered,
+        helper_signal_ids,
+        resource_id,
+        port_name,
+        port_type,
+        operand_choices,
+        latched=latched,
+    )
+
+
+def _lower_opcode_input_mux(
+    lowered: UGLIRDesign,
+    design: UHIRDesign,
+    top_controller,
+    controller_codes: dict[str, dict[str, int]],
+    component_library: dict[str, dict[str, Any]],
+    helper_signal_ids: dict[tuple[str, str], str],
+    resource_id: str,
+    component_name: str,
+    *,
+    latched: bool,
+) -> str:
+    port_type = _port_type(component_library, component_name, "op")
+    opcode_choices = _opcode_port_choices(
+        design,
+        design.controllers,
+        top_controller,
+        resource_id,
+        component_name,
+        controller_codes,
+        component_library,
+    )
+    return _lower_input_choices_mux(
+        lowered,
+        helper_signal_ids,
+        resource_id,
+        "op",
+        port_type,
+        opcode_choices,
+        latched=latched,
+    )
+
+
+def _lower_input_choices_mux(
+    lowered: UGLIRDesign,
+    helper_signal_ids: dict[tuple[str, str], str],
+    resource_id: str,
+    port_name: str,
+    port_type: str,
+    input_choices: list[tuple[str, str]],
+    *,
+    latched: bool,
+) -> str:
     target_signal = f"{resource_id}_{port_name}"
     select_signal = f"sel_{resource_id}_{port_name}"
     mux_name = f"mx_{resource_id}_{port_name}"
@@ -1105,23 +1369,13 @@ def _lower_explicit_input_mux(
         port_type,
         helper_signal_ids,
     )
-    operand_choices = _operand_port_choices(
-        design,
-        design.controllers,
-        top_controller,
-        resource_id,
-        component_name,
-        port_name,
-        controller_codes,
-        component_library,
-    )
     choices = [
         (
             condition,
             source_expr,
             _materialize_glue_source_signal(lowered, source_expr, port_type, helper_signal_ids),
         )
-        for condition, source_expr in operand_choices
+        for condition, source_expr in input_choices
     ]
     labels = _input_mux_case_labels(_default_net_expr(port_type), default_signal, choices)
 
@@ -1131,7 +1385,8 @@ def _lower_explicit_input_mux(
     else:
         select_expr = labels[default_signal]
     lowered.assigns.append(UGLIRAssign(select_signal, select_expr))
-    lowered.assigns.append(UGLIRAssign(target_signal, mux_name))
+    if not latched:
+        lowered.assigns.append(UGLIRAssign(target_signal, mux_name))
 
     mux = UGLIRMux(name=mux_name, type=port_type, select=select_signal)
     seen_sources: set[str] = set()
@@ -1141,6 +1396,7 @@ def _lower_explicit_input_mux(
         seen_sources.add(source_signal)
         mux.cases.append(UGLIRMuxCase(labels[source_signal], source_signal))
     lowered.muxes.append(mux)
+    return mux_name
 
 
 def _materialize_glue_source_signal(
@@ -1286,6 +1542,86 @@ def _instance_input_ports(component_library: dict[str, dict[str, Any]], componen
     return tuple(inputs)
 
 
+def _component_port_payload(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+    port_name: str,
+) -> dict[str, Any] | None:
+    _, component = _component_definition(component_library, component_name)
+    ports = component.get("ports")
+    if not isinstance(ports, dict):
+        raise ValueError(f"component '{component_name}' must define object-valued 'ports'")
+    payload = ports.get(port_name)
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError(f"component '{component_name}' port '{port_name}' must be an object")
+    return payload
+
+
+def _is_semantic_component_port_type(port_type: str) -> bool:
+    return port_type in {"clock", "reset"}
+
+
+def _semantic_component_port_signal(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+    port_name: str,
+) -> str | None:
+    payload = _component_port_payload(component_library, component_name, port_name)
+    if payload is None:
+        return None
+    port_type = payload.get("type")
+    if port_type == "clock":
+        return "clk"
+    if port_type == "reset":
+        active = payload.get("active")
+        return "rst" if active == "hi" else "rst_n"
+    return None
+
+
+def _needs_active_low_reset_helper(
+    design: UHIRDesign,
+    component_library: dict[str, dict[str, Any]],
+) -> bool:
+    for resource in design.resources:
+        if resource.kind != "fu":
+            continue
+        for port_name, _port_type in _instance_ports(component_library, resource.value):
+            payload = _component_port_payload(component_library, resource.value, port_name)
+            if payload is None:
+                continue
+            if payload.get("type") == "reset" and payload.get("active") == "lo":
+                return True
+    return False
+
+
+def _component_held_input_ports(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+) -> tuple[tuple[str, str], ...]:
+    if not _component_should_hold_inputs(_component_kind(component_library, component_name)):
+        return ()
+    return _component_routed_input_ports(component_library, component_name)
+
+
+def _component_routed_input_ports(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+) -> tuple[tuple[str, str], ...]:
+    issue_bound_ports = set(_component_issue_bindings(component_library, component_name))
+    return tuple(
+        (port_name, port_type)
+        for port_name, port_type in _instance_input_ports(component_library, component_name)
+        if port_name not in issue_bound_ports
+        and not _is_semantic_component_port_type(port_type)
+    )
+
+
+def _component_should_hold_inputs(component_kind: str | None) -> bool:
+    return component_kind in {"combinational", "memory"}
+
+
 def _instance_output_ports(component_library: dict[str, dict[str, Any]], component_name: str) -> tuple[tuple[str, str], ...]:
     _, component = _component_definition(component_library, component_name)
     ports = component.get("ports")
@@ -1426,7 +1762,13 @@ def _binding_key_expr(
             raise ValueError(
                 f"node '{node.id}' opcode '{node.opcode}' does not provide operand index {operand_index} for binding '{binding_key}'"
             )
-        return _resolve_value_signal(design, node.operands[operand_index], component_library, occurrence_index)
+        return _resolve_value_signal(
+            design,
+            node.operands[operand_index],
+            component_library,
+            occurrence_index,
+            consumer_start=node.attributes.get("start"),
+        )
     return binding_key
 
 
@@ -1435,9 +1777,21 @@ def _resolve_value_signal(
     value_id: str,
     component_library: dict[str, dict[str, Any]] | None,
     occurrence_index: int | None = None,
+    consumer_start: int | None = None,
 ) -> str:
+    phi_carries = _phi_carry_specs(design)
+    if value_id in phi_carries:
+        return phi_carries[value_id]["register"]
     producer_to_register = _producer_register_map(design)
     if value_id in producer_to_register:
+        if (
+            consumer_start is not None
+            and consumer_start in _value_live_starts(design, value_id)
+            and _value_may_bypass_register(design, value_id, consumer_start, component_library)
+        ):
+            result_signal = _resolve_producer_signal(design, value_id, component_library, occurrence_index)
+            if result_signal is not None:
+                return result_signal
         return producer_to_register[value_id]
     result_signal = _resolve_producer_signal(design, value_id, component_library, occurrence_index)
     if result_signal is not None:
@@ -1458,6 +1812,15 @@ def _resolve_producer_signal(
     if result_signal is not None:
         return result_signal
     return _node_value_expr(design, producer_node, component_library, occurrence_index)
+
+
+def _value_may_bypass_register(
+    design: UHIRDesign,
+    value_id: str,
+    consumer_start: int,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> bool:
+    return _value_capture_step(design, value_id, consumer_start, component_library) == consumer_start
 
 
 def _node_value_expr(

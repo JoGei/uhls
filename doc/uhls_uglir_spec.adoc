@@ -166,19 +166,62 @@ should reflect the execution contract rather than only the implementation
 language:
 
 * `combinational`
-  * intended for single-cycle, non-handshaked components
-  * concrete supports should therefore use `ii=1` and `d=1`
+  * intended for non-handshaked components without internal state/registers
+  * outputs are boundary-visible combinational ports
 * `sequential`
-  * intended for non-overlapped multi-cycle components
+  * intended for non-overlapped multi-cycle components with internal state
   * concrete supports should therefore satisfy `ii >= d`
 * `pipelined`
-  * intended for overlapped multi-cycle components
+  * intended for overlapped multi-cycle components with internal pipeline state
   * concrete supports may use `ii < d`
 * `memory`
   * addressed memory-interface component
 
-So, for example, a divider with `ii=1` and `d=3` should not be classified as
-`combinational`; it should be modeled as `pipelined`.
+The timing numbers on one support entry should be interpreted at the *module
+boundary*:
+
+* `d`
+  * output-port visibility delay
+  * counted in control cycles from the issue cycle up to the cycle whose end may
+    latch the result from the FU output port
+* `ii`
+  * minimum issue spacing at the same component boundary
+
+Registered outputs are therefore *not* implied by `kind=pipelined` or
+`kind=sequential`.
+
+A multicycle combinational FU and a multicycle pipelined FU may both legally use
+the same `d` when they make the result visible at their output ports in the same
+cycle. The difference is whether the FU uses internal state/registers to realize
+that delay.
+
+For one multicycle `combinational` FU, the surrounding glue must therefore keep
+its inputs stable across the control-step window covered by `d`.
+
+In other words:
+
+* the FU itself does not capture operands internally
+* so the generated glue must hold the operand values until the output-port delay
+  has elapsed and the scheduled consumer may latch the result
+
+If one foreign HDL component exposes *registered outputs*, that extra cycle must
+already be reflected in its declared `d`.
+
+Example:
+
+* `d=2`
+  * `ccx+0`
+    * issue
+    * operands are already stable during the cycle
+  * `ccx+1`
+    * final internal step completes
+    * result is visible on the output port
+    * a consumer register may latch it at the end of `ccx+1`
+
+So, for example, a divider with `ii=1` and `d=3` may still be classified as
+`combinational` if that delay is realized without internal state. It should be
+classified as `pipelined` only when overlapping operation or internal pipeline
+state is part of the contract.
 
 Current assumption:
 

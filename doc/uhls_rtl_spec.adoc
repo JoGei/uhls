@@ -78,6 +78,64 @@ The `rtl` stage should therefore focus on:
 
 and not on rediscovering scheduling or binding.
 
+== Functional Unit Timing Contract
+
+The shared component library timing contract used by `glue` and `rtl` is defined
+at the *component boundary*, not by the number of internal HDL registers.
+
+In particular:
+
+* `d`
+  * means result visibility delay at the FU output port
+  * counted from the issue cycle to the cycle whose end may latch the FU result
+* `ii`
+  * means minimum issue spacing at that same FU boundary
+
+The following are *not* implied automatically:
+
+* `kind=pipelined` does not imply registered outputs
+* `kind=sequential` does not imply registered outputs
+* `kind=combinational` does not imply `d=1`
+
+Instead:
+
+* `combinational`
+  * means no internal state/registers are required by the contract
+* `sequential`
+  * means internal state exists and operations do not overlap
+* `pipelined`
+  * means internal pipeline state exists and operations may overlap
+
+Two FUs may therefore share the same declared `d` even when one is implemented
+combinationally and the other uses internal pipeline registers, as long as both
+make the result visible at the output port in the same cycle.
+
+For one multicycle `combinational` FU, this implies one glue-side stability
+requirement:
+
+* the FU inputs must remain stable over the control-step window covered by `d`
+* because the FU does not capture those inputs internally
+
+If a foreign HDL FU uses *registered outputs*, that extra output cycle must
+already be accounted for in the declared `d`.
+
+Example:
+
+* one FU with `d=2`
+  * `ccx+0`
+    * issue
+  * `ccx+1`
+    * final internal step completes
+    * result becomes visible at the output port
+    * a consumer register may latch it at the end of `ccx+1`
+
+This is why µhLS currently treats clocked pipelined/sequential FUs differently
+from plain combinational ones during glue lowering:
+
+* clocked `pipelined` / `sequential` FUs capture their own operands internally
+* plain `combinational` FUs may need externally held inputs when their result is
+  consumed in a later cycle
+
 == CLI Surface
 
 The intended generic entrypoint is:

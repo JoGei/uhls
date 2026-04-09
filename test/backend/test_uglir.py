@@ -236,6 +236,202 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertIn("ewms0.op(ewms0_op_q)", rendered)
         self.assertNotIn("ewms0.go(", rendered)
 
+    def test_lower_fsm_to_uglir_resolves_static_child_call_operands_from_callsite(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design child_call
+            stage fsm
+            schedule kind=hierarchical
+            input  x : i32
+            output result : i32
+            resources {
+              fu alu0 : ALU
+              reg r_i32_0 : i32
+            }
+            controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_top {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=1
+              state T0 code=2
+              state T1 code=4
+              state DONE code=8
+              transition IDLE -> T0 when=req_valid && req_ready
+              transition T0 -> T1
+              transition T1 -> DONE
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[alu0<-c1]
+              emit DONE resp_valid=true
+            }
+
+            region proc_top kind=procedure {
+              region_ref proc_child
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = call child, x : i32 child=proc_child class=CTRL ii=1 delay=1 start=0 end=0
+              node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              steps [0:1]
+              latency 2
+            }
+
+            region proc_child kind=procedure {
+              node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node c1 = add c_0, 1:i32 : i32 class=ALU ii=1 delay=1 start=0 end=0 bind=alu0
+              node c2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data c0 -> c1
+              edge data c1 -> c2
+              steps [0:0]
+              latency 1
+              value c1 -> r_i32_0 live=[1:1]
+            }
+            """
+        )
+        component_library = json.loads(
+            """
+            {
+              "components": {
+                "ALU": {
+                  "kind": "combinational",
+                  "ports": {
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "op": { "dir": "input", "type": "u5" },
+                    "y": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "add": {
+                      "ii": 1,
+                      "d": 1,
+                      "opcode": 0,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "y": "result"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+        )["components"]
+
+        uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
+
+        rendered = format_uglir(uglir_design)
+        self.assertNotIn("c_0", rendered)
+        self.assertIn("SRC_X", rendered)
+
+    def test_lower_fsm_to_uglir_keeps_duplicated_source_ids_region_local(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design child_call_shadow
+            stage fsm
+            schedule kind=hierarchical
+            input  x : i32
+            output result : i32
+            resources {
+              fu alu0 : ALU
+              fu alu1 : ALU
+              reg r_i32_0 : i32
+              reg r_i32_1 : i32
+            }
+            controller C0 encoding=binary protocol=req_resp completion_order=in_order overlap=true region=proc_top {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=0
+              state T0 code=1
+              state T1 code=2
+              state T2 code=3
+              state DONE code=4
+              transition IDLE -> T0 when=req_valid && req_ready
+              transition T0 -> T1
+              transition T1 -> T2
+              transition T2 -> DONE
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[alu0<-v1]
+              emit T1 issue=[alu1<-c1] latch=[r_i32_0]
+              emit T2 latch=[r_i32_1]
+              emit DONE resp_valid=true
+            }
+
+            region proc_top kind=procedure {
+              region_ref proc_child
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add x, 2:i32 : i32 class=ALU ii=1 delay=1 start=0 end=0 bind=alu0
+              node v2 = call child, t1_0 : i32 child=proc_child class=CTRL ii=1 delay=1 start=1 end=1
+              node v3 = ret v2 class=CTRL ii=0 delay=0 start=2 end=2
+              node v4 = nop role=sink class=CTRL ii=0 delay=0 start=3 end=3
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+              map v1 <- t1_0
+              steps [0:2]
+              latency 3
+              value t1_0 -> r_i32_0 live=[1:1]
+            }
+
+            region proc_child kind=procedure {
+              node c0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+              node c1 = add c_0, 1:i32 : i32 class=ALU ii=1 delay=1 start=1 end=1 bind=alu1
+              node c2 = ret t1_0 class=CTRL ii=0 delay=0 start=2 end=2
+              node c3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+              edge data c0 -> c1
+              edge data c1 -> c2
+              edge data c2 -> c3
+              map c1 <- t1_0
+              steps [1:2]
+              latency 2
+              value t1_0 -> r_i32_1 live=[2:2]
+            }
+            """
+        )
+        component_library = json.loads(
+            """
+            {
+              "components": {
+                "ALU": {
+                  "kind": "combinational",
+                  "ports": {
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "op": { "dir": "input", "type": "u5" },
+                    "y": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "add": {
+                      "ii": 1,
+                      "d": 1,
+                      "opcode": 0,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "y": "result"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+        )["components"]
+
+        uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
+
+        rendered = format_uglir(uglir_design)
+        self.assertIn("SRC_ALU0_Y", rendered)
+        self.assertIn("alu0_y", rendered)
+        self.assertNotIn("alu1_a(t1_0", rendered)
+
     def test_lower_fsm_to_uglir_uses_component_issue_and_result_bindings(self) -> None:
         fsm_design = parse_uhir(
             """

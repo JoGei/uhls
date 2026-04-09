@@ -134,6 +134,99 @@ class FSMLoweringTests(unittest.TestCase):
         self.assertEqual(emit_by_state["T1"]["latch"], ("r_acc",))
         self.assertEqual(emit_by_state["T1"]["select"], ("mx0<-state",))
 
+    def test_lower_bind_to_fsm_ignores_parentless_static_child_regions_as_roots(self) -> None:
+        bind_design = parse_uhir(
+            """
+            design child_call
+            stage bind
+            schedule kind=control_steps
+            resources {
+              fu ewms0 : EWMS
+              reg r_i32_0 : i32
+            }
+
+            region proc_top kind=procedure {
+              region_ref proc_child
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = call child, x : i32 child=proc_child class=CTRL ii=1 delay=1 start=0 end=0
+              node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              steps [0:1]
+              latency 2
+            }
+
+            region proc_child kind=procedure {
+              node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node c1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+              node c2 = ret c1 class=CTRL ii=0 delay=0 start=1 end=1
+              node c3 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data c0 -> c1
+              edge data c1 -> c2
+              edge data c2 -> c3
+              steps [0:1]
+              latency 2
+              value c1 -> r_i32_0 live=[1:1]
+            }
+            """
+        )
+
+        fsm_design = lower_bind_to_fsm(bind_design, encoding="binary")
+
+        self.assertEqual(fsm_design.controllers[0].attributes["region"], "proc_top")
+        emit_by_state = {emit.state: emit.attributes for emit in fsm_design.controllers[0].emits}
+        self.assertEqual(emit_by_state["T0"]["issue"], ("ewms0<-c1",))
+        self.assertEqual(emit_by_state["T1"]["latch"], ("r_i32_0",))
+
+    def test_lower_bind_to_fsm_shifts_static_child_call_actions_by_call_start(self) -> None:
+        bind_design = parse_uhir(
+            """
+            design child_call_shift
+            stage bind
+            schedule kind=control_steps
+            resources {
+              fu ewms0 : EWMS
+              reg r_i32_0 : i32
+            }
+
+            region proc_top kind=procedure {
+              region_ref proc_child
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+              node v2 = call x child=proc_child class=CTRL ii=2 delay=2 start=2 end=3
+              node v3 = ret v2 class=CTRL ii=0 delay=0 start=4 end=4
+              node v4 = nop role=sink class=CTRL ii=0 delay=0 start=5 end=5
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+              steps [0:4]
+              latency 5
+            }
+
+            region proc_child kind=procedure {
+              node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node c1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+              node c2 = ret c1 class=CTRL ii=0 delay=0 start=1 end=1
+              node c3 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data c0 -> c1
+              edge data c1 -> c2
+              edge data c2 -> c3
+              steps [0:1]
+              latency 2
+              value c1 -> r_i32_0 live=[1:1]
+            }
+            """
+        )
+
+        fsm_design = lower_bind_to_fsm(bind_design, encoding="binary")
+
+        emit_by_state = {emit.state: emit.attributes for emit in fsm_design.controllers[0].emits}
+        self.assertEqual(emit_by_state["T2"]["issue"], ("ewms0<-c1",))
+        self.assertEqual(emit_by_state["T3"]["latch"], ("r_i32_0",))
+
     def test_lower_bind_to_fsm_builds_dynamic_controller_for_fu_only_symbolic_bind(self) -> None:
         bind_design = parse_uhir(
             """

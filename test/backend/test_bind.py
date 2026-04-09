@@ -1001,6 +1001,50 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertNotIn('"dfgsb_proc_child_use_reg_2_2"', dot)
         self.assertNotIn('"dfgsb_proc_child_use_op_0_0" -> "dfgsb_bb_child_op_1_0"', dot)
 
+    def test_lower_sched_to_bind_keeps_duplicated_source_ids_region_local(self) -> None:
+        bind_design = lower_sched_to_bind(
+            parse_uhir(
+                """
+                design child_shadow
+                stage sched
+                schedule kind=hierarchical
+
+                region proc_top kind=procedure {
+                  region_ref proc_child
+                  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+                  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
+                  node v2 = call child, t1_0 : i32 child=proc_child class=CTRL ii=2 delay=2 start=1 end=2
+                  node v3 = ret v2 class=CTRL ii=0 delay=0 start=3 end=3
+                  node v4 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+                  edge data v0 -> v1
+                  edge data v1 -> v2
+                  edge data v2 -> v3
+                  edge data v3 -> v4
+                  map v1 <- t1_0
+                }
+
+                region proc_child kind=procedure {
+                  node c0 = nop role=source class=CTRL ii=0 delay=0 start=1 end=1
+                  node c1 = add c_0, 1:i32 : i32 class=EWMS ii=1 delay=1 start=1 end=1
+                  node c2 = ret t1_0 class=CTRL ii=0 delay=0 start=2 end=2
+                  node c3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+                  edge data c0 -> c1
+                  edge data c1 -> c2
+                  edge data c2 -> c3
+                  map c1 <- t1_0
+                }
+                """
+            ),
+            binder=LeftEdgeBinder(flatten=True),
+        )
+
+        proc_top = bind_design.get_region("proc_top")
+        proc_child = bind_design.get_region("proc_child")
+        assert proc_top is not None
+        assert proc_child is not None
+        self.assertEqual([(binding.producer, binding.live_intervals) for binding in proc_top.value_bindings], [("v1", ((1, 3),))])
+        self.assertEqual([(binding.producer, binding.live_intervals) for binding in proc_child.value_bindings], [("c1", ((3, 3),))])
+
     def test_lower_sched_to_bind_flattens_call_children_at_call_start_offset(self) -> None:
         sched_design = parse_uhir(
             """

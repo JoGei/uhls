@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from typing import Any
+
+_PPA_METRIC_UNITS = {
+    "area_um2": "um2",
+    "power_mW": "mW",
+    "performance_Hz": "Hz",
+}
 
 
 def parse_component_spec(component_name: str) -> tuple[str, dict[str, str]]:
@@ -80,6 +87,47 @@ def resolve_component_definition(
     return base_name, params, component
 
 
+def resolve_component_ppa_estimate(
+    component_library: dict[str, dict[str, Any]],
+    component_name: str,
+    metric_name: str,
+) -> float | None:
+    """Resolve one component ``ppa_estimate`` metric to one numeric value."""
+    expected_unit = _PPA_METRIC_UNITS.get(metric_name)
+    if expected_unit is None:
+        raise ValueError(
+            f"unsupported ppa_estimate metric '{metric_name}'; expected one of: {', '.join(sorted(_PPA_METRIC_UNITS))}"
+        )
+    base_name, params, component = resolve_component_definition(component_library, component_name)
+    ppa_estimate = component.get("ppa_estimate")
+    if ppa_estimate is None:
+        return None
+    if not isinstance(ppa_estimate, dict):
+        raise ValueError(f"component '{base_name}' must define object-valued 'ppa_estimate'")
+    metric_value = ppa_estimate.get(metric_name)
+    if metric_value is None:
+        return None
+    if isinstance(metric_value, bool):
+        raise ValueError(
+            f"component '{base_name}' ppa_estimate '{metric_name}' must be a number or expression string"
+        )
+    if isinstance(metric_value, (int, float)):
+        return float(metric_value)
+    if not isinstance(metric_value, str) or not metric_value.strip():
+        raise ValueError(
+            f"component '{base_name}' ppa_estimate '{metric_name}' must be one non-empty string"
+        )
+    numeric_params, type_params = _materialize_component_parameter_env(base_name, params, component)
+    return _evaluate_numeric_component_expr(
+        component_name=base_name,
+        metric_name=metric_name,
+        expr=metric_value.strip(),
+        expected_unit=expected_unit,
+        numeric_params=numeric_params,
+        type_params=type_params,
+    )
+
+
 def validate_component_library(components: dict[str, object]) -> dict[str, dict[str, object]]:
     """Validate and normalize one shared component-library payload."""
     normalized: dict[str, dict[str, object]] = {}
@@ -126,6 +174,33 @@ def validate_component_library(components: dict[str, object]) -> dict[str, dict[
                         raise ValueError(
                             f"component '{component_name}' hdl.include_dirs[{index}] must be one non-empty string"
                         )
+            lef_files = hdl.get("lef_files")
+            if lef_files is not None:
+                if not isinstance(lef_files, list) or not lef_files:
+                    raise ValueError(f"component '{component_name}' hdl.lef_files must be one non-empty list")
+                for index, path in enumerate(lef_files):
+                    if not isinstance(path, str) or not path.strip():
+                        raise ValueError(
+                            f"component '{component_name}' hdl.lef_files[{index}] must be one non-empty string"
+                        )
+            liberty_files = hdl.get("liberty_files")
+            if liberty_files is not None:
+                if not isinstance(liberty_files, list) or not liberty_files:
+                    raise ValueError(f"component '{component_name}' hdl.liberty_files must be one non-empty list")
+                for index, path in enumerate(liberty_files):
+                    if not isinstance(path, str) or not path.strip():
+                        raise ValueError(
+                            f"component '{component_name}' hdl.liberty_files[{index}] must be one non-empty string"
+                        )
+            gds_files = hdl.get("gds_files")
+            if gds_files is not None:
+                if not isinstance(gds_files, list) or not gds_files:
+                    raise ValueError(f"component '{component_name}' hdl.gds_files must be one non-empty list")
+                for index, path in enumerate(gds_files):
+                    if not isinstance(path, str) or not path.strip():
+                        raise ValueError(
+                            f"component '{component_name}' hdl.gds_files[{index}] must be one non-empty string"
+                        )
             defines = hdl.get("defines")
             if defines is not None:
                 if not isinstance(defines, list) or not defines:
@@ -162,6 +237,24 @@ def validate_component_library(components: dict[str, object]) -> dict[str, dict[
                 if required is not None and not isinstance(required, bool):
                     raise ValueError(
                         f"component '{component_name}' parameter '{parameter_name}' must use boolean 'required'"
+                    )
+        ppa_estimate = component_payload.get("ppa_estimate")
+        if ppa_estimate is not None:
+            if not isinstance(ppa_estimate, dict):
+                raise ValueError(f"component '{component_name}' must define object-valued 'ppa_estimate'")
+            unexpected_metrics = sorted(name for name in ppa_estimate if name not in _PPA_METRIC_UNITS)
+            if unexpected_metrics:
+                raise ValueError(
+                    f"component '{component_name}' ppa_estimate may only define: {', '.join(sorted(_PPA_METRIC_UNITS))}"
+                )
+            for metric_name, metric_value in ppa_estimate.items():
+                if isinstance(metric_value, bool) or not isinstance(metric_value, (int, float, str)):
+                    raise ValueError(
+                        f"component '{component_name}' ppa_estimate '{metric_name}' must be a number or expression string"
+                    )
+                if isinstance(metric_value, str) and not metric_value.strip():
+                    raise ValueError(
+                        f"component '{component_name}' ppa_estimate '{metric_name}' must be one non-empty string"
                     )
         supports = component_payload.get("supports")
         if supports is not None:
@@ -362,6 +455,184 @@ def _uir_type_bits(component_name: str, parameter_name: str, type_name: str) -> 
             f"component '{component_name}' hdl parameter '{parameter_name}' uses unsupported $bits type '{type_name}'"
         )
     return int(match.group(1))
+
+
+def _materialize_component_parameter_env(
+    component_name: str,
+    params: dict[str, str],
+    component: dict[str, Any],
+) -> tuple[dict[str, float], dict[str, str]]:
+    parameter_specs = component.get("parameters")
+    if not isinstance(parameter_specs, dict):
+        return {}, {}
+    numeric_params: dict[str, float] = {}
+    type_params: dict[str, str] = {}
+    for parameter_name, parameter_payload in parameter_specs.items():
+        if not isinstance(parameter_payload, dict):
+            raise ValueError(f"component '{component_name}' parameter '{parameter_name}' must be an object")
+        kind = parameter_payload.get("kind")
+        raw_value = params.get(parameter_name, parameter_payload.get("default"))
+        if raw_value is None:
+            continue
+        if kind == "type":
+            type_params[parameter_name] = str(raw_value)
+            continue
+        if kind == "int":
+            numeric_params[parameter_name] = float(_parse_int_parameter(component_name, parameter_name, raw_value))
+            continue
+        if kind == "bool":
+            numeric_params[parameter_name] = (
+                1.0 if _parse_bool_parameter(component_name, parameter_name, raw_value) else 0.0
+            )
+            continue
+    return numeric_params, type_params
+
+
+def _parse_int_parameter(component_name: str, parameter_name: str, raw_value: object) -> int:
+    if isinstance(raw_value, bool):
+        raise ValueError(
+            f"component '{component_name}' parameter '{parameter_name}' must be one non-negative integer"
+        )
+    if isinstance(raw_value, int):
+        if raw_value < 0:
+            raise ValueError(
+                f"component '{component_name}' parameter '{parameter_name}' must be one non-negative integer"
+            )
+        return raw_value
+    value = str(raw_value).strip()
+    if not re.fullmatch(r"\d+", value):
+        raise ValueError(
+            f"component '{component_name}' parameter '{parameter_name}' must be one non-negative integer"
+        )
+    return int(value)
+
+
+def _parse_bool_parameter(component_name: str, parameter_name: str, raw_value: object) -> bool:
+    if isinstance(raw_value, bool):
+        return raw_value
+    value = str(raw_value).strip()
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(
+        f"component '{component_name}' parameter '{parameter_name}' must be 'true' or 'false'"
+    )
+
+
+def _evaluate_numeric_component_expr(
+    *,
+    component_name: str,
+    metric_name: str,
+    expr: str,
+    expected_unit: str,
+    numeric_params: dict[str, float],
+    type_params: dict[str, str],
+) -> float:
+    normalized = _rewrite_bits_calls(_strip_metric_units(expr, expected_unit, component_name, metric_name))
+    try:
+        tree = ast.parse(normalized, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(
+            f"component '{component_name}' ppa_estimate '{metric_name}' uses invalid expression '{expr}'"
+        ) from exc
+    return float(_eval_expr_ast(component_name, metric_name, tree.body, numeric_params, type_params))
+
+
+def _strip_metric_units(expr: str, expected_unit: str, component_name: str, metric_name: str) -> str:
+    unit_names = tuple(sorted(set(_PPA_METRIC_UNITS.values()), key=len, reverse=True))
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_])((?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)([A-Za-z][A-Za-z0-9_]*)\b"
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        suffix = match.group(2)
+        if suffix not in unit_names:
+            raise ValueError(
+                f"component '{component_name}' ppa_estimate '{metric_name}' uses unsupported unit suffix '{suffix}'"
+            )
+        if suffix != expected_unit:
+            raise ValueError(
+                f"component '{component_name}' ppa_estimate '{metric_name}' must use unit '{expected_unit}', got '{suffix}'"
+            )
+        return match.group(1)
+
+    return pattern.sub(replace, expr)
+
+
+def _rewrite_bits_calls(expr: str) -> str:
+    return re.sub(
+        r"\$bits\(\s*([A-Za-z_][\w$]*)\s*\)",
+        lambda match: f'BITS("{match.group(1)}")',
+        expr,
+    )
+
+
+def _eval_expr_ast(
+    component_name: str,
+    metric_name: str,
+    node: ast.AST,
+    numeric_params: dict[str, float],
+    type_params: dict[str, str],
+) -> float:
+    if isinstance(node, ast.BinOp):
+        left = _eval_expr_ast(component_name, metric_name, node.left, numeric_params, type_params)
+        right = _eval_expr_ast(component_name, metric_name, node.right, numeric_params, type_params)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Div):
+            return left / right
+        raise ValueError(
+            f"component '{component_name}' ppa_estimate '{metric_name}' only supports +, -, *, /"
+        )
+    if isinstance(node, ast.UnaryOp):
+        value = _eval_expr_ast(component_name, metric_name, node.operand, numeric_params, type_params)
+        if isinstance(node.op, ast.UAdd):
+            return value
+        if isinstance(node.op, ast.USub):
+            return -value
+        raise ValueError(
+            f"component '{component_name}' ppa_estimate '{metric_name}' only supports unary +/-"
+        )
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float, str)):
+            raise ValueError(
+                f"component '{component_name}' ppa_estimate '{metric_name}' uses unsupported literal {node.value!r}"
+            )
+        if isinstance(node.value, str):
+            raise ValueError(
+                f"component '{component_name}' ppa_estimate '{metric_name}' string literals are only valid inside $bits(...)"
+            )
+        return float(node.value)
+    if isinstance(node, ast.Name):
+        if node.id not in numeric_params:
+            if node.id in type_params:
+                raise ValueError(
+                    f"component '{component_name}' ppa_estimate '{metric_name}' must wrap type parameter '{node.id}' in $bits(...)"
+                )
+            raise ValueError(
+                f"component '{component_name}' ppa_estimate '{metric_name}' references unknown numeric parameter '{node.id}'"
+            )
+        return numeric_params[node.id]
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name) or node.func.id != "BITS" or len(node.args) != 1:
+            raise ValueError(
+                f"component '{component_name}' ppa_estimate '{metric_name}' only supports $bits(name)"
+            )
+        arg = node.args[0]
+        if not isinstance(arg, ast.Constant) or not isinstance(arg.value, str):
+            raise ValueError(
+                f"component '{component_name}' ppa_estimate '{metric_name}' only supports $bits(name)"
+            )
+        type_name = type_params.get(arg.value, arg.value)
+        return float(_uir_type_bits(component_name, arg.value, type_name))
+    raise ValueError(
+        f"component '{component_name}' ppa_estimate '{metric_name}' uses unsupported syntax"
+    )
 
 
 def _split_component_params(params_text: str) -> list[str]:

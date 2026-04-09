@@ -8,6 +8,7 @@ from uhls.backend.hls.lib import (
     import_verilog_component_stub_from_files,
     materialize_hdl_component_spec,
     resolve_component_type,
+    resolve_component_ppa_estimate,
     validate_component_library,
 )
 from uhls.backend.hls.impl.vendor.ihp130.import_ihp_sram_lib import (
@@ -306,6 +307,42 @@ class ComponentLibraryImportTests(unittest.TestCase):
         )
 
         self.assertEqual(validated["DIV"]["kind"], "pipelined")
+
+    def test_validate_component_library_accepts_ppa_estimate_and_resolves_symbolic_expression(self) -> None:
+        validated = validate_component_library(
+            {
+                "GEN_FF_MEM": {
+                    "kind": "memory",
+                    "parameters": {
+                        "word_t": {"kind": "type", "required": True},
+                        "word_len": {"kind": "int", "required": True},
+                    },
+                    "ppa_estimate": {
+                        "area_um2": "$bits(word_t)*word_len*0.5",
+                        "power_mW": "$bits(word_t)*word_len*0.001",
+                        "performance_Hz": 200000000,
+                    },
+                    "ports": {
+                        "addr": {"dir": "input", "type": "i32"},
+                        "rdata": {"dir": "output", "type": "word_t"},
+                    },
+                    "supports": {"load": {"ii": 1, "d": 1}},
+                }
+            }
+        )
+
+        self.assertAlmostEqual(
+            resolve_component_ppa_estimate(validated, "GEN_FF_MEM<word_t=i8,word_len=16>", "area_um2"),
+            64.0,
+        )
+        self.assertAlmostEqual(
+            resolve_component_ppa_estimate(validated, "GEN_FF_MEM<word_t=i8,word_len=16>", "power_mW"),
+            0.128,
+        )
+        self.assertAlmostEqual(
+            resolve_component_ppa_estimate(validated, "GEN_FF_MEM<word_t=i8,word_len=16>", "performance_Hz"),
+            200000000.0,
+        )
 
     def test_enrich_ihp_1p_memory_stub_assigns_expected_load_store_contract(self) -> None:
         component = {

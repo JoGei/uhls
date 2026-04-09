@@ -2,10 +2,15 @@
   "components": {
     "GEN_ALU": {
       "kind": "combinational",
+      "ppa_estimate": {
+        "area_um2": 42.42,
+        "power_mW": 0.04242,
+        "performance_Hz": 242420000
+      },
       "hdl": {
         "language": "verilog",
         "module": "GEN_ALU",
-        "source": "src/uhls/backend/hls/impl/generic/gen_alu.v"
+        "source": "${UHLS_ROOT}/src/uhls/backend/hls/impl/generic/gen_alu.v"
       },
       "ports": {
         "a": { "dir": "input", "type": "i32" },
@@ -34,10 +39,15 @@
     },
     "GEN_MUL_PSEUDOPIPE_II1D3": {
       "kind": "pipelined",
+      "ppa_estimate": {
+        "area_um2": 142.42,
+        "power_mW": 0.14242,
+        "performance_Hz": 242420000
+      },
       "hdl": {
         "language": "verilog",
         "module": "GEN_MUL_PSEUDOPIPE_II1D3",
-        "source": "src/uhls/backend/hls/impl/generic/gen_mul.v"
+        "source": "${UHLS_ROOT}/src/uhls/backend/hls/impl/generic/gen_mul.v"
       },
       "ports": {
         "clk": { "dir": "input", "type": "clock" },
@@ -53,10 +63,15 @@
     },
     "GEN_DIV_PSEUDOPIPE_II1D3": {
       "kind": "pipelined",
+      "ppa_estimate": {
+        "area_um2": "$bits(base_t)*12.4242",
+        "power_mW": "$bits(base_t)*0.004242",
+        "performance_Hz": 142420000
+      },
       "hdl": {
         "language": "verilog",
         "module": "GEN_DIV_PSEUDOPIPE_II1D3",
-        "source": "src/uhls/backend/hls/impl/generic/gen_div.v",
+        "source": "${UHLS_ROOT}/src/uhls/backend/hls/impl/generic/gen_div.v",
         "parameters": {
           "W": "$bits(base_t)"
         }
@@ -92,10 +107,15 @@
     },
     "GEN_FF_MEM": {
       "kind": "memory",
+      "ppa_estimate": {
+        "area_um2": "$bits(word_t)*word_len*1.04242",
+        "power_mW": "$bits(word_t)*word_len*0.00004242",
+        "performance_Hz": 242420000
+      },
       "hdl": {
         "language": "verilog",
         "module": "GEN_FF_MEM",
-        "source": "src/uhls/backend/hls/impl/generic/gen_ff_mem.v",
+        "source": "${UHLS_ROOT}/src/uhls/backend/hls/impl/generic/gen_ff_mem.v",
         "parameters": {
           "W": "$bits(word_t)",
           "DEPTH": "word_len"

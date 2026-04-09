@@ -9,6 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from uhls.backend.hls import AnalyticalAreaReport, AreaEstimateReport
 from uhls.cli import _load_component_library, main
 from uhls.middleend.uir import COMPACT_OPCODE_LABELS
 
@@ -374,6 +375,9 @@ class CLITests(unittest.TestCase):
                                     "module": "IHP_MEM",
                                     "sources": ["verilog/mem_top.v", "${IHP130_PDK_ROOT}/verilog/mem_dep.v"],
                                     "include_dirs": ["verilog/include"],
+                                    "lef_files": ["lef/IHP_MEM.lef"],
+                                    "liberty_files": ["lib/IHP_MEM_typ.lib"],
+                                    "gds_files": ["gds/IHP_MEM.gds"],
                                 },
                                 "ports": {"A_CLK": {"dir": "input", "type": "clock"}, "A_DOUT": {"dir": "output", "type": "i32"}},
                                 "supports": {"load": {"ii": 1, "d": 2}, "store": {"ii": 1, "d": 1}},
@@ -398,6 +402,9 @@ class CLITests(unittest.TestCase):
                 ["../vendor/verilog/mem_top.v", "${IHP130_PDK_ROOT}/verilog/mem_dep.v"],
             )
             self.assertEqual(payload["components"]["IHP_MEM"]["hdl"]["include_dirs"], ["../vendor/verilog/include"])
+            self.assertEqual(payload["components"]["IHP_MEM"]["hdl"]["lef_files"], ["../vendor/lef/IHP_MEM.lef"])
+            self.assertEqual(payload["components"]["IHP_MEM"]["hdl"]["liberty_files"], ["../vendor/lib/IHP_MEM_typ.lib"])
+            self.assertEqual(payload["components"]["IHP_MEM"]["hdl"]["gds_files"], ["../vendor/gds/IHP_MEM.gds"])
 
     def test_parse_lint_and_view_cfg_dfg_cdfg_round_trip(self) -> None:
         source = """
@@ -2313,6 +2320,154 @@ seq clk {
             self.assertIn('label="memory A', rendered)
             self.assertNotIn('label="external ports', rendered)
 
+    def test_view_command_renders_uglir_area_pretty(self) -> None:
+        uglir = """design wrapped
+stage uglir
+input  clk : clock
+input  rst : i1
+output y : i1
+resources {
+  reg state_q : i1
+}
+assign y = state_q
+seq clk {
+  if rst {
+    state_q <= false
+  } else {
+    state_q <= true
+  }
+}
+"""
+        report = AnalyticalAreaReport(
+            design_name="wrapped",
+            stage="uglir",
+            total_area_um2=123.0,
+            items=(),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "wrapped.uglir"
+            path.write_text(uglir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with patch("uhls.cli.estimate_analytical_area", return_value=report):
+                with redirect_stdout(stdout):
+                    self.assertEqual(main(["view", str(path), "--what", "area"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn("analytical area estimate for design 'wrapped' (uglir)", rendered)
+            self.assertIn("total estimated area: 123.000 um^2", rendered)
+
+    def test_view_command_renders_fsm_area_pretty(self) -> None:
+        fsm = """design add1
+stage fsm
+schedule kind=control_steps
+input  x : i32
+output result : i32
+resources {
+  fu ewms0 : EWMS
+  reg r_i32_0 : i32
+}
+controller C0 encoding=one_hot protocol=req_resp completion_order=in_order overlap=true region=proc_add1 {
+  input  req_valid : i1
+  input  resp_ready : i1
+  output req_ready : i1
+  output resp_valid : i1
+  state IDLE code=1
+  state T0 code=2
+  state T1 code=4
+  state T2 code=8
+  state DONE code=16
+  transition IDLE -> T0 when=req_valid && req_ready
+  transition T0 -> T1
+  transition T1 -> T2
+  transition T2 -> DONE
+  transition DONE -> IDLE when=resp_valid && resp_ready
+  emit IDLE req_ready=true
+  emit T0 issue=[ewms0<-v1]
+  emit T1 latch=[r_i32_0]
+  emit DONE resp_valid=true
+}
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+  node v1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=0 end=0 bind=ewms0
+  node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
+  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+  steps [0:1]
+  latency 2
+  value v1 -> r_i32_0 live=[1:1]
+}
+"""
+        report = AnalyticalAreaReport(
+            design_name="add1",
+            stage="fsm",
+            total_area_um2=55.0,
+            items=(),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "add1.fsm.uhir"
+            path.write_text(fsm, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with patch("uhls.cli.estimate_analytical_area", return_value=report):
+                with redirect_stdout(stdout):
+                    self.assertEqual(main(["view", str(path), "--what", "area"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn("analytical area estimate for design 'add1' (fsm)", rendered)
+            self.assertIn("total estimated area: 55.000 um^2", rendered)
+
+    def test_view_command_renders_uglir_area_synth_pretty(self) -> None:
+        uglir = """design wrapped
+stage uglir
+input  clk : clock
+output y : i1
+resources {
+  reg state_q : i1
+}
+assign y = state_q
+seq clk {
+  state_q <= true
+}
+"""
+        report = AreaEstimateReport(
+            target="ihp130",
+            module_name="wrapped",
+            report_path=Path("reports/synth_stat.txt"),
+            total_cells=42,
+            total_area_um2=123.0,
+            sequential_area_um2=10.0,
+            sequential_percent=8.1,
+            macro_cells=0,
+            macro_area_um2=0.0,
+            stdcell_cells=42,
+            stdcell_area_um2=123.0,
+            estimated_core_area_um2=351.4,
+            utilization_percent=35.0,
+            num_wires=4,
+            num_wire_bits=8,
+            num_public_wires=2,
+            num_public_wire_bits=2,
+            num_ports=3,
+            num_port_bits=3,
+            cell_stats=(),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "wrapped.uglir"
+            path.write_text(uglir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with patch("uhls.cli._estimate_area_for_uglir_design", return_value=report):
+                with redirect_stdout(stdout):
+                    self.assertEqual(main(["view", str(path), "--what", "area_synth", "--target", "ihp130"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn("area estimate for module 'wrapped' (ihp130)", rendered)
+            self.assertIn("total mapped area: 123.000 um^2", rendered)
+
     def test_drv_command_emits_c_driver_from_wrapped_uglir(self) -> None:
         uglir = """design wrapped
 stage uglir
@@ -2601,7 +2756,7 @@ assign y = x
                     "hdl": {
                         "language": "verilog",
                         "module": "GEN_ALU",
-                        "source": "src/uhls/backend/hls/impl/generic/gen_alu.v",
+                        "source": "rtl/gen_alu.v",
                     },
                     "ports": {
                         "a": {"dir": "input", "type": "i32"},
@@ -2644,8 +2799,25 @@ assign y = x
             self.assertTrue((outdir / "constraints.sdc").is_file())
             self.assertTrue((outdir / "orfs.mk").is_file())
             self.assertTrue((outdir / "macros.json").is_file())
+            self.assertTrue((outdir / "floorplan_hints.tcl").is_file())
+            self.assertTrue((outdir / "macro_place.tcl").is_file())
+            self.assertTrue((outdir / "orfs" / "config.mk").is_file())
+            self.assertTrue((outdir / "orfs" / "run_orfs.sh").is_file())
+            self.assertTrue((outdir / "orfs" / "rtl" / "add1.v").is_file())
+            self.assertTrue((outdir / "orfs" / "constraints.sdc").is_file())
+            self.assertTrue((outdir / "orfs" / "floorplan_hints.tcl").is_file())
+            self.assertTrue((outdir / "orfs" / "macro_place.tcl").is_file())
+            self.assertTrue((outdir / "orfs" / "macros.json").is_file())
             self.assertIn("create_clock [get_ports {clk}] -name clk -period 5", (outdir / "constraints.sdc").read_text(encoding="utf-8"))
             self.assertIn("export PLATFORM = ihp-sg13g2", (outdir / "orfs.mk").read_text(encoding="utf-8"))
+            self.assertIn("export MACRO_PLACEMENT_TCL = macro_place.tcl", (outdir / "orfs.mk").read_text(encoding="utf-8"))
+            self.assertIn(
+                "export VERILOG_FILES = rtl/add1.v ../../rtl/gen_alu.v",
+                (outdir / "orfs" / "config.mk").read_text(encoding="utf-8"),
+            )
+            self.assertIn("export CORE_UTILIZATION ?= 35", (outdir / "orfs" / "config.mk").read_text(encoding="utf-8"))
+            self.assertIn("export MACRO_PLACE_HALO ?= 10 10", (outdir / "orfs" / "config.mk").read_text(encoding="utf-8"))
+            self.assertIn('DESIGN_CONFIG="${SCRIPT_DIR}/config.mk"', (outdir / "orfs" / "run_orfs.sh").read_text(encoding="utf-8"))
 
     def test_asic_command_uses_embedded_component_library_provenance(self) -> None:
         uglir = """design add1
@@ -2667,7 +2839,7 @@ assign y = x
                     "hdl": {
                         "language": "verilog",
                         "module": "GEN_ALU",
-                        "source": "src/uhls/backend/hls/impl/generic/gen_alu.v",
+                        "source": "rtl/gen_alu.v",
                     },
                     "ports": {
                         "a": {"dir": "input", "type": "i32"},
@@ -2703,6 +2875,10 @@ assign y = x
             self.assertTrue((outdir / "constraints.sdc").is_file())
             self.assertTrue((outdir / "orfs.mk").is_file())
             self.assertTrue((outdir / "macros.json").is_file())
+            self.assertTrue((outdir / "floorplan_hints.tcl").is_file())
+            self.assertTrue((outdir / "macro_place.tcl").is_file())
+            self.assertTrue((outdir / "orfs" / "config.mk").is_file())
+            self.assertTrue((outdir / "orfs" / "run_orfs.sh").is_file())
 
     def test_view_command_infers_seq_dot_for_seq_uhir(self) -> None:
         seq = """design add1

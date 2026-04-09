@@ -6,6 +6,7 @@ from .component_library import (
     parse_component_spec,
     resolve_component_type,
     resolve_component_definition,
+    resolve_component_ppa_estimate,
     validate_component_library,
 )
 from .importer import import_verilog_component_stub, import_verilog_component_stub_from_files
@@ -21,5 +22,6 @@ __all__ = [
     "parse_component_spec",
     "resolve_component_type",
     "resolve_component_definition",
+    "resolve_component_ppa_estimate",
     "validate_component_library",
 ]

@@ -8,15 +8,18 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from inspect import Parameter as InspectParameter
 from inspect import signature
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Callable
 
 import click
 
 from uhls.backend.hls import (
+    AnalyticalAreaReport,
+    AreaEstimateReport,
     BIND_DUMP_KINDS,
     CallableSGUScheduler,
     DRV_LANGS,
@@ -24,6 +27,15 @@ from uhls.backend.hls import (
     GLUE_PROTOCOLS,
     GLUE_WRAPS,
     MEM_POLICIES,
+    collect_flow_macros,
+    estimate_analytical_area,
+    estimate_area_from_orfs_bundle,
+    emit_floorplan_hints_tcl,
+    emit_macro_placement_tcl,
+    emit_orfs_config,
+    emit_orfs_run_script,
+    emit_pdn_tcl,
+    emit_sdc,
     RTL_HDLS,
     VerilatorWrappedRunner,
     bind_dump_to_dot,
@@ -504,6 +516,47 @@ def lib_cmd(
 @click.option("--compact", is_flag=True, help="Use compact labels when the selected view supports them.")
 @click.option("--function", "function_name", help="Restrict canonical-µIR views to one function.")
 @click.option("--block", "block_name", help="Restrict canonical-µIR DFG views to one basic block.")
+@click.option(
+    "--resources",
+    "-res",
+    "resources_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Optional component-library JSON used to resolve analytical metadata or synth collateral for area views.",
+)
+@click.option(
+    "--wrap",
+    type=click.Choice(GLUE_WRAPS, case_sensitive=False),
+    help="Reserved for wrapped synth-backed area flows; analytical --what=area does not accept it.",
+)
+@click.option(
+    "--protocol",
+    type=str,
+    help=(
+        "Reserved for wrapped synth-backed area flows. "
+        f"Supported forms: {protocol_spec_help()}."
+    ),
+)
+@click.option(
+    "--target",
+    "target_name",
+    type=click.Choice(["ihp130"], case_sensitive=False),
+    help="Implementation target used for --what=area_synth.",
+)
+@click.option(
+    "--clock-period",
+    "clock_period_ns",
+    type=float,
+    default=10.0,
+    show_default=True,
+    help="Clock period in ns used for --what=area_synth.",
+)
+@click.option(
+    "--reset",
+    "reset_name",
+    default="sync+active_hi",
+    show_default=True,
+    help="Reset style used for --what=area_synth.",
+)
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def view_cmd(
     input_path: Path,
@@ -513,6 +566,12 @@ def view_cmd(
     compact: bool,
     function_name: str | None,
     block_name: str | None,
+    resources_path: Path | None,
+    wrap: str | None,
+    protocol: str | None,
+    target_name: str | None,
+    clock_period_ns: float,
+    reset_name: str,
     output: Path | None,
 ) -> None:
     """Render views over µIR, µhIR, µglIR, and res.json exchange artifacts."""
@@ -524,6 +583,12 @@ def view_cmd(
         compact=compact,
         function_name=function_name,
         block_name=block_name,
+        resources_path=resources_path,
+        wrap=wrap,
+        protocol=protocol,
+        target_name=target_name,
+        clock_period_ns=clock_period_ns,
+        reset_name=reset_name,
     )
     _write_or_print_text(rendered, output)
 
@@ -638,6 +703,33 @@ def alloc_cmd(
         algorithm=allocation_algorithm,
         memory_policy=memory_policy,
         memory_vendor_components=vendor_components,
+    )
+    allocated.component_libraries = list(
+        dict.fromkeys(
+            [
+                *_record_component_library_provenance(
+                    design.component_libraries,
+                    output,
+                    artifact_path=input_path,
+                ),
+                *(
+                    _record_component_library_provenance(
+                        [str(executability_graph_path)],
+                        output,
+                    )
+                    if _path_is_component_library(executability_graph_path)
+                    else []
+                ),
+                *(
+                    []
+                    if memory_vendor is None
+                    else _record_component_library_provenance(
+                        [str(memory_vendor)],
+                        output,
+                    )
+                ),
+            ]
+        )
     )
     _write_or_print_text(format_uhir(allocated), output)
 
@@ -791,7 +883,7 @@ def gopt_cmd(
         "  uhls run input.uir --function dot4 --arg A=[1,2,3,4] --arg B=[4,3,2,1]\n"
         "\n"
         "\b\n"
-        "  uhls run input.uir --backend=verilator --uglir wrapped.uglir --resources resources.json\n"
+        "  uhls run input.uir --backend=verilator --uglir wrapped.uglir\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -861,8 +953,11 @@ def run_cmd(
         if not uglir_design.address_maps:
             raise CLIError("'run --backend=verilator' currently requires wrapped µglIR with one address_map")
         _validate_verilog_run_target(module, uglir_design.name)
-        component_library = _load_component_library(resources_path) if resources_path is not None else None
-        library_root = Path.cwd() if resources_path is None else resources_path.parent.resolve()
+        component_library, library_root = _resolve_component_library_for_design(
+            uglir_design,
+            explicit_path=resources_path,
+            artifact_path=uglir_path,
+        )
         call_hook = _make_verilog_run_call_hook(
             uglir_design,
             component_library=component_library,
@@ -892,6 +987,236 @@ def run_cmd(
             click.echo("verilator invocation report:")
             for index, report in enumerate(reports, start=1):
                 click.echo(f"{index}. {_format_verilator_invocation_report(report)}")
+
+
+@cli.command(
+    "asic",
+    help=(
+        "Emit one small ASIC handoff bundle from µglIR.\n"
+        "\n"
+        "Outputs:\n"
+        "  top.v\n"
+        "  constraints.sdc\n"
+        "  floorplan_hints.tcl\n"
+        "  macro_place.tcl\n"
+        "  orfs.mk\n"
+        "  macros.json\n"
+        "  orfs/config.mk\n"
+        "  orfs/run_orfs.sh\n"
+    ),
+)
+@click.argument("input_path", metavar="input.uglir", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--target",
+    "target_name",
+    type=click.Choice(["ihp130"], case_sensitive=False),
+    required=True,
+    help="ASIC implementation target.",
+)
+@click.option(
+    "--resources",
+    "-res",
+    "resources_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Optional component-library JSON used to resolve macro collateral. Defaults to any component_library entries embedded in the input µglIR.",
+)
+@click.option(
+    "--outdir",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Output directory for emitted ASIC collateral.",
+)
+@click.option(
+    "--clock-period",
+    "clock_period_ns",
+    type=float,
+    default=10.0,
+    show_default=True,
+    help="Clock period in ns for emitted SDC skeleton.",
+)
+@click.option(
+    "--reset",
+    "reset_name",
+    default="sync+active_hi",
+    show_default=True,
+    help="Reset style for emitted top Verilog.",
+)
+@click.option(
+    "--estimate-area",
+    is_flag=True,
+    help="Run synth-only ORFS area estimation and print mapped-area stats. If --outdir is omitted, a temporary bundle is used.",
+)
+def asic_cmd(
+    input_path: Path,
+    target_name: str,
+    resources_path: Path | None,
+    outdir: Path | None,
+    clock_period_ns: float,
+    reset_name: str,
+    estimate_area: bool,
+) -> None:
+    """Emit one target-specific ASIC flow bundle from µglIR."""
+    design = parse_uglir_file(input_path)
+    if design.stage != "uglir":
+        raise CLIError(f"'asic' expects µglIR input, got stage '{design.stage}'")
+    component_library, _library_root = _resolve_component_library_for_design(
+        design,
+        explicit_path=resources_path,
+        artifact_path=input_path,
+    )
+    target = target_name.strip().lower()
+    if outdir is None and not estimate_area:
+        raise CLIError("'asic' requires --outdir unless --estimate-area is used")
+    if estimate_area:
+        report = _estimate_area_for_uglir_design(
+            design,
+            target=target,
+            component_library=component_library,
+            library_root=_library_root,
+            clock_period_ns=clock_period_ns,
+            reset_name=reset_name,
+            outdir=outdir,
+        )
+        click.echo(_format_area_estimate_report(report))
+        if outdir is not None:
+            click.echo(str(outdir.resolve()))
+        return
+    assert outdir is not None
+    _emit_asic_bundle(
+        design,
+        target=target,
+        component_library=component_library,
+        library_root=_library_root,
+        outdir=outdir,
+        clock_period_ns=clock_period_ns,
+        reset_name=reset_name,
+    )
+    click.echo(str(outdir.resolve()))
+
+
+def _emit_asic_bundle(
+    design: object,
+    *,
+    target: str,
+    component_library: dict[str, dict[str, object]] | None,
+    library_root: Path,
+    outdir: Path,
+    clock_period_ns: float,
+    reset_name: str,
+) -> Path:
+    outdir.mkdir(parents=True, exist_ok=True)
+    top_name = f"{design.name}.v"
+    sdc_name = "constraints.sdc"
+    orfs_name = "orfs.mk"
+    macros_name = "macros.json"
+    floorplan_hints_name = "floorplan_hints.tcl"
+    macro_place_name = "macro_place.tcl"
+    pdn_name = "pdn.tcl"
+    orfs_dir_name = "orfs"
+    orfs_config_name = "config.mk"
+    orfs_run_name = "run_orfs.sh"
+    top_path = outdir / top_name
+    sdc_path = outdir / sdc_name
+    orfs_path = outdir / orfs_name
+    macros_path = outdir / macros_name
+    floorplan_hints_path = outdir / floorplan_hints_name
+    macro_place_path = outdir / macro_place_name
+    pdn_path = outdir / pdn_name
+    orfs_dir = outdir / orfs_dir_name
+    orfs_rtl_dir = orfs_dir / "rtl"
+    orfs_config_path = orfs_dir / orfs_config_name
+    orfs_run_path = orfs_dir / orfs_run_name
+    orfs_sdc_path = orfs_dir / sdc_name
+    orfs_floorplan_hints_path = orfs_dir / floorplan_hints_name
+    orfs_macro_place_path = orfs_dir / macro_place_name
+    orfs_pdn_path = orfs_dir / pdn_name
+    orfs_macros_path = orfs_dir / macros_name
+    orfs_top_path = orfs_rtl_dir / top_name
+
+    top_path.write_text(lower_uglir_to_rtl(design, hdl="verilog", reset=reset_name), encoding="utf-8")
+    sdc_path.write_text(emit_sdc(target, clock_port="clk", clock_name="clk", clock_period_ns=clock_period_ns), encoding="utf-8")
+
+    macro_collaterals = collect_flow_macros(target, design, {} if component_library is None else component_library)
+    macro_collaterals_outdir = _rebase_macro_collaterals(macro_collaterals, base_root=library_root, out_root=outdir.resolve())
+    macro_collaterals_orfs = _rebase_macro_collaterals(macro_collaterals, base_root=library_root, out_root=orfs_dir.resolve())
+    macros_payload = [
+        {
+            "instance": collateral.instance_name,
+            "component": collateral.component_name,
+            "module": collateral.module_name,
+            "verilog_sources": list(collateral.verilog_sources),
+            "include_dirs": list(collateral.include_dirs),
+            "defines": list(collateral.defines),
+            "lef_files": list(collateral.lef_files),
+            "liberty_files": list(collateral.liberty_files),
+            "gds_files": list(collateral.gds_files),
+        }
+        for collateral in macro_collaterals_outdir
+    ]
+    macros_path.write_text(json.dumps(macros_payload, indent=2) + "\n", encoding="utf-8")
+    floorplan_hints_path.write_text(
+        emit_floorplan_hints_tcl(
+            target,
+            design_name=design.name,
+            top_module=design.name,
+            macros=macro_collaterals_outdir,
+        ),
+        encoding="utf-8",
+    )
+    macro_place_path.write_text(
+        emit_macro_placement_tcl(
+            target,
+            design_name=design.name,
+            top_module=design.name,
+            macros=macro_collaterals_outdir,
+        ),
+        encoding="utf-8",
+    )
+    pdn_path.write_text(
+        emit_pdn_tcl(
+            target,
+            design_name=design.name,
+            top_module=design.name,
+            macros=macro_collaterals_outdir,
+        ),
+        encoding="utf-8",
+    )
+    orfs_dir.mkdir(parents=True, exist_ok=True)
+    orfs_rtl_dir.mkdir(parents=True, exist_ok=True)
+    orfs_top_path.write_text(top_path.read_text(encoding="utf-8"), encoding="utf-8")
+    orfs_sdc_path.write_text(sdc_path.read_text(encoding="utf-8"), encoding="utf-8")
+    orfs_floorplan_hints_path.write_text(floorplan_hints_path.read_text(encoding="utf-8"), encoding="utf-8")
+    orfs_macro_place_path.write_text(macro_place_path.read_text(encoding="utf-8"), encoding="utf-8")
+    orfs_pdn_path.write_text(pdn_path.read_text(encoding="utf-8"), encoding="utf-8")
+    orfs_macros_path.write_text(macros_path.read_text(encoding="utf-8"), encoding="utf-8")
+    orfs_path.write_text(
+        emit_orfs_config(
+            target,
+            design_name=design.name,
+            top_module=design.name,
+            rtl_files=(top_name,),
+            sdc_file=sdc_name,
+            macro_placement_tcl=macro_place_name,
+            pdn_tcl=pdn_name,
+            macros=macro_collaterals_outdir,
+        ),
+        encoding="utf-8",
+    )
+    orfs_config_path.write_text(
+        emit_orfs_config(
+            target,
+            design_name=design.name,
+            top_module=design.name,
+            rtl_files=(f"rtl/{top_name}",),
+            sdc_file=sdc_name,
+            macro_placement_tcl=macro_place_name,
+            pdn_tcl=pdn_name,
+            macros=macro_collaterals_orfs,
+        ),
+        encoding="utf-8",
+    )
+    orfs_run_path.write_text(emit_orfs_run_script(target, design_config=orfs_config_name), encoding="utf-8")
+    orfs_run_path.chmod(0o755)
+    return outdir.resolve()
 
 
 @cli.command("sched")
@@ -1023,10 +1348,6 @@ def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
         "\b\n"
         "  uhls glue input.fsm.uhir -o output.uglir\n"
         "\n"
-        "\b\n"
-        "  uhls glue input.fsm.uhir --resources resources.json -o output.uglir\n"
-        "\n"
-        "\b\n"
         "  uhls glue input.fsm.uhir --wrap=slave --protocol=wishbone -o output.uglir\n"
         "\n"
         "\b\n"
@@ -1057,18 +1378,35 @@ def fsm_cmd(input_path: Path, encoding: str, output: Path | None) -> None:
         "Current Wishbone support is Classic B3 slave only. Current OBI support is a minimal non-sideband subordinate profile."
     ),
 )
+@click.option(
+    "--target",
+    "target_name",
+    type=click.Choice(["ihp130"], case_sensitive=False),
+    help="Implementation target used for --estimate-area.",
+)
+@click.option(
+    "--estimate-area",
+    is_flag=True,
+    help="Run synth-only ASIC area estimation on the wrapped µglIR. If -o is omitted, only the area report is printed.",
+)
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path))
 def glue_cmd(
     input_path: Path,
     resources_path: Path | None,
     wrap: str | None,
     protocol: str | None,
+    target_name: str | None,
+    estimate_area: bool,
     output: Path | None,
 ) -> None:
     """Lower fsm-stage µhIR to µglIR and optionally apply wrapper composition."""
     design = _load_hls_exchange_design(input_path)
+    component_library, _library_root = _resolve_component_library_for_design(
+        design,
+        explicit_path=resources_path,
+        artifact_path=input_path,
+    )
     if design.stage == "fsm":
-        component_library = _load_component_library(resources_path) if resources_path is not None else None
         lowered = lower_fsm_to_uglir(design, component_library=component_library)
     elif design.stage == "uglir":
         lowered = design
@@ -1079,11 +1417,25 @@ def glue_cmd(
             lowered,
             wrap=wrap,
             protocol=protocol,
-            component_library=_load_component_library(resources_path) if resources_path is not None else None,
+            component_library=component_library,
         )
     except (NotImplementedError, ValueError) as exc:
         raise CLIError(str(exc)) from exc
-    _write_or_print_text(_format_hls_exchange_design(lowered), output)
+    if not estimate_area or output is not None:
+        _write_or_print_text(_format_hls_exchange_design(lowered), output)
+    if estimate_area:
+        if target_name is None:
+            raise CLIError("'glue --estimate-area' requires --target")
+        report = _estimate_area_for_uglir_design(
+            lowered,
+            target=target_name.strip().lower(),
+            component_library=component_library,
+            library_root=_library_root,
+            clock_period_ns=10.0,
+            reset_name="sync+active_hi",
+            outdir=None,
+        )
+        click.echo(_format_area_estimate_report(report))
 
 
 @cli.command(
@@ -1204,6 +1556,13 @@ def _extract_view_input_path(argv: list[str]) -> Path | None:
         "--what",
         "--function",
         "--block",
+        "--resources",
+        "-res",
+        "--wrap",
+        "--protocol",
+        "--target",
+        "--clock-period",
+        "--reset",
         "-o",
         "--output",
     }
@@ -1233,16 +1592,16 @@ def _supported_view_values_for_input(input_path: Path) -> tuple[str, ...] | None
             design = parse_uglir_file(input_path)
         except (OSError, UGLIRParseError, ValueError):
             return None
-        return supported_uglir_view_values(design)
+        return (*supported_uglir_view_values(design), "area", "area_synth")
     if suffix == ".uhir":
         try:
             design = parse_uhir_file(input_path)
         except (OSError, UHIRParseError, ValueError):
             return None
         if design.stage == "bind":
-            return ("bind", *BIND_DUMP_KINDS)
+            return ("bind", *BIND_DUMP_KINDS, "area")
         if design.stage == "fsm":
-            return ("fsm",)
+            return ("fsm", "area")
         if design.stage == "exg":
             return ("exg",)
         return (design.stage,)
@@ -1257,7 +1616,34 @@ def _render_view(
     compact: bool,
     function_name: str | None,
     block_name: str | None,
+    resources_path: Path | None,
+    wrap: str | None,
+    protocol: str | None,
+    target_name: str | None,
+    clock_period_ns: float,
+    reset_name: str,
 ) -> str:
+    normalized_what = None if what_name is None else what_name.strip().lower().replace("-", "_")
+    if normalized_what == "area":
+        return _render_area_view(
+            input_path,
+            backend=backend,
+            resources_path=resources_path,
+            wrap=wrap,
+            protocol=protocol,
+            target_name=target_name,
+            clock_period_ns=clock_period_ns,
+            reset_name=reset_name,
+        )
+    if normalized_what == "area_synth":
+        return _render_area_synth_view(
+            input_path,
+            backend=backend,
+            resources_path=resources_path,
+            target_name=target_name,
+            clock_period_ns=clock_period_ns,
+            reset_name=reset_name,
+        )
     suffix = input_path.suffix.lower()
     if suffix == ".uir":
         return _render_uir_view(
@@ -1291,6 +1677,74 @@ def _render_view(
     raise CLIError(
         f"'view' does not support '{input_path.suffix or '<no suffix>'}'; expected one of: .uir, .uhir, .uglir, .json"
     )
+
+
+def _render_area_view(
+    input_path: Path,
+    *,
+    backend: str,
+    resources_path: Path | None,
+    wrap: str | None,
+    protocol: str | None,
+    target_name: str | None,
+    clock_period_ns: float,
+    reset_name: str,
+) -> str:
+    if backend != "pretty":
+        raise _unsupported_view_backend("area estimate", "area", backend, ("pretty",))
+    if input_path.suffix.lower() not in {".uhir", ".uglir"}:
+        raise CLIError("'view --what=area' expects bind/fsm-stage µhIR or µglIR input")
+
+    design = _load_hls_exchange_design(input_path)
+    component_library, library_root = _resolve_component_library_for_design(
+        design,
+        explicit_path=resources_path,
+        artifact_path=input_path,
+    )
+    if design.stage not in {"bind", "fsm", "uglir"}:
+        raise CLIError(f"'view --what=area' expects bind/fsm-stage µhIR or µglIR input, got stage '{design.stage}'")
+    if wrap is not None or protocol is not None:
+        raise CLIError("'view --what=area' is structural/analytical and does not accept --wrap/--protocol")
+    del target_name, clock_period_ns, reset_name
+    report = estimate_analytical_area(
+        design,
+        component_library=component_library,
+        library_root=library_root,
+    )
+    return _format_analytical_area_report(report)
+
+
+def _render_area_synth_view(
+    input_path: Path,
+    *,
+    backend: str,
+    resources_path: Path | None,
+    target_name: str | None,
+    clock_period_ns: float,
+    reset_name: str,
+) -> str:
+    if backend != "pretty":
+        raise _unsupported_view_backend("synth area estimate", "area_synth", backend, ("pretty",))
+    if target_name is None:
+        raise CLIError("'view --what=area_synth' requires --target")
+    if input_path.suffix.lower() != ".uglir":
+        raise CLIError("'view --what=area_synth' expects µglIR input")
+    design = parse_uglir_file(input_path)
+    component_library, library_root = _resolve_component_library_for_design(
+        design,
+        explicit_path=resources_path,
+        artifact_path=input_path,
+    )
+    report = _estimate_area_for_uglir_design(
+        design,
+        target=target_name.strip().lower(),
+        component_library=component_library,
+        library_root=library_root,
+        clock_period_ns=clock_period_ns,
+        reset_name=reset_name,
+        outdir=None,
+    )
+    return _format_area_estimate_report(report)
 
 
 def _render_uir_view(
@@ -1615,6 +2069,235 @@ def _load_component_library(path: Path) -> dict[str, dict[str, object]]:
         return validate_component_library(components)
     except ValueError as exc:
         raise CLIError(f"component library '{path}' is invalid: {exc}") from exc
+
+
+def _path_is_component_library(path: Path) -> bool:
+    try:
+        payload = _load_json_with_env(path)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(payload, dict) and isinstance(payload.get("components"), dict)
+
+
+def _record_component_library_provenance(
+    paths: list[str],
+    output: Path | None,
+    *,
+    artifact_path: Path | None = None,
+) -> list[str]:
+    out_root = None if output is None else output.resolve().parent
+    recorded: list[str] = []
+    seen: set[str] = set()
+    for text in paths:
+        candidate = Path(text)
+        if artifact_path is not None and not candidate.is_absolute():
+            candidate = artifact_path.parent / candidate
+        resolved = candidate.resolve()
+        try:
+            normalized = str(resolved) if out_root is None else os.path.relpath(resolved, out_root)
+        except ValueError:
+            normalized = str(resolved)
+        if normalized not in seen:
+            seen.add(normalized)
+            recorded.append(normalized)
+    return recorded
+
+
+def _resolve_component_library_for_design(
+    design,
+    *,
+    explicit_path: Path | None,
+    artifact_path: Path,
+) -> tuple[dict[str, dict[str, object]] | None, Path]:
+    if explicit_path is not None:
+        return _load_component_library(explicit_path), explicit_path.parent.resolve()
+    component_library_paths = list(getattr(design, "component_libraries", ()))
+    if not component_library_paths:
+        return None, artifact_path.parent.resolve()
+
+    resolved_paths: list[Path] = []
+    seen_paths: set[Path] = set()
+    for entry in component_library_paths:
+        path = Path(entry)
+        if not path.is_absolute():
+            path = artifact_path.parent / path
+        path = path.resolve()
+        if not path.exists():
+            raise CLIError(
+                f"input artifact '{artifact_path}' references missing component library '{entry}'"
+            )
+        if path not in seen_paths:
+            seen_paths.add(path)
+            resolved_paths.append(path)
+
+    merged_path = artifact_path.parent / ".uhls_component_library.merge.json"
+    try:
+        payload = _expand_env_in_json(merged_component_library_payload(resolved_paths, merged_path))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise CLIError(f"failed to load component libraries referenced by '{artifact_path}': {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CLIError(f"component libraries referenced by '{artifact_path}' must merge to a JSON object")
+    components = payload.get("components")
+    if not isinstance(components, dict):
+        raise CLIError(f"component libraries referenced by '{artifact_path}' must define object-valued 'components'")
+    for component_name, component_payload in components.items():
+        if not isinstance(component_payload, dict):
+            raise CLIError(
+                f"component libraries referenced by '{artifact_path}' component '{component_name}' must be a JSON object"
+            )
+    try:
+        return validate_component_library(components), artifact_path.parent.resolve()
+    except ValueError as exc:
+        raise CLIError(f"component libraries referenced by '{artifact_path}' are invalid: {exc}") from exc
+
+
+def _rebase_macro_collaterals(
+    collaterals,
+    *,
+    base_root: Path,
+    out_root: Path,
+):
+    rebased = []
+    for collateral in collaterals:
+        rebased.append(
+            replace(
+                collateral,
+                verilog_sources=_rebase_path_tuple(collateral.verilog_sources, base_root=base_root, out_root=out_root),
+                include_dirs=_rebase_path_tuple(collateral.include_dirs, base_root=base_root, out_root=out_root),
+                lef_files=_rebase_path_tuple(collateral.lef_files, base_root=base_root, out_root=out_root),
+                liberty_files=_rebase_path_tuple(collateral.liberty_files, base_root=base_root, out_root=out_root),
+                gds_files=_rebase_path_tuple(collateral.gds_files, base_root=base_root, out_root=out_root),
+            )
+        )
+    return tuple(rebased)
+
+
+def _estimate_area_for_uglir_design(
+    design,
+    *,
+    target: str,
+    component_library: dict[str, dict[str, object]] | None,
+    library_root: Path,
+    clock_period_ns: float,
+    reset_name: str,
+    outdir: Path | None,
+) -> AreaEstimateReport:
+    if outdir is not None:
+        bundle_dir = _emit_asic_bundle(
+            design,
+            target=target,
+            component_library=component_library,
+            library_root=library_root,
+            outdir=outdir,
+            clock_period_ns=clock_period_ns,
+            reset_name=reset_name,
+        )
+        return estimate_area_from_orfs_bundle(target, bundle_dir)
+    with TemporaryDirectory(prefix="uhls_area_") as temp_root:
+        bundle_dir = Path(temp_root) / "asic"
+        _emit_asic_bundle(
+            design,
+            target=target,
+            component_library=component_library,
+            library_root=library_root,
+            outdir=bundle_dir,
+            clock_period_ns=clock_period_ns,
+            reset_name=reset_name,
+        )
+        report = estimate_area_from_orfs_bundle(target, bundle_dir)
+        return replace(report, report_path=Path("<temporary>/synth_stat.txt"))
+
+
+def _format_area_estimate_report(report: AreaEstimateReport) -> str:
+    lines = [
+        f"area estimate for module '{report.module_name}' ({report.target})",
+        "  source: ORFS synth-report / Yosys mapped cell area",
+    ]
+    if report.num_wires is not None or report.num_wire_bits is not None:
+        lines.append(
+            "  wires: "
+            f"{_format_optional_int(report.num_wires)}"
+            f" ({_format_optional_int(report.num_wire_bits)} bits)"
+        )
+    if report.num_public_wires is not None or report.num_public_wire_bits is not None:
+        lines.append(
+            "  public wires: "
+            f"{_format_optional_int(report.num_public_wires)}"
+            f" ({_format_optional_int(report.num_public_wire_bits)} bits)"
+        )
+    if report.num_ports is not None or report.num_port_bits is not None:
+        lines.append(
+            "  ports: "
+            f"{_format_optional_int(report.num_ports)}"
+            f" ({_format_optional_int(report.num_port_bits)} bits)"
+        )
+    lines.extend(
+        [
+            f"  cells: {report.total_cells}",
+            f"  total mapped area: {report.total_area_um2:.3f} um^2",
+        ]
+    )
+    if report.sequential_area_um2 is not None:
+        suffix = "" if report.sequential_percent is None else f" ({report.sequential_percent:.2f}%)"
+        lines.append(f"  sequential area: {report.sequential_area_um2:.3f} um^2{suffix}")
+    lines.append(f"  macro area: {report.macro_area_um2:.3f} um^2 across {report.macro_cells} cells")
+    lines.append(f"  stdcell area: {report.stdcell_area_um2:.3f} um^2 across {report.stdcell_cells} cells")
+    if report.estimated_core_area_um2 is not None and report.utilization_percent is not None:
+        lines.append(
+            f"  estimated core area @ {report.utilization_percent:.2f}% util: {report.estimated_core_area_um2:.3f} um^2"
+        )
+    if report.cell_stats:
+        lines.append("  top cell areas:")
+        for cell in report.cell_stats[:8]:
+            lines.append(f"    {cell.cell_type}: count={cell.count} area={cell.area_um2:.3f} um^2")
+    return "\n".join(lines)
+
+
+def _format_analytical_area_report(report: AnalyticalAreaReport) -> str:
+    lines = [
+        f"analytical area estimate for design '{report.design_name}' ({report.stage})",
+        "  source: structural estimate from IR resources and component-library metadata",
+        f"  total estimated area: {report.total_area_um2:.3f} um^2",
+    ]
+    for item in report.items:
+        detail_bits: list[str] = []
+        if item.count is not None:
+            detail_bits.append(f"count={item.count}")
+        if item.unit_area_um2 is not None:
+            detail_bits.append(f"unit={item.unit_area_um2:.3f} um^2")
+        detail_bits.append(f"total={item.total_area_um2:.3f} um^2")
+        if item.source:
+            detail_bits.append(f"source={item.source}")
+        if item.detail:
+            detail_bits.append(item.detail)
+        lines.append(f"  {item.category} {item.label}: {', '.join(detail_bits)}")
+    if report.warnings:
+        lines.append("  warnings:")
+        for warning in report.warnings:
+            lines.append(f"    {warning}")
+    return "\n".join(lines)
+
+
+def _format_optional_int(value: int | None) -> str:
+    return "?" if value is None else str(value)
+
+
+def _rebase_path_tuple(values: tuple[str, ...], *, base_root: Path, out_root: Path) -> tuple[str, ...]:
+    return tuple(_rebase_path_text(value, base_root=base_root, out_root=out_root) for value in values)
+
+
+def _rebase_path_text(value: str, *, base_root: Path, out_root: Path) -> str:
+    if not value or "$" in value:
+        return value
+    path = Path(value)
+    if path.is_absolute():
+        resolved = path.resolve()
+    else:
+        resolved = (base_root / path).resolve()
+    try:
+        return os.path.relpath(resolved, out_root)
+    except ValueError:
+        return str(resolved)
 
 
 def _load_json_with_env(path: Path) -> object:

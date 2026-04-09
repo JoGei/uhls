@@ -63,7 +63,11 @@ def main() -> int:
     source_files = tuple((path, path.read_text(encoding="utf-8", errors="ignore")) for path in source_paths)
     imported_count = 0
     for module_name in _discover_ihp_sram_modules(source_files, include_2p=args.include_2p):
-        if module_name in components:
+        existing = components.get(module_name)
+        if isinstance(existing, dict):
+            _rewrite_hdl_paths_with_env(existing, preserved_envs)
+            _enrich_ihp_memory_stub(existing, module_name)
+            components[module_name] = existing
             continue
         imported = import_verilog_component_stub_from_files(
             source_files=source_files,
@@ -115,6 +119,7 @@ def _enrich_ihp_memory_stub(component: dict[str, object], module_name: str) -> N
     hdl = component.get("hdl")
     if isinstance(hdl, dict):
         hdl.setdefault("defines", ["FUNCTIONAL"])
+        _annotate_ihp_memory_collateral(hdl, module_name)
     ports = component.get("ports")
     if isinstance(ports, dict):
         _annotate_ihp_memory_ports(ports)
@@ -181,6 +186,47 @@ def _annotate_ihp_memory_ports(ports: dict[str, object]) -> None:
             port["type"] = "word_t"
         if "_BIST_" in port_name and port.get("dir") == "input":
             port["tie"] = "false"
+
+
+def _annotate_ihp_memory_collateral(hdl: dict[str, object], module_name: str) -> None:
+    source_root = _infer_ihp_sram_root_from_hdl(hdl)
+    if source_root is None:
+        return
+    hdl.setdefault("lef_files", [f"{source_root}/lef/{module_name}.lef"])
+    hdl.setdefault("liberty_files", _collect_ihp_liberty_files(source_root, module_name))
+    hdl.setdefault("gds_files", [f"{source_root}/gds/{module_name}.gds"])
+
+
+def _infer_ihp_sram_root_from_hdl(hdl: dict[str, object]) -> str | None:
+    sources = hdl.get("sources")
+    if isinstance(sources, list):
+        for entry in sources:
+            root = _extract_ihp_sram_root(entry)
+            if root is not None:
+                return root
+    source = hdl.get("source")
+    if isinstance(source, str):
+        return _extract_ihp_sram_root(source)
+    return None
+
+
+def _extract_ihp_sram_root(path_text: object) -> str | None:
+    if not isinstance(path_text, str) or not path_text.strip():
+        return None
+    normalized = path_text.replace("\\", "/")
+    marker = "/verilog/"
+    index = normalized.find(marker)
+    if index < 0:
+        return None
+    return normalized[:index]
+
+
+def _collect_ihp_liberty_files(source_root: str, module_name: str) -> list[str]:
+    return [
+        f"{source_root}/lib/{module_name}_fast_1p32V_m55C.lib",
+        f"{source_root}/lib/{module_name}_slow_1p08V_125C.lib",
+        f"{source_root}/lib/{module_name}_typ_1p20V_25C.lib",
+    ]
 
 
 def _full_mask_literal(width: int) -> str:
@@ -257,7 +303,7 @@ def _rewrite_hdl_paths_with_env(component: dict[str, object], env_mappings: dict
         value = hdl.get(field)
         if isinstance(value, str):
             hdl[field] = _rewrite_path_with_env(value, env_mappings)
-    for field in ("sources", "include_dirs"):
+    for field in ("sources", "include_dirs", "lef_files", "liberty_files", "gds_files"):
         values = hdl.get(field)
         if isinstance(values, list):
             hdl[field] = [

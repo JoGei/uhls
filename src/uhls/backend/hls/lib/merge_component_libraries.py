@@ -42,6 +42,18 @@ def merged_component_library_payload(input_paths: list[Path], output_path: Path)
                     hdl["include_dirs"] = [
                         _rewrite_path(entry, library_path.parent, out_root) for entry in hdl["include_dirs"]
                     ]
+                if isinstance(hdl.get("lef_files"), list):
+                    hdl["lef_files"] = [
+                        _rewrite_path(entry, library_path.parent, out_root) for entry in hdl["lef_files"]
+                    ]
+                if isinstance(hdl.get("liberty_files"), list):
+                    hdl["liberty_files"] = [
+                        _rewrite_path(entry, library_path.parent, out_root) for entry in hdl["liberty_files"]
+                    ]
+                if isinstance(hdl.get("gds_files"), list):
+                    hdl["gds_files"] = [
+                        _rewrite_path(entry, library_path.parent, out_root) for entry in hdl["gds_files"]
+                    ]
             components[str(name)] = copied
     return merged
 

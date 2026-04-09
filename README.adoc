@@ -202,14 +202,25 @@ To run the frontend->middleend->backend pipeline above on the example `dot4_relu
 
 [source,bash]
 ----
-make -C examples
+make -C examples [STEM=dot4_relu] synth
 ----
 
 To additionally render the standard graphs and wrapped backend artifacts:
 
 [source,bash]
 ----
-make -C examples views wrapped asic
+make -C examples [STEM=dot4_relu]  views wrapped asic
+----
+
+To try full asic synthesis with https://github.com/the-openroad-project/openroad-flow-scripts[OpenROAD] and https://github.com/yosyshq/yosys[Yosys] using https://github.com/IHP-GmbH/IHP-Open-PDK[IHP's 130nm BiCmos open PDK]:
+
+NOTE: Please install, https://github.com/the-openroad-project/openroad-flow-scripts[OpenROAD] according to their user guide.
+
+[source,bash]
+----
+export ORFS_ROOT=/path/to/OpenROAD-flow-scripts/
+export YOSYS_EXE=$ORFS_ROOT/dependencies/bin/yosys
+make -C examples [STEM=dot4_relu] orfs_run
 ----
 
 To inspect artifacts directly from the CLI:
@@ -227,5 +238,6 @@ To run artifacts directly from the CLI with the interpreter:
 ./uhls run build/dot4_relu.uir
 ./uhls run dot4_relu.opt.uir --backend=verilator --uglir dot4_relu.obi_slave.uglir
 ----
+
 
 WARNING: This is project started as a baseline project to teach university-level courses on HLS algorithms and hardware compilers and heavily relied on LLM-based Coding Agents to "glue" together the different tools, abstraction levels, and building the µhLS framework. As such many design decisions, such as "*why python only?*" might seem off, but µhLS *tries* to keep it simple.

@@ -71,19 +71,21 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertIn("ewms0_go_n", resource_ids)
         self.assertIn("ewms0_y_n", resource_ids)
         self.assertIn("mx_r_i32_0_n", resource_ids)
-        self.assertEqual([(assign.target, assign.expr) for assign in uglir_design.assigns[:5]], [
-            ("req_fire_n", "req_valid & req_ready"),
-            ("resp_fire_n", "resp_valid & resp_ready"),
-            ("req_ready", "state_q == 1"),
-            ("resp_valid", "state_q == 16"),
+        assign_pairs = {(assign.target, assign.expr) for assign in uglir_design.assigns}
+        self.assertIn(("req_fire_n", "req_valid & req_ready"), assign_pairs)
+        self.assertIn(("resp_fire_n", "resp_valid & resp_ready"), assign_pairs)
+        self.assertIn(("req_ready", "state_q == 1"), assign_pairs)
+        self.assertIn(("resp_valid", "state_q == 16"), assign_pairs)
+        self.assertIn(
             ("next_state_n", "(state_q == 1 && req_fire_n) ? 2 : state_q == 2 ? 4 : state_q == 4 ? 8 : state_q == 8 ? 16 : (state_q == 16 && resp_fire_n) ? 1 : 1"),
-        ])
+            assign_pairs,
+        )
         self.assertIn(("ewms0", "go", "ewms0_go_n"), [(attachment.instance, attachment.port, attachment.signal) for attachment in uglir_design.attachments])
         self.assertIn(("ewms0", "y", "ewms0_y_n"), [(attachment.instance, attachment.port, attachment.signal) for attachment in uglir_design.attachments])
         mux = uglir_design.muxes[0]
         self.assertEqual(mux.name, "mx_r_i32_0_n")
         self.assertEqual(mux.select, "sel_r_i32_0_n")
-        self.assertEqual([(case.key, case.source) for case in mux.cases], [("HOLD", "r_i32_0_q"), ("SRC_EWMS0_Y", "ewms0_y_n")])
+        self.assertEqual([(case.key, case.source) for case in mux.cases], [("HOLD", "r_i32_0_q"), ("SRC_V1", "v1_n")])
         seq_block = uglir_design.seq_blocks[0]
         self.assertEqual(seq_block.clock, "clk")
         self.assertEqual(seq_block.reset, "rst")
@@ -333,7 +335,7 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertEqual([(case.key, case.source) for case in mux_a.cases], [("ZERO", "const_i32_0_n"), ("SRC_X", "x")])
         self.assertEqual([(case.key, case.source) for case in mux_b.cases], [("ZERO", "const_i32_0_n"), ("CONST_1_I32", "const_i32_1_n")])
         mux = next(mux for mux in uglir_design.muxes if mux.name == "mx_r_i32_0_n")
-        self.assertIn(("SRC_SEQ0_OUT", "seq0_out_n"), [(case.key, case.source) for case in mux.cases])
+        self.assertIn(("SRC_V1", "v1_n"), [(case.key, case.source) for case in mux.cases])
         rendered = format_uglir(uglir_design)
         self.assertIn("assign seq0_start_n = state_q == 2", rendered)
         self.assertIn("assign seq0_a_n = mx_seq0_a_n", rendered)
@@ -456,7 +458,7 @@ class UGLIRLoweringTests(unittest.TestCase):
 
         assign_pairs = {(assign.target, assign.expr) for assign in uglir_design.assigns}
         self.assertIn(("latch_r_i32_0_n", "state_q == 4"), assign_pairs)
-        self.assertIn(("sel_r_i32_0_n", "state_q == 4 ? SRC_MUL0_Y : HOLD"), assign_pairs)
+        self.assertIn(("sel_r_i32_0_n", "state_q == 4 ? SRC_V1 : HOLD"), assign_pairs)
         self.assertIn(("sel_alu0_a_n", "state_q == 8 ? SRC_R_I32_0 : ZERO"), assign_pairs)
 
         mux = next(mux for mux in uglir_design.muxes if mux.name == "mx_alu0_a_n")
@@ -467,7 +469,7 @@ class UGLIRLoweringTests(unittest.TestCase):
 
         rendered = format_uglir(uglir_design)
         self.assertIn("assign latch_r_i32_0_n = state_q == 4", rendered)
-        self.assertIn("assign sel_r_i32_0_n = state_q == 4 ? SRC_MUL0_Y : HOLD", rendered)
+        self.assertIn("assign sel_r_i32_0_n = state_q == 4 ? SRC_V1 : HOLD", rendered)
         self.assertIn("assign sel_alu0_a_n = state_q == 8 ? SRC_R_I32_0 : ZERO", rendered)
 
     def test_lower_fsm_to_uglir_lowers_recursive_controller_links_to_nets(self) -> None:

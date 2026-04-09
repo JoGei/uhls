@@ -152,7 +152,7 @@ class RTLLoweringTests(unittest.TestCase):
         self.assertIn("wire req_fire_n;", verilog)
         self.assertIn("assign req_fire_n = req_valid & req_ready;", verilog)
         self.assertIn("localparam SEL_R_I32_0_N_HOLD = 1'd0;", verilog)
-        self.assertIn("assign mx_r_i32_0_n = (sel_r_i32_0_n == SEL_R_I32_0_N_HOLD) ? r_i32_0_q : ewms0_y_n;", verilog)
+        self.assertIn("assign mx_r_i32_0_n = (sel_r_i32_0_n == SEL_R_I32_0_N_HOLD) ? r_i32_0_q : v1_n;", verilog)
         self.assertIn("EWMS ewms0 (", verilog)
         self.assertIn(".go(ewms0_go_n)", verilog)
         self.assertIn(".y(ewms0_y_n)", verilog)

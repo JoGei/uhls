@@ -110,6 +110,7 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                     lowered.resources.append(UGLIRResource(kind, f"{resource.id}_{port_name}", port_type))
         elif resource.kind == "reg":
             lowered.resources.append(UGLIRResource("reg", resource.id, resource.value))
+    _add_semantic_value_result_nets(lowered, design, component_library)
     for carry in phi_carries.values():
         lowered.resources.append(UGLIRResource("reg", carry["register"], carry["type"]))
 
@@ -1775,6 +1776,26 @@ def _node_result_signal(
     return _instance_result_signal(design, bind, component_library)
 
 
+def _add_semantic_value_result_nets(
+    lowered: UGLIRDesign,
+    design: UHIRDesign,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> None:
+    for value_id, producer_node in _producer_node_map(design).items():
+        if not isinstance(value_id, str) or not value_id:
+            continue
+        result_type = getattr(producer_node, "result_type", None)
+        if not isinstance(result_type, str) or not result_type:
+            continue
+        if not isinstance(getattr(producer_node, "attributes", {}).get("bind"), str):
+            continue
+        raw_signal = _node_result_signal(design, producer_node, component_library)
+        if raw_signal is None or raw_signal == value_id or _is_known_uglir_signal(lowered, value_id):
+            continue
+        lowered.resources.append(UGLIRResource("net", value_id, result_type))
+        lowered.assigns.append(UGLIRAssign(value_id, raw_signal))
+
+
 def _component_result_port(
     component_library: dict[str, dict[str, Any]],
     component_name: str,
@@ -1946,6 +1967,14 @@ def _resolve_producer_signal(
     producer_node = _producer_node_map(design).get(value_id)
     if producer_node is None:
         return None
+    if (
+        isinstance(value_id, str)
+        and value_id
+        and isinstance(getattr(producer_node, "result_type", None), str)
+        and getattr(producer_node, "result_type")
+        and isinstance(getattr(producer_node, "attributes", {}).get("bind"), str)
+    ):
+        return value_id
     result_signal = _node_result_signal(design, producer_node, component_library)
     if result_signal is not None:
         return result_signal

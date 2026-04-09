@@ -66,6 +66,20 @@ class FrontendTests(unittest.TestCase):
         verify_module(module)
         self.assertIn("1:u32", pretty(module))
 
+    def test_frontend_parses_and_lowers_explicit_scalar_casts(self) -> None:
+        module = lower_source_to_uir(
+            """
+            int32_t widen(int8_t x) {
+                return (int32_t)x + 1;
+            }
+            """
+        )
+
+        verify_module(module)
+        rendered = pretty(module)
+        self.assertIn(" = mov x_0", rendered)
+        self.assertEqual(run_uir(module.functions[0], [7]).return_value, 8)
+
     def test_frontend_tokenizes_and_lowers_hex_integer_literals(self) -> None:
         tokens = tokenize("int32_t f(void) { return 0x2a + 0X1; }")
         self.assertIn("0x2a", [token.text for token in tokens if token.kind == "INT"])

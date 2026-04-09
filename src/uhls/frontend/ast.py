@@ -78,6 +78,14 @@ class CallExpr(Expr):
 
 
 @dataclass(frozen=True)
+class CastExpr(Expr):
+    """One explicit scalar cast."""
+
+    type: TypeRef
+    value: Expr
+
+
+@dataclass(frozen=True)
 class UnaryExpr(Expr):
     """One unary operation."""
 

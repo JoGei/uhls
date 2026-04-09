@@ -202,6 +202,10 @@ class _FunctionLowerer:
             temp = self.new_temp()
             current.instructions.append(CallOp(expr.callee, operands, dest=temp, type=result_type))
             return Variable(temp, result_type)
+        if isinstance(expr, ast.CastExpr):
+            value = self.lower_expr(expr.value, current)
+            result_type = self.info.expr_types[id(expr)]
+            return self.coerce_value(value, result_type, current)
         if isinstance(expr, ast.UnaryExpr):
             operand = self.lower_expr(expr.operand, current)
             result_type = self.info.expr_types[id(expr)]

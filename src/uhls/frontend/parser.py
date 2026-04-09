@@ -174,6 +174,11 @@ class Parser:
     def parse_unary(self) -> ast.Expr:
         if self.peek().kind in _UNARY_OPS:
             return ast.UnaryExpr(self.advance().kind, self.parse_unary())
+        if self._is_cast():
+            self.expect("(")
+            cast_type = self.parse_type()
+            self.expect(")")
+            return ast.CastExpr(cast_type, self.parse_unary())
         return self.parse_primary()
 
     def parse_primary(self) -> ast.Expr:
@@ -250,6 +255,16 @@ class Parser:
             return False
         self.advance()
         return True
+
+    def _is_cast(self) -> bool:
+        if self.peek().kind != "(":
+            return False
+        index = self.index + 1
+        while self.tokens[index].kind == "const":
+            index += 1
+        if self.tokens[index].kind not in _TYPE_KEYWORDS:
+            return False
+        return self.tokens[index + 1].kind == ")"
 
 
 def parse_program(source: str) -> ast.Program:

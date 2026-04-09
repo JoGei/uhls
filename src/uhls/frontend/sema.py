@@ -232,6 +232,11 @@ def _check_scalar_expr(
             _check_scalar_expr(arg, function_name, info, expected_type=param_type)
         info.called_functions.add(expr.callee)
         result = signature.return_type
+    elif isinstance(expr, ast.CastExpr):
+        result = lowerable_type(expr.type)
+        if isinstance(result, ArrayType):
+            raise SemanticError("explicit casts to array types are not supported")
+        _check_scalar_expr(expr.value, function_name, info)
     elif isinstance(expr, ast.StringLiteral | ast.ArrayLiteral):
         raise SemanticError(f"unsupported expression node {expr!r}")
     elif isinstance(expr, ast.UnaryExpr):

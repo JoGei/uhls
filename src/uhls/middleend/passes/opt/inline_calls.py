@@ -44,8 +44,17 @@ def inline_calls(
     pass_args: tuple[str, ...] = (),
 ) -> Module:
     """Inline direct calls between module-local µIR functions."""
-    requested_callees = tuple(arg.strip() for arg in pass_args if arg.strip())
+    requested_callers, requested_callees = _inline_selectors(pass_args)
+    requested_caller_set = set(requested_callers)
     requested_callee_set = set(requested_callees)
+    if context is not None and requested_callers:
+        function_names = set(module.function_map())
+        warnings = context.data.setdefault("warnings", [])
+        for caller_name in requested_callers:
+            if caller_name not in function_names:
+                warnings.append(
+                    f"inline_calls: requested caller '{caller_name}' was not found in the translation unit"
+                )
     if context is not None and requested_callees:
         called_callees = _called_callee_names(module)
         warnings = context.data.setdefault("warnings", [])
@@ -62,6 +71,8 @@ def inline_calls(
     counter = 0
     for function in result.functions:
         if function.name == "main":
+            continue
+        if requested_caller_set and function.name not in requested_caller_set:
             continue
         changed = True
         while changed:
@@ -85,6 +96,28 @@ def inline_calls(
                     break
 
     return simplify_cfg_module(result)
+
+
+def _inline_selectors(pass_args: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    callers: list[str] = []
+    callees: list[str] = []
+    for raw_arg in pass_args:
+        arg = raw_arg.strip()
+        if not arg:
+            continue
+        if ":" in arg:
+            kind, value = arg.split(":", 1)
+            value = value.strip()
+            if not value:
+                continue
+            if kind == "caller":
+                callers.append(value)
+                continue
+            if kind == "callee":
+                callees.append(value)
+                continue
+        callers.append(arg)
+    return tuple(callers), tuple(callees)
 
 
 @dataclass(frozen=True)

@@ -806,6 +806,65 @@ class OptPassTests(unittest.TestCase):
         self.assertEqual(run_uir(inlined_caller, {"sel": 1, "a": 7, "b": 100}).return_value, 16)
         self.assertEqual(run_uir(inlined_caller, {"sel": 0, "a": 7, "b": 100}).return_value, 204)
 
+    def test_inline_calls_can_restrict_inlining_to_selected_callers(self) -> None:
+        keep = Function(
+            name="keep",
+            params=[Parameter("x", "i32")],
+            return_type="i32",
+            blocks=[Block("entry", instructions=[BinaryOp("add", "y", "i32", "x", 1)], terminator=ReturnOp("y"))],
+        )
+        inline_me = Function(
+            name="inline_me",
+            params=[Parameter("x", "i32")],
+            return_type="i32",
+            blocks=[Block("entry", instructions=[BinaryOp("mul", "y", "i32", "x", 2)], terminator=ReturnOp("y"))],
+        )
+        untouched_caller = Function(
+            name="untouched",
+            params=[Parameter("x", "i32")],
+            return_type="i32",
+            blocks=[Block("entry", instructions=[CallOp("inline_me", ["x"], dest="y", type="i32")], terminator=ReturnOp("y"))],
+        )
+        caller = Function(
+            name="caller",
+            params=[Parameter("x", "i32")],
+            return_type="i32",
+            blocks=[
+                Block(
+                    "entry",
+                    instructions=[
+                        CallOp("keep", ["x"], dest="a", type="i32"),
+                        CallOp("inline_me", ["a"], dest="b", type="i32"),
+                    ],
+                    terminator=ReturnOp("b"),
+                )
+            ],
+        )
+        module = Module(functions=[keep, inline_me, untouched_caller, caller])
+
+        inlined = inline_calls(module, pass_args=("caller",))
+        verify_module(inlined)
+        inlined_caller = inlined.get_function("caller")
+        untouched = inlined.get_function("untouched")
+        assert inlined_caller is not None
+        assert untouched is not None
+
+        remaining_calls = [
+            instruction.callee
+            for block in inlined_caller.blocks
+            for instruction in block.instructions
+            if isinstance(instruction, CallOp)
+        ]
+        untouched_calls = [
+            instruction.callee
+            for block in untouched.blocks
+            for instruction in block.instructions
+            if isinstance(instruction, CallOp)
+        ]
+        self.assertEqual(remaining_calls, [])
+        self.assertEqual(untouched_calls, ["inline_me"])
+        self.assertEqual(run_uir(inlined_caller, {"x": 5}, module=inlined).return_value, 12)
+
     def test_inline_calls_can_restrict_inlining_to_selected_callees(self) -> None:
         keep = Function(
             name="keep",
@@ -836,7 +895,7 @@ class OptPassTests(unittest.TestCase):
         )
         module = Module(functions=[keep, inline_me, caller])
 
-        inlined = inline_calls(module, pass_args=("inline_me",))
+        inlined = inline_calls(module, pass_args=("callee:inline_me",))
         verify_module(inlined)
         inlined_caller = inlined.get_function("caller")
         assert inlined_caller is not None

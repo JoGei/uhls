@@ -151,7 +151,8 @@ _OPT_PASS_SPECS: tuple[OptPassSpec, ...] = (
         description=(
             "Inline direct module-local calls into their callers and then simplify the resulting CFG. "
             "Calls made directly from 'main' are left intact. "
-            "Repeat --pass-arg with callee names to restrict which functions are inlined."
+            "Repeat --pass-arg with caller names to restrict which callers are rewritten. "
+            "Use caller:<name> or callee:<name> to select explicitly."
         ),
         example="uhls opt input.uir -p inline_calls -o output.uir",
         aliases=("inline",),

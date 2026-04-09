@@ -2969,7 +2969,7 @@ block exit:
             self.assertIn("func cleanup", rendered)
             self.assertNotIn("block jump:", rendered)
 
-    def test_opt_command_inline_calls_warns_for_missing_requested_callee(self) -> None:
+    def test_opt_command_inline_calls_warns_for_missing_requested_caller(self) -> None:
         uir = """func foo(x:i32) -> i32
 
 block entry:
@@ -2990,6 +2990,34 @@ block entry:
             stderr = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 self.assertEqual(main(["opt", str(path), "-p", "inline_calls", "--pass-arg", "missing"]), 0)
+
+            self.assertIn("func caller", stdout.getvalue())
+            self.assertIn(
+                "warning: inline_calls: requested caller 'missing' was not found in the translation unit",
+                stderr.getvalue(),
+            )
+
+    def test_opt_command_inline_calls_warns_for_missing_requested_callee_selector(self) -> None:
+        uir = """func foo(x:i32) -> i32
+
+block entry:
+    y:i32 = add x, 1
+    ret y
+
+func caller(x:i32) -> i32
+
+block entry:
+    y:i32 = call foo(x)
+    ret y
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "caller.uir"
+            path.write_text(uir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(main(["opt", str(path), "-p", "inline_calls", "--pass-arg", "callee:missing"]), 0)
 
             self.assertIn("func caller", stdout.getvalue())
             self.assertIn(

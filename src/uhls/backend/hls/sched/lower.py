@@ -311,6 +311,8 @@ def _call_total_latency(call_node: UHIRNode, child_region: UHIRRegion) -> int | 
 def _call_initiation_interval(call_node: UHIRNode, child_region: UHIRRegion) -> int | TimingExpr:
     if isinstance(child_region.initiation_interval, (int, TimingExpr)):
         return child_region.initiation_interval
+    if isinstance(child_region.latency, int):
+        return child_region.latency
     return _symbolic_ii_var(call_node)
 
 

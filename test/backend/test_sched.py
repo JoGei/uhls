@@ -178,6 +178,7 @@ class SchedulingLoweringTests(unittest.TestCase):
         callee_add = next(node for node in callee.nodes if node.opcode == "add")
 
         self.assertEqual(call_node.attributes["delay"], 3)
+        self.assertEqual(call_node.attributes["ii"], 3)
         self.assertEqual(call_node.attributes["start"], 5)
         self.assertEqual(call_node.attributes["end"], 7)
         self.assertEqual(ret_node.attributes["start"], 9)

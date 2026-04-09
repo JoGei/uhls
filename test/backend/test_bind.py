@@ -1001,6 +1001,41 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertNotIn('"dfgsb_proc_child_use_reg_2_2"', dot)
         self.assertNotIn('"dfgsb_proc_child_use_op_0_0" -> "dfgsb_bb_child_op_1_0"', dot)
 
+    def test_lower_sched_to_bind_flattens_call_children_at_call_start_offset(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design call_shift
+            stage sched
+            schedule kind=hierarchical
+
+            region proc_call_shift kind=procedure {
+              region_ref proc_child
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
+              node v2 = call x child=proc_child class=CTRL ii=2 delay=2 start=2 end=3
+              node v3 = ret v2 class=CTRL ii=0 delay=0 start=4 end=4
+              node v4 = nop role=sink class=CTRL ii=0 delay=0 start=5 end=5
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+            }
+
+            region proc_child kind=procedure {
+              node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node c1 = add x, y : i32 class=EWMS ii=1 delay=1 start=0 end=0
+              node c2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data c0 -> c1
+              edge data c1 -> c2
+            }
+            """
+        )
+
+        binder = LeftEdgeBinder(flatten=True)
+        occurrences = binder.collect_operation_occurrences(sched_design, flatten=True)
+        self.assertIn((2, 2), [(item.start, item.end) for item in occurrences["EWMS"]["c1"]])
+        lower_sched_to_bind(sched_design, binder=binder)
+
     def test_bind_dump_to_dot_supports_dfgsb_unroll(self) -> None:
         bind_design = lower_sched_to_bind(
             parse_uhir(

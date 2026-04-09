@@ -319,8 +319,11 @@ class OperationBinderBase(ABC):
                     if isinstance(false_child, str) and false_child:
                         walk_flattened(false_child, offset, branch_choices + ((node.id, "false"),))
                     continue
-                for child_id in _node_children(node):
-                    walk_flattened(child_id, offset, branch_choices)
+                for key in ("child", "true_child", "false_child"):
+                    child_id = node.attributes.get(key)
+                    if not isinstance(child_id, str) or not child_id:
+                        continue
+                    walk_flattened(child_id, offset + _child_region_shift(node, key), branch_choices)
 
         roots = sorted(region.id for region in design.regions if region.parent is None)
         if flatten:

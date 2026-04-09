@@ -80,9 +80,17 @@ def tokenize(source: str) -> list[Token]:
 
         if ch.isdigit():
             start = i
-            i += 1
-            while i < len(source) and source[i].isdigit():
+            if ch == "0" and i + 1 < len(source) and source[i + 1] in {"x", "X"}:
+                i += 2
+                hex_start = i
+                while i < len(source) and source[i] in "0123456789abcdefABCDEF":
+                    i += 1
+                if i == hex_start:
+                    raise LexError(f"invalid hex literal at offset {start}")
+            else:
                 i += 1
+                while i < len(source) and source[i].isdigit():
+                    i += 1
             text = source[start:i]
             tokens.append(Token("INT", text, start))
             continue

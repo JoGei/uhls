@@ -60,7 +60,7 @@ class Parser:
                     param_type = self.parse_type()
                     param_name = self.expect("IDENT").text
                     if self.match("["):
-                        size = int(self.expect("INT").text)
+                        size = int(self.expect("INT").text, 0)
                         self.expect("]")
                         param_type = ast.TypeRef(param_type.name, size)
                     params.append(ast.Param(param_name, param_type))
@@ -109,7 +109,7 @@ class Parser:
         type_ref = self.parse_type()
         name = self.expect("IDENT").text
         if self.match("["):
-            size = int(self.expect("INT").text)
+            size = int(self.expect("INT").text, 0)
             self.expect("]")
             type_ref = ast.TypeRef(type_ref.name, size)
         init = None
@@ -179,7 +179,7 @@ class Parser:
     def parse_primary(self) -> ast.Expr:
         token = self.peek()
         if token.kind == "INT":
-            return ast.IntegerLiteral(int(self.advance().text))
+            return ast.IntegerLiteral(int(self.advance().text, 0))
         if token.kind == "STRING":
             return ast.StringLiteral(self.advance().text)
         if token.kind == "true":

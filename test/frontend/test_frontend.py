@@ -22,6 +22,9 @@ int32_t dot4(int32_t A[4], int32_t B[4]) {
 }
 """
 
+DOT4_RELU_EXAMPLE = Path("examples/dot4_relu/dot4_relu.c")
+DOT4_I8_PACKED_EXAMPLE = Path("examples/dot4_i8_i32_relu_packed/dot4_i8_i32_relu_packed.c")
+
 
 class FrontendTests(unittest.TestCase):
     """End-to-end tests for the µC frontend package."""
@@ -63,6 +66,37 @@ class FrontendTests(unittest.TestCase):
         verify_module(module)
         self.assertIn("1:u32", pretty(module))
 
+    def test_frontend_tokenizes_and_lowers_hex_integer_literals(self) -> None:
+        tokens = tokenize("int32_t f(void) { return 0x2a + 0X1; }")
+        self.assertIn("0x2a", [token.text for token in tokens if token.kind == "INT"])
+        self.assertIn("0X1", [token.text for token in tokens if token.kind == "INT"])
+
+        module = lower_source_to_uir(
+            """
+            int32_t hex_add(void) {
+                return 0x2a + 0X1;
+            }
+            """
+        )
+
+        verify_module(module)
+        self.assertEqual(run_uir(module.functions[0]).return_value, 43)
+
+    def test_frontend_accepts_hex_array_extents(self) -> None:
+        module = lower_source_to_uir(
+            """
+            int32_t first(const int32_t A[0x4]) {
+                return A[0x0];
+            }
+            """
+        )
+
+        verify_module(module)
+        self.assertEqual(
+            run_uir(module.functions[0], arrays={"A": {"data": [7, 8, 9, 10], "element_type": "i32"}}).return_value,
+            7,
+        )
+
     def test_frontend_lowers_and_executes_division_and_modulo(self) -> None:
         module = lower_source_to_uir(
             """
@@ -98,31 +132,31 @@ class FrontendTests(unittest.TestCase):
         )
 
     def test_frontend_lowers_direct_calls_in_hierarchical_example(self) -> None:
-        source = Path("examples/dot4_hier.c").read_text(encoding="utf-8")
+        source = DOT4_RELU_EXAMPLE.read_text(encoding="utf-8")
 
         program = parse_program(source)
         info = analyze_program(program)
         module = lower_source_to_uir(source)
 
-        self.assertIn("mac", info.functions["dot4"].called_functions)
+        self.assertIn("mac", info.functions["dot4_relu"].called_functions)
         verify_module(module)
         self.assertIn("call mac(", pretty(module))
 
     def test_frontend_accepts_mixed_width_shift_amounts_in_packed_example(self) -> None:
-        source = Path("examples/dot4_i8_i32_relu_packed/dot4_i8_i32_relu_packed.c").read_text(encoding="utf-8")
+        source = DOT4_I8_PACKED_EXAMPLE.read_text(encoding="utf-8")
 
         module = lower_source_to_uir(source)
 
         verify_module(module)
         rendered = pretty(module)
-        self.assertIn(" = shl ", rendered)
         self.assertIn(" = shr ", rendered)
+        self.assertIn(" = mul ", rendered)
 
     def test_frontend_hierarchical_example_runs_after_inlining(self) -> None:
-        source = Path("examples/dot4_hier.c").read_text(encoding="utf-8")
+        source = DOT4_RELU_EXAMPLE.read_text(encoding="utf-8")
         module = lower_source_to_uir(source)
         inlined = inline_calls(module)
-        function = inlined.get_function("dot4")
+        function = inlined.get_function("dot4_relu")
         assert function is not None
 
         result = run_uir(
@@ -163,21 +197,21 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(run_uir(function, [5]).return_value, 10)
 
     def test_frontend_does_not_inline_calls_made_directly_from_main(self) -> None:
-        source = Path("examples/dot4.c").read_text(encoding="utf-8")
+        source = DOT4_RELU_EXAMPLE.read_text(encoding="utf-8")
         module = lower_source_to_uir(source)
         inlined = inline_calls(module)
         main_function = inlined.get_function("main")
-        dot4_function = inlined.get_function("dot4")
+        dot4_function = inlined.get_function("dot4_relu")
         assert main_function is not None
         assert dot4_function is not None
 
         rendered = pretty(inlined)
         verify_module(inlined)
-        self.assertIn("call dot4(", rendered)
-        self.assertIn("func dot4(", rendered)
+        self.assertIn("call dot4_relu(", rendered)
+        self.assertIn("func dot4_relu(", rendered)
 
     def test_frontend_runs_integrated_testbench_main(self) -> None:
-        source = Path("examples/dot4.c").read_text(encoding="utf-8")
+        source = DOT4_RELU_EXAMPLE.read_text(encoding="utf-8")
         module = lower_source_to_uir(source)
         verify_module(module)
         main_function = module.get_function("main")

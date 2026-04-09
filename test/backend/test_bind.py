@@ -32,7 +32,7 @@ class BindingLoweringTests(unittest.TestCase):
         )
 
     def _static_dot4_relu_sched_design(self):
-        source = Path("examples/dot4_relu.c").read_text(encoding="utf-8")
+        source = Path("examples/dot4_relu/dot4_relu.c").read_text(encoding="utf-8")
         context = PassContext()
         optimized_module = PassManager(
             [

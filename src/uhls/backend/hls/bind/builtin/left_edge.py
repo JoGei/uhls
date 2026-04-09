@@ -25,7 +25,7 @@ class LeftEdgeBinder(OperationBinderBase):
         grouped_nodes = self.collect_operation_occurrences(design, flatten=self.flatten)
         grouped_values = self.collect_value_occurrences(design, flatten=self.flatten)
         producer_info = {
-            producer.id: (region, producer, self.get_value_id(region, producer))
+            producer.id: (region, producer, self.get_value_binding_id(design, region, producer))
             for region, producer, _ in self.iter_bindable_values(design)
         }
 
@@ -87,7 +87,7 @@ class LeftEdgeBinder(OperationBinderBase):
                 register_id = color_to_register[colors[producer.id]]
                 live_start, live_end = self.get_value_interval(region, producer, consumers)
                 value_bindings.append(
-                    UHIRValueBinding(self.get_value_id(region, producer), register_id, ((live_start, live_end),))
+                    UHIRValueBinding(self.get_value_binding_id(design, region, producer), register_id, ((live_start, live_end),))
                 )
 
         return OperationBindingResult(

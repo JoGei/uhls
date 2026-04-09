@@ -328,7 +328,7 @@ class OperationBinderBase(ABC):
         roots = sorted(region.id for region in design.regions if region.parent is None)
         if flatten:
             self.assert_fully_static_design(design)
-            for region_id in roots:
+            for region_id in _root_region_ids(design):
                 walk_flattened(region_id, 0, ())
             return
         for region_id in roots:
@@ -435,6 +435,13 @@ class OperationBinderBase(ABC):
                 return mapping.source_id
         return producer.id
 
+    def get_value_binding_id(self, design: UHIRDesign, region: UHIRRegion, producer: UHIRNode) -> str:
+        """Return one bind-stage value-binding id, disambiguating colliding mapped names."""
+        value_id = self.get_value_id(region, producer)
+        if _value_id_is_ambiguous(design, value_id):
+            return producer.id
+        return value_id
+
     def get_value_names(self, region: UHIRRegion, producer: UHIRNode) -> set[str]:
         """Return all names that may refer to one produced value."""
         names = {producer.id}
@@ -535,6 +542,20 @@ def _node_children(node: UHIRNode) -> list[str]:
     return children
 
 
+def _root_region_ids(design: UHIRDesign) -> list[str]:
+    referenced = {
+        child_id
+        for region in design.regions
+        for node in region.nodes
+        for child_id in _node_children(node)
+    }
+    return sorted(
+        region.id
+        for region in design.regions
+        if region.parent is None and region.id not in referenced
+    )
+
+
 def _child_region_shift(node: UHIRNode, key: str) -> int:
     if key != "child":
         return 0
@@ -542,3 +563,19 @@ def _child_region_shift(node: UHIRNode, key: str) -> int:
     if isinstance(node_start, int):
         return node_start
     return 0
+
+
+def _value_id_is_ambiguous(design: UHIRDesign, value_id: str) -> bool:
+    if not isinstance(value_id, str) or not value_id:
+        return False
+    matches = 0
+    for region in design.regions:
+        local_nodes = {node.id for node in region.nodes}
+        if value_id in local_nodes:
+            matches += 1
+        for mapping in region.mappings:
+            if mapping.source_id == value_id and mapping.node_id in local_nodes:
+                matches += 1
+        if matches > 1:
+            return True
+    return False

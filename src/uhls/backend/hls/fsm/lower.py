@@ -86,7 +86,7 @@ def _validate_concrete_bind_timing(design: UHIRDesign) -> None:
 
 def _validate_supported_dynamic_bind_timing(design: UHIRDesign) -> None:
     """Reject dynamic bind features that the current recursive FSM model cannot consume."""
-    root_regions = [region for region in design.regions if region.parent is None]
+    root_regions = _root_regions(design)
     if len(root_regions) != 1:
         raise ValueError("dynamic fsm lowering currently expects exactly one top-level scheduled region")
 
@@ -96,7 +96,7 @@ def _build_dynamic_controller(design: UHIRDesign, encoding: str) -> UHIRControll
     # TODO: recursive dynamic FSM synthesis should introduce child controllers with
     # the internal handshake {act_valid, done_ready} -> {act_ready, done_valid} instead of
     # flattening all dynamic hierarchy progress into this one coarse controller.
-    root_region = next(region for region in design.regions if region.parent is None)
+    root_region = _root_regions(design)[0]
     phases = _collect_dynamic_phases(root_region)
     phase_ids = sorted(phases)
 
@@ -395,7 +395,8 @@ def _build_dynamic_call_child_controller(
 
 def _build_static_controller(design: UHIRDesign, encoding: str) -> UHIRController:
     """Build the first concrete static control-step controller."""
-    max_time = _design_max_end(design)
+    time_step_actions = _collect_time_step_actions(design)
+    max_time = max([_design_max_end(design), *time_step_actions], default=0)
     state_names = ["IDLE", *[f"T{time_step}" for time_step in range(max_time + 1)], "DONE"]
     states = [
         UHIRControllerState(name=state_name, attributes={"code": _state_code(index, encoding)})
@@ -414,7 +415,7 @@ def _build_static_controller(design: UHIRDesign, encoding: str) -> UHIRControlle
         UHIRControllerEmit("IDLE", {"req_ready": True}),
         UHIRControllerEmit("DONE", {"resp_valid": True}),
     ]
-    for time_step, actions in sorted(_collect_time_step_actions(design).items()):
+    for time_step, actions in sorted(time_step_actions.items()):
         if not actions:
             continue
         attrs: dict[str, object] = {}
@@ -433,7 +434,7 @@ def _build_static_controller(design: UHIRDesign, encoding: str) -> UHIRControlle
             "protocol": "req_resp",
             "completion_order": "in_order",
             "overlap": True,
-            "region": next((region.id for region in design.regions if region.parent is None), ""),
+            "region": next((region.id for region in _root_regions(design)), ""),
         },
         inputs=[
             UHIRPort("input", "req_valid", "i1"),
@@ -536,7 +537,17 @@ def _build_dynamic_loop_child_controller(
 
 def _design_max_end(design: UHIRDesign) -> int:
     """Return the last occupied control step in one concrete bind design."""
-    return max((node.attributes["end"] for region in design.regions for node in region.nodes), default=0)
+    max_node_end = max((node.attributes["end"] for region in design.regions for node in region.nodes), default=0)
+    max_live_end = max(
+        (
+            live_end
+            for region in design.regions
+            for binding in region.value_bindings
+            for _live_start, live_end in binding.live_intervals
+        ),
+        default=0,
+    )
+    return max(max_node_end, max_live_end)
 
 
 def _emit_attrs_for_actions(actions: dict[str, tuple[str, ...]]) -> dict[str, object]:
@@ -646,8 +657,11 @@ def _collect_time_step_actions(design: UHIRDesign) -> dict[int, dict[str, list[s
                     append_loop_header(child_id, offset + node_start + iteration * iter_ii, iteration, expand_body=True)
                 append_loop_header(child_id, offset + node_start + trip_count * iter_ii, trip_count, expand_body=False)
                 continue
-            for child_id in _node_children(node):
-                append_region(child_id, offset, suffix=suffix)
+            for key in ("child", "true_child", "false_child"):
+                child_id = node.attributes.get(key)
+                if not isinstance(child_id, str) or not child_id:
+                    continue
+                append_region(child_id, offset + _child_region_shift(node, key), suffix=suffix)
 
     def append_loop_header(region_id: str, offset: int, iteration: int, *, expand_body: bool) -> None:
         region = region_by_id[region_id]
@@ -676,10 +690,13 @@ def _collect_time_step_actions(design: UHIRDesign) -> dict[int, dict[str, list[s
                 if not expand_body and isinstance(false_child, str):
                     append_region(false_child, offset, suffix=suffix)
                 continue
-            for child_id in _node_children(node):
-                append_region(child_id, offset, suffix=suffix)
+            for key in ("child", "true_child", "false_child"):
+                child_id = node.attributes.get(key)
+                if not isinstance(child_id, str) or not child_id:
+                    continue
+                append_region(child_id, offset + _child_region_shift(node, key), suffix=suffix)
 
-    for region in sorted((region.id for region in design.regions if region.parent is None)):
+    for region in _root_region_ids(design):
         append_region(region, 0)
 
     for kind_actions in actions.values():
@@ -696,6 +713,36 @@ def _node_children(node: UHIRNode) -> tuple[str, ...]:
         if isinstance(child, str) and child:
             children.append(child)
     return tuple(children)
+
+
+def _root_region_ids(design: UHIRDesign) -> tuple[str, ...]:
+    referenced = {
+        child_id
+        for region in design.regions
+        for node in region.nodes
+        for child_id in _node_children(node)
+    }
+    return tuple(
+        sorted(
+            region.id
+            for region in design.regions
+            if region.parent is None and region.id not in referenced
+        )
+    )
+
+
+def _root_regions(design: UHIRDesign) -> list[UHIRRegion]:
+    region_by_id = {region.id: region for region in design.regions}
+    return [region_by_id[region_id] for region_id in _root_region_ids(design)]
+
+
+def _child_region_shift(node: UHIRNode, key: str) -> int:
+    if key != "child":
+        return 0
+    node_start = node.attributes.get("start")
+    if isinstance(node_start, int):
+        return node_start
+    return 0
 
 
 def _collect_region_local_actions(region: UHIRRegion) -> dict[int, dict[str, tuple[str, ...]]]:

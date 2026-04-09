@@ -8,7 +8,7 @@ YOSYS ?= yosys
 
 STEM ?= dot4_relu
 SRC ?= $(STEM)/$(STEM).c
-TOP ?= $(notdir $(STEM))
+TOP ?= $(STEM)
 RES ?= $(UHLS_ROOT)/src/uhls/backend/hls/impl/generic/gen.uhlslib.json
 VENDOR_RES ?= $(UHLS_ROOT)/src/uhls/backend/hls/impl/vendor/ihp130/ihp130.uhlslib.json
 

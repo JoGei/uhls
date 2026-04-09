@@ -301,7 +301,7 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         source_expr = _resolve_producer_signal(design, carry["backedge"], component_library)
         if source_expr is None:
             source_expr = _resolve_value_signal(design, carry["backedge"], component_library)
-        backedge_steps = sorted(_value_live_starts(design, carry["backedge"]))
+        backedge_steps = sorted(_value_live_starts(design, carry["backedge"], region=_producer_region(design, carry["backedge"])))
         backedge_conditions = [
             _state_eq_expr(
                 _controller_state_id(top_controller, top_controller),
@@ -622,6 +622,15 @@ def _controller_region_ids(controller, design: UHIRDesign) -> tuple[str, ...]:
         if region.parent is None:
             continue
         children_by_parent.setdefault(region.parent, []).append(region.id)
+    child_refs_by_region: dict[str, list[str]] = {}
+    region_by_id = {region.id: region for region in design.regions}
+    for candidate in design.regions:
+        refs: list[str] = []
+        for node in candidate.nodes:
+            for child_id in _node_children(node):
+                if child_id in region_by_id:
+                    refs.append(child_id)
+        child_refs_by_region[candidate.id] = refs
     ordered: list[str] = []
     seen: set[str] = set()
 
@@ -632,10 +641,21 @@ def _controller_region_ids(controller, design: UHIRDesign) -> tuple[str, ...]:
         ordered.append(region_id)
         for child_id in children_by_parent.get(region_id, ()):
             visit(child_id)
+        for child_id in child_refs_by_region.get(region_id, ()):
+            visit(child_id)
 
     for root in roots:
         visit(root)
     return tuple(ordered)
+
+
+def _node_children(node) -> tuple[str, ...]:
+    children: list[str] = []
+    for attr_name in ("child", "true_child", "false_child"):
+        child = node.attributes.get(attr_name)
+        if isinstance(child, str) and child:
+            children.append(child)
+    return tuple(children)
 
 
 def _controller_output_expr(controller, port_name: str, state_code: dict[str, int], top_controller) -> str:
@@ -756,7 +776,7 @@ def _register_possible_sources(
         for binding in region.value_bindings:
             if binding.register != register:
                 continue
-            source = _resolve_producer_signal(design, binding.producer, component_library)
+            source = _resolve_producer_signal(design, binding.producer, component_library, region=region)
             if source is not None:
                 sources.append(source)
     return sources
@@ -783,7 +803,7 @@ def _register_state_sources(
             for binding in region.value_bindings:
                 if binding.register != register:
                     continue
-                source = _resolve_producer_signal(design, binding.producer, component_library)
+                source = _resolve_producer_signal(design, binding.producer, component_library, region=region)
                 if source is None:
                     continue
                 for live_start, _live_end in binding.live_intervals:
@@ -861,13 +881,28 @@ def _phi_carry_register_id(source_id: str) -> str:
     return f"phi_{source_id}"
 
 
-def _value_live_starts(design: UHIRDesign, value_id: str) -> set[int]:
+def _value_live_starts(design: UHIRDesign, value_id: str, region=None) -> set[int]:
     live_starts: set[int] = set()
-    for region in design.regions:
-        for binding in region.value_bindings:
+    regions = design.regions if region is None else [region]
+    for candidate_region in regions:
+        for binding in candidate_region.value_bindings:
             if binding.producer == value_id:
                 for live_start, _live_end in binding.live_intervals:
                     live_starts.add(live_start)
+    if live_starts:
+        return live_starts
+    producer_node = _region_producer_node(region, value_id)
+    if producer_node is not None and producer_node.id != value_id:
+        return _value_live_starts(design, producer_node.id, region=region)
+    if producer_node is None:
+        producer_node = _producer_node_map(design).get(value_id)
+    if producer_node is None or getattr(producer_node, "opcode", None) != "call":
+        return live_starts
+    child_region = design.get_region(producer_node.attributes.get("child"))
+    returned_value = _call_return_value_id(design, producer_node)
+    if returned_value is None or returned_value == value_id:
+        return live_starts
+    return _value_live_starts(design, returned_value, region=child_region)
     return live_starts
 
 
@@ -1251,6 +1286,7 @@ def _operand_port_expr(
     component_library: dict[str, dict[str, Any]],
 ) -> str:
     node_by_id = {node.id: node for region in design.regions for node in region.nodes}
+    node_region_by_id = {node.id: region for region in design.regions for node in region.nodes}
     branches: list[tuple[str, str]] = []
     for controller in controllers:
         for emit in controller.emits:
@@ -1264,7 +1300,14 @@ def _operand_port_expr(
                 binding_key = _component_port_binding(component_library, component_name, node.opcode, port_name)
                 if binding_key is None:
                     continue
-                source_expr = _binding_key_expr(design, node, binding_key, component_library)
+                source_expr = _binding_key_expr(
+                    design,
+                    node_region_by_id.get(_issued_node_base_id(node_id)),
+                    node,
+                    binding_key,
+                    component_library,
+                    _issued_node_occurrence_index(node_id),
+                )
                 condition = _state_eq_expr(_controller_state_id(controller, top_controller), controller_codes[controller.name][emit.state])
                 branches.append((condition, source_expr))
 
@@ -1288,6 +1331,7 @@ def _operand_port_choices(
     component_library: dict[str, dict[str, Any]],
 ) -> list[tuple[str, str]]:
     node_by_id = {node.id: node for region in design.regions for node in region.nodes}
+    node_region_by_id = {node.id: region for region in design.regions for node in region.nodes}
     choices: list[tuple[str, str]] = []
     for controller in controllers:
         for emit in controller.emits:
@@ -1303,6 +1347,7 @@ def _operand_port_choices(
                     continue
                 source_expr = _binding_key_expr(
                     design,
+                    node_region_by_id.get(_issued_node_base_id(node_id)),
                     node,
                     binding_key,
                     component_library,
@@ -1907,6 +1952,7 @@ def _component_port_binding(
 
 def _binding_key_expr(
     design: UHIRDesign,
+    node_region,
     node,
     binding_key: str,
     component_library: dict[str, dict[str, Any]] | None,
@@ -1921,14 +1967,63 @@ def _binding_key_expr(
             raise ValueError(
                 f"node '{node.id}' opcode '{node.opcode}' does not provide operand index {operand_index} for binding '{binding_key}'"
             )
+        operand_region, operand_value = _specialize_child_call_operand(design, node_region, node.operands[operand_index])
         return _resolve_value_signal(
             design,
-            node.operands[operand_index],
+            operand_value,
             component_library,
             occurrence_index,
             consumer_start=node.attributes.get("start"),
+            region=operand_region,
         )
     return binding_key
+
+
+def _specialize_child_call_operand(design: UHIRDesign, node_region, value_id: str):
+    if node_region is None or not isinstance(value_id, str) or not value_id:
+        return node_region, value_id
+    if _looks_like_literal(value_id) or value_id in {"true", "false"}:
+        return node_region, value_id
+    callers = [
+        (region, node)
+        for region in design.regions
+        for node in region.nodes
+        if node.opcode == "call" and node.attributes.get("child") == node_region.id
+    ]
+    if len(callers) != 1:
+        return node_region, value_id
+    formals = _region_external_operands(design, node_region)
+    if value_id not in formals:
+        return node_region, value_id
+    caller_region, caller_node = callers[0]
+    actuals = caller_node.operands[1:]
+    formal_to_actual = {
+        formal: actual
+        for formal, actual in zip(formals, actuals, strict=False)
+    }
+    return caller_region, formal_to_actual.get(value_id, value_id)
+
+
+def _region_external_operands(design: UHIRDesign, region) -> tuple[str, ...]:
+    local_value_ids = {node.id for node in region.nodes}
+    local_value_ids.update(mapping.source_id for mapping in region.mappings)
+    global_ids = {port.name for port in [*design.inputs, *design.outputs]}
+    global_ids.update(constant.name for constant in design.constants)
+
+    externals: list[str] = []
+    seen: set[str] = set()
+    for node in region.nodes:
+        operands = node.operands[1:] if node.opcode == "call" else node.operands
+        for operand in operands:
+            if not isinstance(operand, str) or not operand:
+                continue
+            if operand in seen or operand in local_value_ids or operand in global_ids:
+                continue
+            if operand in {"true", "false"} or _looks_like_literal(operand):
+                continue
+            seen.add(operand)
+            externals.append(operand)
+    return tuple(externals)
 
 
 def _resolve_value_signal(
@@ -1937,22 +2032,39 @@ def _resolve_value_signal(
     component_library: dict[str, dict[str, Any]] | None,
     occurrence_index: int | None = None,
     consumer_start: int | None = None,
+    region=None,
 ) -> str:
+    local_producer = _region_producer_node(region, value_id)
+    producer_to_register = _producer_register_map(design)
+    binding_value_id = value_id
+    if local_producer is not None and local_producer.id in producer_to_register:
+        binding_value_id = local_producer.id
     phi_carries = _phi_carry_specs(design)
     if value_id in phi_carries:
         return phi_carries[value_id]["register"]
-    producer_to_register = _producer_register_map(design)
-    if value_id in producer_to_register:
+    if binding_value_id in producer_to_register:
         if (
             consumer_start is not None
-            and consumer_start in _value_live_starts(design, value_id)
-            and _value_may_bypass_register(design, value_id, consumer_start, component_library)
+            and consumer_start in _value_live_starts(design, binding_value_id, region=region)
+            and _value_may_bypass_register(design, binding_value_id, consumer_start, component_library)
         ):
-            result_signal = _resolve_producer_signal(design, value_id, component_library, occurrence_index)
+            result_signal = _resolve_producer_signal(
+                design,
+                value_id,
+                component_library,
+                occurrence_index,
+                region=region,
+            )
             if result_signal is not None:
                 return result_signal
-        return producer_to_register[value_id]
-    result_signal = _resolve_producer_signal(design, value_id, component_library, occurrence_index)
+        return producer_to_register[binding_value_id]
+    result_signal = _resolve_producer_signal(
+        design,
+        value_id,
+        component_library,
+        occurrence_index,
+        region=region,
+    )
     if result_signal is not None:
         return result_signal
     return value_id
@@ -1963,8 +2075,12 @@ def _resolve_producer_signal(
     value_id: str,
     component_library: dict[str, dict[str, Any]] | None,
     occurrence_index: int | None = None,
+    region=None,
 ) -> str | None:
-    producer_node = _producer_node_map(design).get(value_id)
+    local_producer = _region_producer_node(region, value_id)
+    producer_node = local_producer
+    if producer_node is None:
+        producer_node = _producer_node_map(design).get(value_id)
     if producer_node is None:
         return None
     if (
@@ -1973,6 +2089,7 @@ def _resolve_producer_signal(
         and isinstance(getattr(producer_node, "result_type", None), str)
         and getattr(producer_node, "result_type")
         and isinstance(getattr(producer_node, "attributes", {}).get("bind"), str)
+        and not (local_producer is not None and _value_id_is_ambiguous(design, value_id))
     ):
         return value_id
     result_signal = _node_result_signal(design, producer_node, component_library)
@@ -2003,13 +2120,50 @@ def _node_value_expr(
             chosen = node.operands[1] if len(node.operands) > 1 else node.operands[0]
         else:
             chosen = node.operands[0]
-        return _resolve_value_signal(design, chosen, component_library, None if occurrence_index is None else max(occurrence_index - 1, 0))
+        return _resolve_value_signal(
+            design,
+            chosen,
+            component_library,
+            None if occurrence_index is None else max(occurrence_index - 1, 0),
+        )
+    if node.opcode == "call":
+        returned_value = _call_return_value_id(design, node)
+        if returned_value is None:
+            return None
+        child_region = design.get_region(node.attributes.get("child"))
+        producer_signal = _resolve_producer_signal(
+            design,
+            returned_value,
+            component_library,
+            occurrence_index,
+            region=child_region,
+        )
+        if producer_signal is not None:
+            return producer_signal
+        return _resolve_value_signal(design, returned_value, component_library, occurrence_index, region=child_region)
     if node.opcode == "sel" and len(node.operands) == 3:
         condition = _resolve_value_signal(design, node.operands[0], component_library, occurrence_index)
         true_value = _resolve_value_signal(design, node.operands[1], component_library, occurrence_index)
         false_value = _resolve_value_signal(design, node.operands[2], component_library, occurrence_index)
         return f"{condition} ? {true_value} : {false_value}"
     return None
+
+
+def _call_return_value_id(design: UHIRDesign, node) -> str | None:
+    child_id = node.attributes.get("child")
+    if not isinstance(child_id, str) or not child_id:
+        return None
+    child_region = next((region for region in design.regions if region.id == child_id), None)
+    if child_region is None:
+        return None
+    returned_values = [
+        child_node.operands[0]
+        for child_node in child_region.nodes
+        if child_node.opcode == "ret" and child_node.operands
+    ]
+    if len(returned_values) != 1:
+        return None
+    return returned_values[0]
 
 
 def _producer_node_map(design: UHIRDesign) -> dict[str, Any]:
@@ -2022,6 +2176,47 @@ def _producer_node_map(design: UHIRDesign) -> dict[str, Any]:
             if node is not None:
                 mapping[source_map.source_id] = node
     return mapping
+
+
+def _region_producer_node(region, value_id: str):
+    if region is None or not isinstance(value_id, str) or not value_id:
+        return None
+    local_nodes = {node.id: node for node in region.nodes}
+    node = local_nodes.get(value_id)
+    if node is not None:
+        return node
+    for source_map in region.mappings:
+        if source_map.source_id != value_id:
+            continue
+        node = local_nodes.get(source_map.node_id)
+        if node is not None:
+            return node
+    return None
+
+
+def _producer_region(design: UHIRDesign, value_id: str):
+    if not isinstance(value_id, str) or not value_id:
+        return None
+    for region in design.regions:
+        if _region_producer_node(region, value_id) is not None:
+            return region
+    return None
+
+
+def _value_id_is_ambiguous(design: UHIRDesign, value_id: str) -> bool:
+    if not isinstance(value_id, str) or not value_id:
+        return False
+    matches = 0
+    for region in design.regions:
+        local_nodes = {node.id for node in region.nodes}
+        if value_id in local_nodes:
+            matches += 1
+        for source_map in region.mappings:
+            if source_map.source_id == value_id and source_map.node_id in local_nodes:
+                matches += 1
+        if matches > 1:
+            return True
+    return False
 
 
 def _default_net_expr(port_type: str) -> str:

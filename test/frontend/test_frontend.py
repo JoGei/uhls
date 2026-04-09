@@ -108,6 +108,16 @@ class FrontendTests(unittest.TestCase):
         verify_module(module)
         self.assertIn("call mac(", pretty(module))
 
+    def test_frontend_accepts_mixed_width_shift_amounts_in_packed_example(self) -> None:
+        source = Path("examples/dot4_i8_i32_relu_packed/dot4_i8_i32_relu_packed.c").read_text(encoding="utf-8")
+
+        module = lower_source_to_uir(source)
+
+        verify_module(module)
+        rendered = pretty(module)
+        self.assertIn(" = shl ", rendered)
+        self.assertIn(" = shr ", rendered)
+
     def test_frontend_hierarchical_example_runs_after_inlining(self) -> None:
         source = Path("examples/dot4_hier.c").read_text(encoding="utf-8")
         module = lower_source_to_uir(source)

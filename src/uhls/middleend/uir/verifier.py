@@ -7,7 +7,7 @@ from typing import Any
 
 from .function import Function
 from .module import Module
-from .types import ArrayType, normalize_type
+from .types import ArrayType, coerce_scalar_type, normalize_type
 from .types import type_name
 from .values import IncomingValue, Literal, Parameter, Variable
 
@@ -288,6 +288,16 @@ def _verify_instruction(
             and type_name(getattr(instruction, "type")) != "i1"
         ):
             raise IRVerificationError(f"compare '{opcode}' in block '{block_label}' must produce i1")
+        if opcode in {"shl", "shr"}:
+            if lhs_type is not None and coerce_scalar_type(lhs_type) is None:
+                raise IRVerificationError(
+                    f"opcode '{opcode}' in block '{block_label}' requires a scalar left operand"
+                )
+            if rhs_type is not None and coerce_scalar_type(rhs_type) is None:
+                raise IRVerificationError(
+                    f"opcode '{opcode}' in block '{block_label}' requires a scalar shift amount"
+                )
+            return
         if (
             lhs_type is not None
             and rhs_type is not None

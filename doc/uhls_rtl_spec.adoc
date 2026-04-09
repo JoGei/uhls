@@ -1,7 +1,17 @@
-= µhLS RTL Lowering and Wrapper Specification
+= µhLS RTL lowering and wrapper specification
 :toc:
 :toclevels: 3
 :sectnums:
+
+.tldr:
+[quote]
+____
+`rtl` is the final HDL-specific lowering stage. It consumes structural `uglir`,
+emits Verilog, and preserves the wrapper/protocol choices already made in
+`glue`. The generated core stays integration-agnostic, while wrappers handle
+bus adaptation, software-visible control/status registers, and externally
+provided or wrapper-owned memories.
+____
 
 == Overview
 
@@ -18,14 +28,14 @@ ____
 HDL at the final `rtl` lowering boundary.
 ____
 
-This is why the flow lowers:
+This is what the flow lowers:
 
 [source,text]
 ----
 fsm.uhir
   -> .uglir
   -> rtl
-  -> Verilog / VHDL / SystemC / ...
+  -> Verilog
 ----
 
 instead of lowering directly from FSMD to one HDL syntax.
@@ -113,23 +123,14 @@ This means that one `DIV<base_t=i8>` instance is eligible only for one
 The `rtl` stage should:
 
 * remain HDL-agnostic at the interface level
-* offer concrete `--hdl` backends
+* expose a concrete `--hdl` backend boundary
 * emit integration-friendly wrappers around the generated core
 * keep wrapper behavior protocol-agnostic at the semantic level
 * separate:
   * core datapath/controller generation
   * system integration / HW-SW interface adaptation
 
-The first implemented HDL target is:
-
-* `verilog`
-
-Other intended targets include:
-
-* `vhdl`
-* `systemc`
-
-but they are not yet implemented.
+The current emitted HDL target is `verilog`.
 
 == Why `uglir` Is The RTL Input
 
@@ -282,22 +283,13 @@ reset-update intent.
 
 == HDL Targets
 
-The stage is intentionally generic.
-
-The common contract is:
+The current contract is:
 
 * `glue` decides structural composition such as wrappers and bus protocols
-* `rtl` decides *which HDL* to emit
+* `rtl` emits the selected HDL
 * `µglIR` stays independent of HDL syntax
 
-The first implemented target is:
-
-* `verilog`
-
-Planned targets are:
-
-* `vhdl`
-* `systemc`
+The current emitted target is `verilog`.
 
 == Reset Policy
 

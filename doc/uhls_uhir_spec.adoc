@@ -1,7 +1,13 @@
-= µhLS µhIR Hardware IR Specification
+= µhLS µhIR hardware IR specification
 :toc:
 :toclevels: 3
 :sectnums:
+
+.tldr:
+[quote]
+____
+µhIR is the human-readable, line-oriented hardware refinement IR family used by µhLS between µIR and backend glue generation. A design moves through `seq`, `alloc`, `sched`, `bind`, and `fsm`, with stable operation identities preserved across the refinement stages. All artifacts use the `.uhir` extension and declare their stage in-file; `exg` is auxiliary collateral for allocation.
+____
 
 == Overview
 
@@ -24,6 +30,7 @@ fir.seq.uhir
 fir.alloc.uhir
 fir.sched.uhir
 fir.bind.uhir
+fir.fsm.uhir
 ----
 
 The intended flow is:
@@ -35,17 +42,20 @@ The intended flow is:
   -> alloc.uhir
   -> sched.uhir
   -> bind.uhir
-  -> HW-MIR
+  -> fsm.uhir
+  -> .uglir
+  -> rtl
   -> Verilog
   -> Yosys / ASIC flow
 ----
 
-The four standard refinement µhIR stages are:
+The five standard refinement µhIR stages are:
 
 * `seq`   — hierarchical sequencing graph representation built from sequencing graph units (SGUs)
 * `alloc` — resource-type allocated design representation
 * `sched` — scheduled design representation
 * `bind`  — resource-bound design representation
+* `fsm`   — controller-oriented FSMD representation after binding
 
 One auxiliary µhIR stage is also defined for collateral exchange:
 
@@ -65,7 +75,7 @@ One auxiliary µhIR stage is also defined for collateral exchange:
 A central design rule is:
 
 ____
-The same operation identities should be preserved across `seq`, `alloc`, `sched`, and `bind`.
+The same operation identities should be preserved across `seq`, `alloc`, `sched`, `bind`, and `fsm`.
 ____
 
 This means that a node such as `v17` should denote the same conceptual operation across all refinement stages.
@@ -80,7 +90,7 @@ A file contains:
 * a `stage` declaration
 * optional global declarations
 * one or more `region` blocks
-* optional resource declarations in `bind` stage
+* optional resource declarations in `bind` and `fsm` stages
 
 Minimal example:
 
@@ -156,13 +166,13 @@ memref<i32, 4>
 memref<u32>
 ----
 
-When the original µIR memory object has one statically known extent, µHIR should
+When the original µIR memory object has one statically known extent, µhIR should
 preserve that shape as `memref<T, N>`.
 This shape information is intended to survive through later HLS stages so wrapper
 generation and later memory-oriented transforms can distinguish problem-sized
 memories from unbounded external interfaces.
 
-Future µHIR memory partition passes are expected to refine one logical
+Later µhIR memory partition passes may refine one logical
 `memref<T, N>` into partitioned/banked memory resources and regions while
 preserving the original logical memory identity.
 
@@ -234,7 +244,7 @@ Syntax:
 
 [source,text]
 ----
-stage <seq|alloc|sched|bind>
+stage <seq|alloc|sched|bind|fsm|exg>
 ----
 
 Examples:
@@ -245,6 +255,8 @@ stage seq
 stage alloc
 stage sched
 stage bind
+stage fsm
+stage exg
 ----
 
 === Global declarations
@@ -1006,7 +1018,7 @@ It extends the `sched` form with:
 * optional memory port bindings
 * optional mux declarations
 
-The `bind` stage is the canonical input to later datapath/control extraction and HW-MIR lowering.
+The `bind` stage is the canonical input to `fsm` lowering.
 
 === Binding modes
 
@@ -1248,7 +1260,7 @@ region R0 kind=procedure {
 The `fsm` stage is the first explicit controller-oriented stage after binding.
 It is the FSMD stage: the finite-state machine with data specification.
 
-It preserves the bound datapath-oriented µHIR view and adds explicit controller
+It preserves the bound datapath-oriented µhIR view and adds explicit controller
 structure that states:
 
 * the controller encoding
@@ -1563,7 +1575,11 @@ Recommended use of each stage:
 
 * `bind`:
   **output** of binding,
-  **input** to control/datapath extraction or HW-MIR lowering
+  **input** to `fsm` lowering
+
+* `fsm`:
+  **output** of control/datapath extraction,
+  **input** to `glue`
 
 == Suggested implementation strategy
 

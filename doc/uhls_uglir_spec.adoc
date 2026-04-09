@@ -1,14 +1,18 @@
-= µhLS µglIR Hardware Glue IR Specification
+= µhLS µglIR hardware glue IR specification
 :toc:
 :toclevels: 3
 :sectnums:
 
-NOTE: We are well aware of the fact that *µglIR* may be pronounce ugli-R as in ugly representation. With that said, we hereby reject any comments on this µglIR's aesthetics `¯\\_(ツ)_/¯`. 
+.tldr:
+[quote]
+____
+µglIR is the structural, signal-oriented IR that µhLS emits after `fsm.uhir` and before `rtl` lowering. It captures the hardware glue of a design, such as registers, nets, muxes, controller state, component instances, and their explicit connectivity, while leaving arithmetic and memory internals inside referenced components.
+____
 
 == Overview
 
 This document specifies the *µglIR* textual intermediate representation used by
-*µhLS* after FSMD synthesis and before RTL emission.
+*µhLS* after `fsm.uhir` lowering and before `rtl` emission.
 
 The common file extension is:
 
@@ -36,15 +40,10 @@ The intended backend flow becomes:
   -> bind.uhir
   -> fsm.uhir
   -> .uglir
+  -> rtl
   -> Verilog
   -> Yosys / ASIC flow
 ----
-
-The name *µglIR* means:
-
-* `u`  — micro
-* `gl` — glue
-* `IR` — intermediate representation
 
 Its role is to describe the *hardware glue structure* of one design:
 
@@ -59,8 +58,9 @@ It does *not* restate the internals of arithmetic or memory components.
 
 == Purpose
 
-µglIR is the first backend IR within µhLS whose primary viewpoint is *signal-oriented
-hardware structure* instead of graph refinement or control-step actions.
+µglIR is the first backend IR within µhLS whose primary viewpoint is
+*signal-oriented hardware structure* instead of graph refinement or control-step
+actions.
 
 It exists to separate:
 
@@ -77,19 +77,10 @@ from:
   * blocking/non-blocking conventions
   * target-specific code style
 
-The central design rule is:
-
-____
 µglIR describes how µhLS components are glued together, not how those
-components compute internally.
-____
-
-So a component such as an adder, multiplier, memory port, or child controller
-appears in µglIR as an *instance with ports*, not as re-expanded behavioral
-logic.
-
-NOTE: While µglIR is not intendend to model behaviorals of functional units and 
-components, in theory pure-digital components are within its scope.
+components compute internally. An adder, multiplier, memory port, or child
+controller therefore appears as an *instance with ports*, not as re-expanded
+behavioral logic.
 
 == Current Memory Assumption
 

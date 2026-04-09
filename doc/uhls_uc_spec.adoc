@@ -1,11 +1,17 @@
-= µhLS µC Source Language Specification
+= µhLS µC source language specification
 :doctype: article
 :toc:
 :toclevels: 3
 :sectnums:
 
+.tldr:
+[quote]
+____
+µC is a small, structured C subset for µhLS. Kernel code uses fixed-width integers, fixed-size arrays, declarations, assignments, `if` / `else`, `return`, and canonical `for` loops, and lowers deterministically to scalar-SSA µIR with explicit branches and `load` / `store`. The integrated testbench form additionally allows `main(void) -> int32_t`, local arrays, direct kernel calls, and `uhls_printf(...)` lowering to `print`.
+____
+
 µC is the restricted source language of µhLS.
-It is designed to be small enough for students to understand completely, while still expressive enough to generate interesting control-flow, dataflow, optimization, and scheduling problems.
+It is designed to be small enough for newcomers to understand completely, while still expressive enough to generate interesting control-flow, dataflow, optimization, and scheduling problems.
 
 µC is intentionally *not* a full C dialect.
 It is a structured, side-effect-limited subset that lowers deterministically into canonical µIR.
@@ -21,7 +27,7 @@ It is a structured, side-effect-limited subset that lowers deterministically int
 * compiler middle-end analyses and optimizations
 * high-level synthesis of simple computational kernels
 
-µC is intentionally restricted so that students can focus on:
+µC is intentionally restricted so that we can focus on:
 
 * IR construction
 * CFG construction
@@ -40,7 +46,8 @@ A µC program consists of one or more function definitions.
 In the base µC subset:
 
 * one function is typically treated as the synthesis entry function
-* user-defined function calls are not allowed
+* kernel functions are call-free
+* integrated testbench translation units may additionally contain `main` calling kernel functions directly
 * recursion is not allowed
 * dynamic dispatch is not allowed
 
@@ -201,7 +208,7 @@ Restrictions:
 * no variadic functions
 * no recursion
 * no multiple return values
-* no user-defined calls in the base language
+* no user-defined calls inside kernel functions
 
 Example:
 
@@ -304,7 +311,7 @@ In particular, the implementation should define clearly:
 * boolean representation
 * array bounds expectations
 
-A simple and useful course policy is:
+For simplicity, assume:
 
 * well-formed test programs are assumed not to overflow in unintended ways
 * out-of-bounds array access is invalid

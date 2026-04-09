@@ -1,21 +1,64 @@
-= µhLS IR Specification
+= µhLS IR specification
 :doctype: article
 :toc:
 :toclevels: 3
 :sectnums:
+
+.tldr:
+[quote]
+____
+µIR is the single canonical IR of µhLS: typed, block-based, scalar-SSA, with explicit control flow and explicit memory via `load` / `store`. Frontends lower directly to `.uir`; the HLS flow uses a call-free kernel subset, while the extended frontend/testbench subset also permits direct calls, function-local arrays, and `print`.
+____
+
+== Overview
+
+This document specifies the *µIR* textual intermediate representation used by
+*µhLS* as its single canonical IR after frontend lowering.
+
+The common file extension is:
+
+[source,text]
+----
+.uir
+----
+
+Typical filenames are:
+
+[source,text]
+----
+fir.uir
+dot4.uir
+----
+
+The intended frontend and backend flow is:
+
+[source,text]
+----
+µC
+  -> .uir
+  -> seq.uhir
+  -> alloc.uhir
+  -> sched.uhir
+  -> bind.uhir
+  -> fsm.uhir
+  -> .uglir
+  -> rtl
+  -> Verilog
+----
+
+Its role is to provide one explicit, typed, SSA-based compiler IR for µhLS:
+
+* typed scalar values
+* named basic blocks
+* explicit control flow
+* explicit memory operations via `load` and `store`
 
 µhLS uses a single canonical intermediate representation:
 
 * *µIR*: typed, block-based scalar-SSA IR with explicit control-flow edges
 * µIR source files use the `.uir` extension
 
-Design note:
-
-* Earlier drafts defined both non-SSA `µTAC` and SSA `µSSA` IRs.
-* That split is removed completely.
-* The frontend now lowers directly to `µIR`.
-* No non-SSA IR remains in the specification, implementation model, or pass pipeline.
-* µIR is heavily inspired by the LLVM-IR, but is not nearly as feature-rich
+The frontend lowers directly to `µIR`; there is no separate non-SSA canonical IR in the current design.
 
 The IR has the following properties:
 
@@ -25,7 +68,7 @@ The IR has the following properties:
 * model memory explicitly via `load` and `store`
 
 The core HLS flow uses the call-free subset.
-An extended form supports direct function calls for software code generation topics.
+An extended form supports direct calls plus testbench-oriented `local` and `print`.
 
 == µIR Specification
 
@@ -42,6 +85,7 @@ A function contains:
 * a name
 * typed parameters
 * a return type
+* zero or more `local` array declarations
 * a sequence of named basic blocks
 
 === Basic blocks
@@ -70,14 +114,12 @@ Supported scalar types:
 * `i8`, `i16`, `i32`
 * `u8`, `u16`, `u32`
 
-Supported memory object type:
+Supported memory object types:
 
 * `T[]` for unsized array parameters of scalar element type `T`
 * `T[N]` for fixed-size arrays of scalar element type `T` and positive extent `N`
 
-Optional later extension:
-
-* `void` as function return type only
+Function return types may additionally use `void`.
 
 === Values
 
@@ -109,12 +151,7 @@ Function parameters are SSA definitions.
 * No aliasing between distinct arrays.
 * Memory is not converted to SSA.
 * Calls may conservatively be treated as memory-effecting operations.
-
-NOTE: The non-SSA memory relaxation is a strong simplification for ease-of-understanding.
-
-NOTE: At present, µIR only models addressed memory objects (`T[]` / `T[N]`) as first-class memory.
-FIFO and STREAM style channels are intentionally not yet part of the canonical IR.
-If they are added later, they are expected to become full-stack concepts across frontend, µIR, µHIR, scheduling, binding, FSMD, and uglIR, rather than being introduced only as a backend-specific lowering detail.
+* Only addressed array objects (`T[]` / `T[N]`) are first-class memory in the current design.
 
 === Core scalar instructions
 
@@ -151,6 +188,18 @@ where:
 * `idx` is an integer scalar
 * `v` has type `T`
 
+=== Function-local arrays
+
+Function-local arrays are declared before the first basic block:
+
+* `local A[N]:T`
+
+Rules:
+
+* `N` is a positive integer constant
+* `T` is a scalar element type
+* local arrays are addressable memory objects and may be used by `load`, `store`, and array-valued call operands
+
 === Additional instruction
 
 ==== Phi
@@ -174,7 +223,9 @@ Extended µIR may include direct calls:
 
 Semantics:
 
-* arguments are scalar values evaluated before the call
+* arguments may be scalar SSA values or array objects
+* scalar arguments are evaluated before the call
+* array arguments name an existing array parameter or `local` array object
 * `f` is a statically named function
 * the call returns zero or one scalar value
 * the call may have side effects unless otherwise specified
@@ -186,6 +237,18 @@ Restrictions:
 * no variadic calls
 * no aggregate return values
 * no function pointers
+
+=== Extended frontend/testbench instruction
+
+Extended µIR may also include:
+
+* `print "format"[, v0, v1, ..., vN]`
+
+Rules:
+
+* `print` is intended for integrated testbenches and debugging
+* each `vK` is a scalar SSA value
+* `print` is not part of the core HLS kernel subset
 
 === Backend-lowered call pseudo-ops
 
@@ -237,6 +300,8 @@ A µIR function is well-formed iff:
 * every `phi` has exactly one input per CFG predecessor
 * all `phi` nodes appear before non-phi instructions in a block
 * `ret` matches the function return type
+* `local` declarations, if present, appear before the first basic block
+* array-valued call operands refer to array parameters or `local` arrays
 * direct call targets refer to valid function symbols or declared externals
 * canonical µIR contains no `param` instructions
 
@@ -272,9 +337,10 @@ This keeps the HLS backend simple and algorithm-focused.
 
 === Software backend subset
 
-For software code generation lectures and labs:
+For simplified software code generation:
 
 * direct `call` in extended µIR is allowed
+* integrated testbench lowering may introduce `local` and `print`
 * later lowering may introduce `param` pseudo-ops
 * backend passes may then map calls to the target ISA calling convention
 

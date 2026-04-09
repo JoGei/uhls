@@ -1269,6 +1269,40 @@ class UGLIRSyntaxTests(unittest.TestCase):
 
         self.assertEqual(design.seq_blocks[0].updates[1].enable, "a && b")
 
+    def test_parse_uglir_accepts_constants_in_sequential_enable_expressions(self) -> None:
+        design = parse_uglir(
+            """
+            design wrapped
+            stage uglir
+            input  clk : clock
+            input  obi_accept_n : i1
+            input  obi_we_i : i1
+            input  obi_addr_i : u32
+            output y : i1
+            const  OBI_REG_IN_APACKED_4XI8_0 = 32'h0000_0100 : u32
+            resources {
+              reg r_q : i1
+            }
+
+            assign y = r_q
+
+            seq clk {
+              if false {
+                r_q <= false
+              } else {
+                if (obi_accept_n && obi_we_i) && (obi_addr_i == OBI_REG_IN_APACKED_4XI8_0) {
+                  r_q <= true
+                }
+              }
+            }
+            """
+        )
+
+        self.assertEqual(
+            design.seq_blocks[0].updates[0].enable,
+            "(obi_accept_n && obi_we_i) && (obi_addr_i == OBI_REG_IN_APACKED_4XI8_0)",
+        )
+
     def test_parse_uglir_accepts_multiline_parenthesized_expressions(self) -> None:
         design = parse_uglir(
             """

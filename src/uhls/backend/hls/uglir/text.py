@@ -538,6 +538,7 @@ def _validate_uglir_design(design: UGLIRDesign) -> None:
     resource_kinds = {resource.id: resource.kind for resource in design.resources}
     signal_names = {port.name for port in design.inputs + design.outputs}
     signal_names.update(resource.id for resource in design.resources if resource.kind in {"reg", "net", "mux", "mem"})
+    expr_names = signal_names | {const.name for const in design.constants}
     instance_ids = {resource.id for resource in design.resources if resource.kind == "inst"}
     mux_ids = {resource.id for resource in design.resources if resource.kind == "mux"}
 
@@ -567,13 +568,13 @@ def _validate_uglir_design(design: UGLIRDesign) -> None:
         if seq_block.clock not in input_names:
             raise UGLIRParseError(f"µglIR seq block clock '{seq_block.clock}' must be an input port")
         if seq_block.reset is not None:
-            _validate_uglir_expr_identifiers(seq_block.reset, signal_names, f"µglIR seq block reset '{seq_block.reset}'")
+            _validate_uglir_expr_identifiers(seq_block.reset, expr_names, f"µglIR seq block reset '{seq_block.reset}'")
         for update in [*seq_block.reset_updates, *seq_block.updates]:
             target_base, _ = _split_seq_target(update.target)
             if target_base not in resource_ids or resource_kinds[target_base] not in {"reg", "mem"}:
                 raise UGLIRParseError(f"µglIR sequential update target '{update.target}' must be a reg or mem resource")
             if update.enable is not None:
-                _validate_uglir_expr_identifiers(update.enable, signal_names, f"µglIR sequential enable '{update.enable}'")
+                _validate_uglir_expr_identifiers(update.enable, expr_names, f"µglIR sequential enable '{update.enable}'")
 
 
 def _split_seq_target(target: str) -> tuple[str, str | None]:

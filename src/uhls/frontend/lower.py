@@ -23,6 +23,7 @@ from uhls.middleend.uir import (
     StoreOp,
     UnaryOp,
     Variable,
+    type_name,
 )
 
 from . import ast
@@ -196,7 +197,7 @@ class _FunctionLowerer:
                     assert isinstance(arg, ast.VarRef)
                     operands.append(Variable(self.resolve_array_name(arg.name), param_type))
                     continue
-                operands.append(self.lower_expr(arg, current))
+                operands.append(self.coerce_value(self.lower_expr(arg, current), param_type, current))
             result_type = self.info.expr_types[id(expr)]
             temp = self.new_temp()
             current.instructions.append(CallOp(expr.callee, operands, dest=temp, type=result_type))
@@ -214,8 +215,15 @@ class _FunctionLowerer:
             result_type = self.info.expr_types[id(expr)]
             temp = self.new_temp()
             if expr.op in _COMPARE_OP_MAP:
+                lhs_type = self.info.expr_types[id(expr.lhs)]
+                rhs_type = self.info.expr_types[id(expr.rhs)]
+                if type_name(lhs_type) != type_name(rhs_type):
+                    rhs = self.coerce_value(rhs, lhs_type, current)
                 current.instructions.append(CompareOp(_COMPARE_OP_MAP[expr.op], temp, lhs, rhs))
             else:
+                if expr.op not in {"<<", ">>"}:
+                    lhs = self.coerce_value(lhs, result_type, current)
+                    rhs = self.coerce_value(rhs, result_type, current)
                 current.instructions.append(BinaryOp(_BINARY_OP_MAP[expr.op], temp, result_type, lhs, rhs))
             return Variable(temp, result_type)
         raise ValueError(f"unsupported expression {expr!r}")
@@ -227,6 +235,15 @@ class _FunctionLowerer:
         if isinstance(value, Variable) and value.name == target:
             return
         current.instructions.append(UnaryOp("mov", target, target_type, value))
+
+    def coerce_value(self, value: object, target_type: object, current: _BlockBuilder) -> object:
+        if type_name(getattr(value, "type", None)) == type_name(target_type):
+            return value
+        if isinstance(value, Literal):
+            return Literal(value.value, target_type)
+        temp = self.new_temp()
+        current.instructions.append(UnaryOp("mov", temp, target_type, value))
+        return Variable(temp, target_type)
 
     def collect_local_arrays(self, block: ast.Block) -> None:
         for statement in block.statements:

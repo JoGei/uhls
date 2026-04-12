@@ -122,7 +122,7 @@ ASIC_ARTIFACTS := $(ASIC_TOP) $(ASIC_SDC) $(ASIC_ORFS) $(ASIC_MACROS) $(ASIC_FLO
 
 .PHONY: all pipeline synth frontend middleend backend wrapped_backend wrapped views asic yosys_smoke orfs_run asic_gui asic_schem run_verilator clean
 
-all: synth views run_hw_interpret asic
+all: synth views run_hw_interpret
 
 yosys: yosys_smoke
 
@@ -144,7 +144,7 @@ wrapped: $(WRAPPED_PIPELINE_ARTIFACTS)
 
 views: $(VIEW_ARTIFACTS)
 
-asic: $(ASIC_ARTIFACTS)
+asic: $(ASIC_ARTIFACTS) $(ASIC_ORFS_STAMP)
 
 yosys_smoke: $(ASIC_YOSYS_STAMP)
 

@@ -1,4 +1,4 @@
-name: uhls ci
+name: µhLS ci
 
 on:
   push:
@@ -19,7 +19,7 @@ on:
 
 jobs:
   test-flows:
-    name: run uhls unit tests, examples, flows, ...
+    name: run µhLS unit tests, examples, flows, ...
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -52,16 +52,23 @@ jobs:
             echo "IHP130_PDK_ROOT=${IHP130_PDK_ROOT}"
           } >> "${GITHUB_ENV}"
 
-      - name: run uhls unit tests
+      - name: run µhLS unit tests
         working-directory: uhls_src
         run: |
           . "${VENV_ROOT}/bin/activate"
           python3 -m pip install -r requirements.txt
           PYTHONPATH=src python3 -m unittest discover -s test -v
 
-      - name: build uhls examples
+      - name: build µhLS examples default
         working-directory: uhls_src
         run: |
           . "${VENV_ROOT}/bin/activate"
           python3 -m pip install -r requirements.txt
           make -C examples STEM=dot4_relu
+      
+      - name: build µhLS examples asic
+        working-directory: uhls_src
+        run: |
+          . "${VENV_ROOT}/bin/activate"
+          python3 -m pip install -r requirements.txt
+          make -C examples STEM=dot4_relu asic

@@ -42,8 +42,9 @@ jobs:
           submodules: recursive
 
       - name: load container env
+        shell: bash
         run: |
-          . /eda-osic-tools/env.sh
+          source /eda-osic-tools/env.sh /eda-osic-tools/.env
           {
             echo "VENV_ROOT=${VENV_ROOT}"
             echo "YOSYS_EXE=${YOSYS_EXE}"
@@ -57,21 +58,24 @@ jobs:
 
       - name: run µhLS unit tests
         working-directory: uhls_src
+        shell: bash
         run: |
-          . /eda-osic-tools/env.sh /eda-osic-tools/.env
+          source ${VENV_ROOT}/bin/activate
           python3 -m pip install -r requirements.txt
           PYTHONPATH=src python3 -m unittest discover -s test -v
 
       - name: build µhLS examples default
         working-directory: uhls_src
+        shell: bash
         run: |
-          . /eda-osic-tools/env.sh /eda-osic-tools/.env
+          source ${VENV_ROOT}/bin/activate
           python3 -m pip install -r requirements.txt
           make -C examples STEM=dot4_relu
       
       - name: build µhLS examples asic
         working-directory: uhls_src
+        shell: bash
         run: |
-          . /eda-osic-tools/env.sh /eda-osic-tools/.env
+          source ${VENV_ROOT}/bin/activate
           python3 -m pip install -r requirements.txt
           make -C examples STEM=dot4_relu asic

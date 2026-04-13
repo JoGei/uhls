@@ -2,6 +2,9 @@
 
 # µhLS - the micro high-level synthesis tool
 
+[![License](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
+[![CI](https://github.com/JoGei/uhls/actions/workflows/ci.yml/badge.svg)](https://github.com/JoGei/uhls/actions/workflows/ci.yml)
+
 ## tldr
 
 > µhLS is a compact, hackable HLS toolchain that lowers C through explicit IRs to software drivers, RTL, and ASIC flows.

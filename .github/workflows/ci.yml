@@ -1,0 +1,81 @@
+name: µhLS ci
+
+on:
+  push:
+    paths-ignore:
+      - "doc/**"
+      - "README*"
+    branches:
+      - master
+    tags:
+      - "v*"
+  pull_request:
+    paths-ignore:
+      - "doc/**"
+      - "README*"
+    branches:
+      - master
+  workflow_dispatch: {}
+
+jobs:
+  test-flows:
+    name: run µhLS unit tests, examples, flows, ...
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os:
+          - {name: "ubuntu", version: "latest"}
+        container:
+          - {name: "tumeda/eda-osic-tools", version: "latest-default"}
+
+    container: ${{ matrix.container.name }}:${{ matrix.container.version }}-${{ matrix.os.name }}-${{ matrix.os.version }}
+
+    steps:
+      - name: install git on container
+        run: |
+          apt update && apt install -y git
+
+      - name: Clone repo
+        uses: actions/checkout@v4
+        with:
+          path: uhls_src
+          submodules: recursive
+
+      - name: load container env
+        shell: bash
+        run: |
+          source /eda-osic-tools/env.sh /eda-osic-tools/.env
+          {
+            echo "VENV_ROOT=${VENV_ROOT}"
+            echo "YOSYS_EXE=${YOSYS_EXE}"
+            echo "ORFS_ROOT=${ORFS_ROOT}"
+            echo "OPENROAD_EXE=${OPENROAD_EXE}"
+            echo "KEPLERFORMAL_EXE=${KEPLERFORMAL_EXE}"
+            echo "NAJA_EDIT_EXE=${NAJA_EDIT_EXE}"
+            echo "PDK_ROOT=${PDK_ROOT}"
+            echo "IHP130_PDK_ROOT=${IHP130_PDK_ROOT}"
+          } >> "${GITHUB_ENV}"
+
+      - name: run µhLS unit tests
+        working-directory: uhls_src
+        shell: bash
+        run: |
+          source ${VENV_ROOT}/bin/activate
+          python3 -m pip install -r requirements.txt
+          PYTHONPATH=src python3 -m unittest discover -s test -v
+
+      - name: build µhLS examples default
+        working-directory: uhls_src
+        shell: bash
+        run: |
+          source ${VENV_ROOT}/bin/activate
+          python3 -m pip install -r requirements.txt
+          make -C examples STEM=dot4_relu
+      
+      - name: build µhLS examples asic
+        working-directory: uhls_src
+        shell: bash
+        run: |
+          source ${VENV_ROOT}/bin/activate
+          python3 -m pip install -r requirements.txt
+          make -C examples STEM=dot4_relu asic

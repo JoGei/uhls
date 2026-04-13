@@ -1,8 +1,9 @@
+<img align="right" src="doc/figs/uhls_logo_white.svg" alt="µhLS logo">
+
 # µhLS - the micro high-level synthesis tool
 
-<p align="center">
-  <img src="doc/figs/uhls_logo_white.svg" alt="µhLS logo">
-</p>
+[![License](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
+[![CI](https://github.com/JoGei/uhls/actions/workflows/ci.yml/badge.svg)](https://github.com/JoGei/uhls/actions/workflows/ci.yml)
 
 ## tldr
 
@@ -142,13 +143,14 @@ flowchart LR
 
 </details>
 
-## Prerequisites
+## prerequisites
 
 µhLS currently runs directly from this repository through the local `./uhls` launcher.
 
 Required:
 
 - `python3`
+- `python3 -m pip install -r requirements.txt`
 
 Helpful for common workflows:
 
@@ -156,7 +158,7 @@ Helpful for common workflows:
 - `verilator` for `uhls run --backend=verilator`
 - `yosys` plus an OpenROAD Flow setup for the ASIC-oriented `make asic` flow
 
-## Usage
+## usage
 
 The fastest way to explore the tool is to run the repository-local CLI:
 
@@ -166,7 +168,7 @@ The fastest way to explore the tool is to run the repository-local CLI:
 
 A minimal frontend flow from C to RTL (via C->µIR->µhIR->µglIR->.v):
 
-**Frontend**
+**frontend**
 
 ```bash
 ./uhls parse examples/dot4_relu/dot4_relu.c -o dot4_relu.uir
@@ -174,7 +176,7 @@ A minimal frontend flow from C to RTL (via C->µIR->µhIR->µglIR->.v):
 ./uhls run dot4_relu.opt.uir
 ```
 
-**Middlend**
+**middlend**
 
 ```bash
 ./uhls seq dot4_relu.opt.uir --top dot4_relu -o dot4_relu.uhir
@@ -185,7 +187,7 @@ A minimal frontend flow from C to RTL (via C->µIR->µhIR->µglIR->.v):
 ./uhls fsm dot4_relu.bind.uhir --encoding=binary -o dot4_relu.fsm.uhir
 ```
 
-**Backend**
+**backend**
 
 ```bash
 ./uhls glue --wrap=slave --protocol=obi dot4_relu.fsm.uhir -o dot4_relu.obi_slave.uglir
@@ -200,13 +202,13 @@ mkdir -p build/asic
 To run the frontend->middleend->backend pipeline above on the example `dot4_relu` through the example Makefile and emit generated artifacts under `./build/` in the directory you invoked `make` from:
 
 ```bash
-make -C examples [STEM=dot4_relu] synth
+make -C examples [STEM=dot4_relu]
 ```
 
-To additionally render the standard graphs and wrapped backend artifacts:
+To additionally render the standard graphs and wrapped backend artifact (e.g., SoC interconnect WB/OBI):
 
 ```bash
-make -C examples [STEM=dot4_relu] views wrapped asic
+make -C examples [STEM=dot4_relu] views wrapped
 ```
 
 To try full ASIC synthesis with [OpenROAD](https://github.com/the-openroad-project/openroad-flow-scripts) and [Yosys](https://github.com/yosyshq/yosys) using [IHP's 130nm BiCMOS open PDK](https://github.com/IHP-GmbH/IHP-Open-PDK):
@@ -217,7 +219,7 @@ To try full ASIC synthesis with [OpenROAD](https://github.com/the-openroad-proje
 ```bash
 export ORFS_ROOT=/path/to/OpenROAD-flow-scripts/
 export YOSYS_EXE=$ORFS_ROOT/dependencies/bin/yosys
-make -C examples [STEM=dot4_relu] orfs_run
+make -C examples [STEM=dot4_relu] asic
 ```
 
 To inspect artifacts directly from the CLI:
@@ -232,6 +234,24 @@ To run artifacts directly from the CLI with the interpreter:
 ```bash
 ./uhls run build/dot4_relu.uir
 ./uhls run dot4_relu.opt.uir --backend=verilator --uglir dot4_relu.obi_slave.uglir
+```
+
+## quick start with Docker:
+
+> Alternatively to installing OpenROAD manually, you can use this docker image (used by CI) which provides uhLS dependencies: [tumeda/eda-osic-tools](https://github.com/tum-ei-eda/eda-osic-tools/)
+
+```bash
+cd path/to/local/uhls/repo
+docker pull tumeda/eda-osic-tools:latest-default-ubuntu-latest
+docker run --rm -it --network host \
+  -v "$(pwd)":/uhls-work \
+  -w /uhls-work \
+  tumeda/eda-osic-tools:latest-default-ubuntu-latest \
+  bash
+. /eda-osic-tools/env.sh
+pip install -r requirements.txt
+# done - run a full asic flow (takes a while... grab your/pref/beverage ☕️):
+make -C examples STEM=dot4_relu asic
 ```
 
 > **Warning**

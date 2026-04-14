@@ -29,13 +29,13 @@ jobs:
           - { name: "tumeda/eda-osic-tools", version: "latest-default" }
         opt:
           - { pass_pipe: "", pass_args: ""}
-          - { pass_pipe: "inline,prune,dce,cse,copy_prop,const_prop,dce", pass_args: ""}
+          - { pass_pipe: "-p inline,prune,dce,cse,copy_prop,const_prop,dce", pass_args: ""}
         opt2:
           - { pass_pipe: "", pass_args: ""}
-          - { pass_pipe: "unroll_loops,canonicalize_loops", pass_args: "--pass-arg 1 --pass-arg 2"}
-          - { pass_pipe: "unroll_loops,canonicalize_loops", pass_args: "--pass-arg 1 --pass-arg 4"}
+          - { pass_pipe: "-p unroll_loops,canonicalize_loops", pass_args: "--pass-arg 1 --pass-arg 2"}
+          - { pass_pipe: "-p unroll_loops,canonicalize_loops", pass_args: "--pass-arg 1 --pass-arg 4"}
         gopt:
-          - { pass_pipe: "infer_loops,translate_loop_dialect,infer_static,simplify_static_control,predicate,fold_predicates", pass_args: ""}
+          - { pass_pipe: "-p infer_loops,translate_loop_dialect,infer_static,simplify_static_control,predicate,fold_predicates", pass_args: ""}
 
     container: ${{ matrix.container.name }}:${{ matrix.container.version }}-${{ matrix.os.name }}-${{ matrix.os.version }}
 

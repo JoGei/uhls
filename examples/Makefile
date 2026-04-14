@@ -12,11 +12,11 @@ TOP ?= $(STEM)
 RES ?= $(UHLS_ROOT)/src/uhls/backend/hls/impl/generic/gen.uhlslib.json
 VENDOR_RES ?= $(UHLS_ROOT)/src/uhls/backend/hls/impl/vendor/ihp130/ihp130.uhlslib.json
 
-OPT_PASSES ?= inline,prune,dce,cse,copy_prop,const_prop,dce
+OPT_PASSES ?= '-p inline,prune,dce,cse,copy_prop,const_prop,dce'
 OPT_PASSES_ARGS ?= '--pass-arg $(TOP)'
 OPT2_PASSES ?=
 OPT2_PASSES_ARGS ?=
-GOPT_PASSES ?= infer_loops,translate_loop_dialect,infer_static,simplify_static_control,predicate,fold_predicates
+GOPT_PASSES ?= '-p infer_loops,translate_loop_dialect,infer_static,simplify_static_control,predicate,fold_predicates'
 GOPT_PASSES_ARGS ?=
 ALLOC_MEM ?= autoram+1024
 SCHED_ALGO ?= asap
@@ -193,11 +193,11 @@ $(UIR): $(SRC) | $(BUILD_DIR)
 	$(UHLS) parse $< -o $@
 
 $(OPT_UIR): $(UIR) | $(BUILD_DIR)
-	$(UHLS) opt $< -p $(OPT_PASSES) $(OPT_PASSES_ARGS) -o $@
+	$(UHLS) opt $< $(OPT_PASSES) $(OPT_PASSES_ARGS) -o $@
 
 $(OPT2_UIR): $(OPT_UIR) | $(BUILD_DIR)
 	if [ -n "$(strip $(OPT2_PASSES))" ]; then \
-		$(UHLS) opt $< -p $(OPT2_PASSES) $(OPT2_PASSES_ARGS) -o $@; \
+		$(UHLS) opt $< $(OPT2_PASSES) $(OPT2_PASSES_ARGS) -o $@; \
 	else \
 		cp $< $@; \
 	fi
@@ -230,7 +230,7 @@ $(SEQ_SVG): $(SEQ_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
 $(GOPT_UHIR): $(SEQ_UHIR) | $(BUILD_DIR)
-	$(UHLS) gopt $< -p $(GOPT_PASSES) $(GOPT_PASSES_ARGS) -o $@
+	$(UHLS) gopt $< $(GOPT_PASSES) $(GOPT_PASSES_ARGS) -o $@
 
 $(GOPT_DOT): $(GOPT_UHIR) | $(BUILD_DIR)
 	$(UHLS) view $(GOPT_UHIR) --dot -o $@

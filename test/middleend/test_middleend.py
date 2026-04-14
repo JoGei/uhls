@@ -6,7 +6,7 @@ import uhls.middleend.passes
 from uhls.frontend import lower_source_to_uir
 from uhls.interpreter import run_uir
 from uhls.middleend.passes.analyze import LivenessInfo, build_dfg, compute_dominators, detect_loops, dfg_pass, liveliness, liveliness_pass
-from uhls.middleend.passes.opt import SimplifyCFGPass, inline_calls, simplify_cfg_function
+from uhls.middleend.passes.opt import CanonicalizeLoopsPass, SimplifyCFGPass, UnrollLoopsPass, inline_calls, simplify_cfg_function
 from uhls.middleend.passes.opt.const_prop import const_prop_function
 from uhls.middleend.passes.opt.copy_prop import copy_prop_function
 from uhls.middleend.passes.opt.cse import cse_function
@@ -60,6 +60,7 @@ class MiddleendPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(uhls.middleend.passes, "util"))
 
     def test_middleend_opt_package_exports_transform_and_optimization_entry_points(self) -> None:
+        self.assertTrue(hasattr(uhls.middleend.passes.opt, "CanonicalizeLoopsPass"))
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "DCEPass"))
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "ConstPropPass"))
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "CopyPropPass"))
@@ -67,6 +68,7 @@ class MiddleendPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "InlineCallsPass"))
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "PruneFunctionsPass"))
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "SimplifyCFGPass"))
+        self.assertTrue(hasattr(uhls.middleend.passes.opt, "UnrollLoopsPass"))
 
 
 class UIRPackageTests(unittest.TestCase):
@@ -798,6 +800,113 @@ block for_exit:
             {incoming.pred for incoming in header.instructions[0].incoming},
             {"entry", "for_body"},
         )
+        self.assertEqual(run_uir(result, {}).return_value, 28)
+
+    def test_unroll_loops_pass_unrolls_one_named_loop_and_survives_const_copy_dce(self) -> None:
+        source = """
+        int32_t sum_to_8() {
+            int32_t i;
+            int32_t acc = 0;
+            for (i = 0; i < 8; i = i + 1) {
+                acc = acc + i;
+            }
+            return acc;
+        }
+        """
+        function = lower_source_to_uir(source).functions[0]
+
+        unrolled = PassManager([UnrollLoopsPass("1", 2)]).run(function)
+        verify_function(unrolled)
+        optimized = PassManager([const_prop_function, copy_prop_function, dce_function]).run(unrolled)
+        verify_function(optimized)
+
+        self.assertIn("for_body_2_unroll_1", [block.label for block in unrolled.blocks])
+        self.assertIn("for_body_2_unroll_1", [block.label for block in optimized.blocks])
+        header = optimized.block_map()["for_header_1"]
+        self.assertEqual(
+            {incoming.pred for incoming in header.instructions[0].incoming},
+            {"entry", "for_body_2", "for_body_2_unroll_1"},
+        )
+        second_body = optimized.block_map()["for_body_2_unroll_1"]
+        self.assertTrue(second_body.instructions)
+        self.assertEqual(run_uir(optimized, {}).return_value, 28)
+
+    def test_unroll_loops_pass_accepts_full_header_name_and_count_from_pass_args(self) -> None:
+        source = """
+        int32_t sum_to_8() {
+            int32_t i;
+            int32_t acc = 0;
+            for (i = 0; i < 8; i = i + 1) {
+                acc = acc + i;
+            }
+            return acc;
+        }
+        """
+        function = lower_source_to_uir(source).functions[0]
+
+        result = PassManager([UnrollLoopsPass()]).run(function, PassContext(pass_args=("for_header_1", "3")))
+        verify_function(result)
+
+        self.assertIn("for_body_2_unroll_1", [block.label for block in result.blocks])
+        self.assertIn("for_body_2_unroll_2", [block.label for block in result.blocks])
+        self.assertEqual(run_uir(result, {}).return_value, 28)
+
+    def test_canonicalize_loops_pass_introduces_one_synthetic_latch_for_unrolled_loop(self) -> None:
+        source = """
+        int32_t sum_to_8() {
+            int32_t i;
+            int32_t acc = 0;
+            for (i = 0; i < 8; i = i + 1) {
+                acc = acc + i;
+            }
+            return acc;
+        }
+        """
+        function = lower_source_to_uir(source).functions[0]
+        unrolled = PassManager([UnrollLoopsPass("1", 2)]).run(function)
+
+        result = PassManager([CanonicalizeLoopsPass()]).run(unrolled)
+        verify_function(result)
+        loops = detect_loops(result)
+
+        self.assertEqual(len(loops), 1)
+        self.assertEqual(loops[0].header, "for_header_1")
+        self.assertEqual(loops[0].latches, ("for_header_1_latch",))
+        self.assertIn("for_header_1_latch", [block.label for block in result.blocks])
+        header = result.block_map()["for_header_1"]
+        self.assertEqual(
+            {incoming.pred for incoming in header.instructions[0].incoming},
+            {"entry", "for_header_1_latch"},
+        )
+        latch = result.block_map()["for_header_1_latch"]
+        self.assertIsInstance(latch.terminator, BranchOp)
+        self.assertEqual(latch.terminator.target, "for_header_1")
+        self.assertEqual(run_uir(result, {}).return_value, 28)
+
+    def test_canonicalize_loops_pass_preserves_const_copy_dce_pipeline_for_unrolled_loop(self) -> None:
+        source = """
+        int32_t sum_to_8() {
+            int32_t i;
+            int32_t acc = 0;
+            for (i = 0; i < 8; i = i + 1) {
+                acc = acc + i;
+            }
+            return acc;
+        }
+        """
+        function = lower_source_to_uir(source).functions[0]
+        pipeline = [
+            UnrollLoopsPass("1", 2),
+            CanonicalizeLoopsPass(),
+            const_prop_function,
+            copy_prop_function,
+            dce_function,
+        ]
+
+        result = PassManager(pipeline).run(function)
+        verify_function(result)
+
+        self.assertIn("for_header_1_latch", [block.label for block in result.blocks])
         self.assertEqual(run_uir(result, {}).return_value, 28)
 
     def test_inline_calls_clones_callee_cfg_into_caller(self) -> None:

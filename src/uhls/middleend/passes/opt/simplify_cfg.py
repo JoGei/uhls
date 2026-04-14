@@ -22,13 +22,20 @@ def simplify_cfg_function(function: Function) -> Function:
             result.blocks = [block for block in result.blocks if block.label in reachable]
             changed = True
 
-        trampoline_map = {
+        cfg = control_flow(result)
+        raw_trampoline_map = {
             block.label: block.terminator.target
             for block in result.blocks
             if block.label != result.entry
             and not block.instructions
             and isinstance(block.terminator, BranchOp)
             and block.terminator.target != block.label
+        }
+        trampoline_map = {
+            label: target
+            for label, target in raw_trampoline_map.items()
+            if target not in raw_trampoline_map
+            and _can_bypass_trampoline(result, cfg, trampoline_label=label, target_label=target)
         }
         if trampoline_map:
             for block in result.blocks:
@@ -40,10 +47,11 @@ def simplify_cfg_function(function: Function) -> Function:
                     terminator.false_target = _follow_target(terminator.false_target, trampoline_map)
                     if terminator.true_target == terminator.false_target:
                         block.terminator = BranchOp(terminator.true_target)
+            _rewrite_phi_incoming_after_trampoline_bypass(result, cfg, trampoline_map)
             changed = True
             continue
 
-        predecessors = control_flow(result).predecessors
+        predecessors = cfg.predecessors
         merged = False
         for block in result.blocks:
             if not isinstance(block.terminator, BranchOp):
@@ -140,6 +148,67 @@ def _follow_target(target: str, trampoline_map: dict[str, str]) -> str:
         seen.add(current)
         current = trampoline_map[current]
     return current
+
+
+def _can_bypass_trampoline(
+    function: Function,
+    cfg: object,
+    *,
+    trampoline_label: str,
+    target_label: str,
+) -> bool:
+    target = _block_map(function).get(target_label)
+    if target is None:
+        return False
+    trampoline_predecessors = cfg.predecessors.get(trampoline_label, set())
+    if not trampoline_predecessors:
+        return True
+
+    for instruction in target.instructions:
+        if getattr(instruction, "opcode", None) != "phi":
+            break
+        trampoline_items = [incoming for incoming in instruction.incoming if getattr(incoming, "pred", None) == trampoline_label]
+        if len(trampoline_items) != 1:
+            return False
+        trampoline_value = trampoline_items[0].value
+        for predecessor in trampoline_predecessors:
+            for incoming in instruction.incoming:
+                if getattr(incoming, "pred", None) == predecessor and incoming.value != trampoline_value:
+                    return False
+    return True
+
+
+def _rewrite_phi_incoming_after_trampoline_bypass(
+    function: Function,
+    cfg: object,
+    trampoline_map: dict[str, str],
+) -> None:
+    for block in function.blocks:
+        for instruction in block.instructions:
+            if getattr(instruction, "opcode", None) != "phi":
+                break
+            expanded = []
+            for incoming in instruction.incoming:
+                pred = getattr(incoming, "pred", None)
+                if pred in trampoline_map and trampoline_map[pred] == block.label:
+                    for predecessor in sorted(cfg.predecessors.get(pred, set())):
+                        expanded.append(replace(incoming, pred=predecessor))
+                else:
+                    expanded.append(incoming)
+
+            deduped = []
+            seen_by_pred: dict[str, object] = {}
+            for incoming in expanded:
+                pred = getattr(incoming, "pred", None)
+                if pred not in seen_by_pred:
+                    seen_by_pred[pred] = incoming.value
+                    deduped.append(incoming)
+                    continue
+                if seen_by_pred[pred] != incoming.value:
+                    raise ValueError(
+                        f"simplify_cfg cannot merge phi predecessor '{pred}' in block '{block.label}' with conflicting values"
+                    )
+            instruction.incoming = deduped
 
 
 def _rewrite_phi_predecessor_labels(function: Function, *, old_label: str, new_label: str) -> None:

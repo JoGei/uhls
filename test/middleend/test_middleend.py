@@ -759,6 +759,47 @@ class OptPassTests(unittest.TestCase):
         self.assertNotIn("jump", [block.label for block in result.blocks])
         self.assertEqual(run_uir(result, []).return_value, 7)
 
+    def test_simplify_cfg_function_preserves_phi_validity_when_bypassing_trampoline_predecessor(self) -> None:
+        module = parse_module(
+            """func buggy() -> i32
+
+block entry:
+    br for_header
+
+block for_header:
+    acc:i32 = phi(entry: 0:i32, for_body: acc_next, for_body_unroll_1: acc_next)
+    i:i32 = phi(entry: 0:i32, for_body: i_next, for_body_unroll_1: i_next)
+    cond:i1 = lt i, 8:i32
+    cbr cond, for_body, for_exit
+
+block for_body:
+    acc_next:i32 = add acc, i
+    i_next:i32 = add i, 1:i32
+    cond_u1:i1 = lt i_next, 8:i32
+    cbr cond_u1, for_body_unroll_1, for_header
+
+block for_body_unroll_1:
+    br for_header
+
+block for_exit:
+    ret acc
+"""
+        )
+        function = module.get_function("buggy")
+        assert function is not None
+
+        verify_function(function)
+        result = simplify_cfg_function(function)
+        verify_function(result)
+
+        self.assertNotIn("for_body_unroll_1", [block.label for block in result.blocks])
+        header = result.block_map()["for_header"]
+        self.assertEqual(
+            {incoming.pred for incoming in header.instructions[0].incoming},
+            {"entry", "for_body"},
+        )
+        self.assertEqual(run_uir(result, {}).return_value, 28)
+
     def test_inline_calls_clones_callee_cfg_into_caller(self) -> None:
         callee = Function(
             name="select_add",

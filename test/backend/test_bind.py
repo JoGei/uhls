@@ -15,7 +15,16 @@ from uhls.backend.hls.uhir import (
     run_gopt_passes,
 )
 from uhls.frontend import lower_source_to_uir
-from uhls.middleend.passes.opt import CSEPass, ConstPropPass, CopyPropPass, DCEPass, InlineCallsPass, PruneFunctionsPass
+from uhls.middleend.passes.opt import (
+    CSEPass,
+    CanonicalizeLoopsPass,
+    ConstPropPass,
+    CopyPropPass,
+    DCEPass,
+    InlineCallsPass,
+    PruneFunctionsPass,
+    UnrollLoopsPass,
+)
 from uhls.middleend.passes.util import PassContext, PassManager
 
 
@@ -952,6 +961,49 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertIn('"dfgsb_unroll_reg_12_8" -> "dfgsb_unroll_op_12_4" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
         self.assertIn('"dfgsb_unroll_reg_12_8" -> "dfgsb_unroll_op_13_2" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
         self.assertIn('"dfgsb_unroll_op_13_2" -> "dfgsb_unroll_op_13_3"', dot)
+
+    def test_lower_sched_to_bind_accepts_canonicalized_unrolled_do_all_loop_with_static_trip_count(self) -> None:
+        source = """
+        int32_t add8(int32_t A[8], int32_t B[8], int32_t C[8]) {
+            int32_t i;
+            for (i = 0; i < 8; i = i + 1) {
+                C[i] = A[i] + B[i];
+            }
+            return 0;
+        }
+        """
+        optimized_module = PassManager(
+            [
+                UnrollLoopsPass("1", 2),
+                CanonicalizeLoopsPass(),
+                ConstPropPass(),
+                CopyPropPass(),
+                DCEPass(),
+            ]
+        ).run(lower_source_to_uir(source))
+        seq_design = run_gopt_passes(
+            lower_module_to_seq(optimized_module, top="add8"),
+            [
+                create_builtin_gopt_pass("infer_loops"),
+                create_builtin_gopt_pass("translate_loop_dialect"),
+                create_builtin_gopt_pass("infer_static"),
+            ],
+        )
+        proc = seq_design.get_region("proc_add8")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        loop_node = next(node for node in proc.nodes if node.opcode == "loop")
+        self.assertEqual(loop_node.attributes.get("static_trip_count"), 4)
+
+        bind_design = lower_sched_to_bind(
+            lower_alloc_to_sched(
+                lower_seq_to_alloc(seq_design, executability_graph=self._full_executability_graph())
+            )
+        )
+
+        rendered = format_bind_dump(bind_design, ("trp_unroll",))
+        self.assertIn("bind_dump trp_unroll", rendered)
+        self.assertIn("t1_0__u1@0", rendered)
 
     def test_dfgsb_dot_routes_cross_sgu_value_through_register_without_direct_duplicate_edge(self) -> None:
         bind_design = lower_sched_to_bind(

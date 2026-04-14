@@ -298,16 +298,31 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
     )
     for carry in phi_carries.values():
         init_expr = _resolve_value_signal(design, carry["init"], component_library, 0)
-        source_expr = _resolve_producer_signal(design, carry["backedge"], component_library)
+        backedge_region = _producer_region(design, carry["backedge"])
+        backedge_local_steps = sorted(_value_live_starts(design, carry["backedge"], region=backedge_region))
+        backedge_global_steps = sorted(_value_global_live_starts(design, carry["backedge"]))
+        backedge_consumer_start = backedge_local_steps[0] if len(backedge_local_steps) == 1 else None
+        source_expr = _resolve_producer_signal(
+            design,
+            carry["backedge"],
+            component_library,
+            consumer_start=backedge_consumer_start,
+            region=backedge_region,
+        )
         if source_expr is None:
-            source_expr = _resolve_value_signal(design, carry["backedge"], component_library)
-        backedge_steps = sorted(_value_live_starts(design, carry["backedge"], region=_producer_region(design, carry["backedge"])))
+            source_expr = _resolve_value_signal(
+                design,
+                carry["backedge"],
+                component_library,
+                consumer_start=backedge_consumer_start,
+                region=backedge_region,
+            )
         backedge_conditions = [
             _state_eq_expr(
                 _controller_state_id(top_controller, top_controller),
                 controller_codes[top_controller.name][f"T{step}"],
             )
-            for step in backedge_steps
+            for step in backedge_global_steps
             if f"T{step}" in controller_codes[top_controller.name]
         ]
         enable_expr = "req_fire"
@@ -658,6 +673,31 @@ def _node_children(node) -> tuple[str, ...]:
     return tuple(children)
 
 
+def _root_region_ids(design: UHIRDesign) -> tuple[str, ...]:
+    referenced = {
+        child_id
+        for region in design.regions
+        for node in region.nodes
+        for child_id in _node_children(node)
+    }
+    return tuple(
+        sorted(
+            region.id
+            for region in design.regions
+            if region.parent is None and region.id not in referenced
+        )
+    )
+
+
+def _child_region_shift(node, key: str) -> int:
+    if key != "child":
+        return 0
+    node_start = node.attributes.get("start")
+    if isinstance(node_start, int):
+        return node_start
+    return 0
+
+
 def _controller_output_expr(controller, port_name: str, state_code: dict[str, int], top_controller) -> str:
     active_states = [
         _state_eq_expr(_controller_state_id(controller, top_controller), state_code[emit.state])
@@ -790,34 +830,31 @@ def _register_state_sources(
     controller_codes: dict[str, dict[str, int]],
     component_library: dict[str, dict[str, Any]] | None,
 ) -> list[tuple[str, str]]:
-    region_by_id = {region.id: region for region in design.regions}
     choices: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for controller in controllers:
         if not controller.attributes.get("region"):
             continue
-        capture_step_to_source: dict[int, str] = {}
-        for region_id in _controller_region_ids(controller, design):
-            region = region_by_id.get(region_id)
-            if region is None:
-                continue
+        for region in design.regions:
             for binding in region.value_bindings:
                 if binding.register != register:
                     continue
                 source = _resolve_producer_signal(design, binding.producer, component_library, region=region)
                 if source is None:
                     continue
-                for live_start, _live_end in binding.live_intervals:
-                    capture_step = _value_capture_step(design, binding.producer, live_start, component_library)
-                    capture_step_to_source[capture_step] = source
-        for capture_step, source in sorted(capture_step_to_source.items()):
-            state_name = f"T{capture_step}"
-            if state_name not in controller_codes[controller.name]:
-                continue
-            condition = _state_eq_expr(
-                _controller_state_id(controller, top_controller),
-                controller_codes[controller.name][state_name],
-            )
-            choices.append((condition, source))
+                for capture_step in sorted(_producer_global_capture_steps(design, region.id, binding.producer, component_library)):
+                    state_name = f"T{capture_step}"
+                    if state_name not in controller_codes[controller.name]:
+                        continue
+                    condition = _state_eq_expr(
+                        _controller_state_id(controller, top_controller),
+                        controller_codes[controller.name][state_name],
+                    )
+                    pair = (condition, source)
+                    if pair in seen:
+                        continue
+                    seen.add(pair)
+                    choices.append(pair)
     return choices
 
 
@@ -892,6 +929,10 @@ def _value_live_starts(design: UHIRDesign, value_id: str, region=None) -> set[in
     if live_starts:
         return live_starts
     producer_node = _region_producer_node(region, value_id)
+    if producer_node is not None and producer_node.opcode == "phi":
+        start = producer_node.attributes.get("start")
+        if isinstance(start, int):
+            return {start}
     if producer_node is not None and producer_node.id != value_id:
         return _value_live_starts(design, producer_node.id, region=region)
     if producer_node is None:
@@ -904,6 +945,137 @@ def _value_live_starts(design: UHIRDesign, value_id: str, region=None) -> set[in
         return live_starts
     return _value_live_starts(design, returned_value, region=child_region)
     return live_starts
+
+
+def _value_global_live_starts(design: UHIRDesign, value_id: str) -> set[int]:
+    live_starts: set[int] = set()
+    region_by_id = {region.id: region for region in design.regions}
+
+    def append_region(region_id: str, offset: int) -> None:
+        region = region_by_id[region_id]
+        live_starts.update(offset + step for step in _value_live_starts(design, value_id, region=region))
+        for node in region.nodes:
+            node_start = node.attributes.get("start")
+            if not isinstance(node_start, int):
+                continue
+            if node.opcode == "loop":
+                child_id = node.attributes.get("child")
+                trip_count = node.attributes.get("static_trip_count")
+                iter_ii = node.attributes.get("iter_initiation_interval")
+                if not isinstance(child_id, str) or not isinstance(trip_count, int) or not isinstance(iter_ii, int):
+                    continue
+                for iteration in range(trip_count):
+                    append_loop_header(child_id, offset + node_start + iteration * iter_ii, expand_body=True)
+                append_loop_header(child_id, offset + node_start + trip_count * iter_ii, expand_body=False)
+                continue
+            for key in ("child", "true_child", "false_child"):
+                child_id = node.attributes.get(key)
+                if not isinstance(child_id, str) or not child_id:
+                    continue
+                append_region(child_id, offset + _child_region_shift(node, key))
+
+    def append_loop_header(region_id: str, offset: int, *, expand_body: bool) -> None:
+        region = region_by_id[region_id]
+        live_starts.update(offset + step for step in _value_live_starts(design, value_id, region=region))
+        for node in region.nodes:
+            if node.opcode == "branch":
+                true_child = node.attributes.get("true_child")
+                false_child = node.attributes.get("false_child")
+                if expand_body and isinstance(true_child, str):
+                    append_region(true_child, offset)
+                if not expand_body and isinstance(false_child, str):
+                    append_region(false_child, offset)
+                continue
+            for key in ("child", "true_child", "false_child"):
+                child_id = node.attributes.get(key)
+                if not isinstance(child_id, str) or not child_id:
+                    continue
+                append_region(child_id, offset + _child_region_shift(node, key))
+
+    for region_id in _root_region_ids(design):
+        append_region(region_id, 0)
+    return live_starts
+
+
+def _producer_global_capture_steps(
+    design: UHIRDesign,
+    producer_region_id: str,
+    producer_id: str,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> set[int]:
+    capture_steps: set[int] = set()
+    region_by_id = {region.id: region for region in design.regions}
+
+    def append_region(region_id: str, offset: int) -> None:
+        region = region_by_id[region_id]
+        if region.id == producer_region_id:
+            matched = False
+            for binding in region.value_bindings:
+                if binding.producer != producer_id:
+                    continue
+                matched = True
+                for live_start, _live_end in binding.live_intervals:
+                    capture_steps.add(offset + _value_capture_step(design, binding.producer, live_start, component_library))
+            if not matched:
+                producer_node = _region_producer_node(region, producer_id)
+                if producer_node is not None and producer_node.opcode == "phi":
+                    start = producer_node.attributes.get("start")
+                    if isinstance(start, int):
+                        capture_steps.add(offset + start)
+        for node in region.nodes:
+            node_start = node.attributes.get("start")
+            if not isinstance(node_start, int):
+                continue
+            if node.opcode == "loop":
+                child_id = node.attributes.get("child")
+                trip_count = node.attributes.get("static_trip_count")
+                iter_ii = node.attributes.get("iter_initiation_interval")
+                if not isinstance(child_id, str) or not isinstance(trip_count, int) or not isinstance(iter_ii, int):
+                    continue
+                for iteration in range(trip_count):
+                    append_loop_header(child_id, offset + node_start + iteration * iter_ii, expand_body=True)
+                append_loop_header(child_id, offset + node_start + trip_count * iter_ii, expand_body=False)
+                continue
+            for key in ("child", "true_child", "false_child"):
+                child_id = node.attributes.get(key)
+                if not isinstance(child_id, str) or not child_id:
+                    continue
+                append_region(child_id, offset + _child_region_shift(node, key))
+
+    def append_loop_header(region_id: str, offset: int, *, expand_body: bool) -> None:
+        region = region_by_id[region_id]
+        if region.id == producer_region_id:
+            matched = False
+            for binding in region.value_bindings:
+                if binding.producer != producer_id:
+                    continue
+                matched = True
+                for live_start, _live_end in binding.live_intervals:
+                    capture_steps.add(offset + _value_capture_step(design, binding.producer, live_start, component_library))
+            if not matched:
+                producer_node = _region_producer_node(region, producer_id)
+                if producer_node is not None and producer_node.opcode == "phi":
+                    start = producer_node.attributes.get("start")
+                    if isinstance(start, int):
+                        capture_steps.add(offset + start)
+        for node in region.nodes:
+            if node.opcode == "branch":
+                true_child = node.attributes.get("true_child")
+                false_child = node.attributes.get("false_child")
+                if expand_body and isinstance(true_child, str):
+                    append_region(true_child, offset)
+                if not expand_body and isinstance(false_child, str):
+                    append_region(false_child, offset)
+                continue
+            for key in ("child", "true_child", "false_child"):
+                child_id = node.attributes.get(key)
+                if not isinstance(child_id, str) or not child_id:
+                    continue
+                append_region(child_id, offset + _child_region_shift(node, key))
+
+    for region_id in _root_region_ids(design):
+        append_region(region_id, 0)
+    return capture_steps
 
 
 def _resource_value(design: UHIRDesign, resource_id: str) -> str:
@@ -2075,6 +2247,7 @@ def _resolve_producer_signal(
     value_id: str,
     component_library: dict[str, dict[str, Any]] | None,
     occurrence_index: int | None = None,
+    consumer_start: int | None = None,
     region=None,
 ) -> str | None:
     local_producer = _region_producer_node(region, value_id)
@@ -2095,7 +2268,7 @@ def _resolve_producer_signal(
     result_signal = _node_result_signal(design, producer_node, component_library)
     if result_signal is not None:
         return result_signal
-    return _node_value_expr(design, producer_node, component_library, occurrence_index)
+    return _node_value_expr(design, producer_node, component_library, occurrence_index, consumer_start=consumer_start)
 
 
 def _value_may_bypass_register(
@@ -2112,6 +2285,7 @@ def _node_value_expr(
     node,
     component_library: dict[str, dict[str, Any]] | None,
     occurrence_index: int | None,
+    consumer_start: int | None = None,
 ) -> str | None:
     if node.opcode == "phi":
         if not node.operands:
@@ -2125,6 +2299,7 @@ def _node_value_expr(
             chosen,
             component_library,
             None if occurrence_index is None else max(occurrence_index - 1, 0),
+            consumer_start=consumer_start,
         )
     if node.opcode == "call":
         returned_value = _call_return_value_id(design, node)
@@ -2136,11 +2311,19 @@ def _node_value_expr(
             returned_value,
             component_library,
             occurrence_index,
+            consumer_start=consumer_start,
             region=child_region,
         )
         if producer_signal is not None:
             return producer_signal
-        return _resolve_value_signal(design, returned_value, component_library, occurrence_index, region=child_region)
+        return _resolve_value_signal(
+            design,
+            returned_value,
+            component_library,
+            occurrence_index,
+            consumer_start=consumer_start,
+            region=child_region,
+        )
     if node.opcode == "sel" and len(node.operands) == 3:
         condition = _resolve_value_signal(design, node.operands[0], component_library, occurrence_index)
         true_value = _resolve_value_signal(design, node.operands[1], component_library, occurrence_index)

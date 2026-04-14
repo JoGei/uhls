@@ -5,6 +5,8 @@ import unittest
 from uhls.backend.hls.uhir.gopt.builtin import LoopDialectPass
 from uhls.backend.hls.uhir import create_builtin_gopt_pass, lower_module_to_seq, parse_uhir, project_to_seq_design, run_gopt_passes
 from uhls.frontend import lower_source_to_uir
+from uhls.middleend.passes.opt import CanonicalizeLoopsPass, ConstPropPass, CopyPropPass, DCEPass, UnrollLoopsPass
+from uhls.middleend.passes.util import PassManager
 from uhls.middleend.uir import parse_module
 
 
@@ -366,6 +368,41 @@ class GraphOptimizerTests(unittest.TestCase):
         )
 
         proc = design.get_region("proc_dot4")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        proc_loop = next(node for node in proc.nodes if node.opcode == "loop")
+        self.assertEqual(proc_loop.attributes.get("static_trip_count"), 4)
+
+    def test_infer_static_annotates_canonicalized_unrolled_loop(self) -> None:
+        source = """
+        int32_t add8(int32_t A[8], int32_t B[8], int32_t C[8]) {
+            int32_t i;
+            for (i = 0; i < 8; i = i + 1) {
+                C[i] = A[i] + B[i];
+            }
+            return 0;
+        }
+        """
+        optimized_module = PassManager(
+            [
+                UnrollLoopsPass("1", 2),
+                CanonicalizeLoopsPass(),
+                ConstPropPass(),
+                CopyPropPass(),
+                DCEPass(),
+            ]
+        ).run(lower_source_to_uir(source))
+
+        design = run_gopt_passes(
+            lower_module_to_seq(optimized_module, top="add8"),
+            [
+                create_builtin_gopt_pass("infer_loops"),
+                create_builtin_gopt_pass("translate_loop_dialect"),
+                create_builtin_gopt_pass("infer_static"),
+            ],
+        )
+
+        proc = design.get_region("proc_add8")
         self.assertIsNotNone(proc)
         assert proc is not None
         proc_loop = next(node for node in proc.nodes if node.opcode == "loop")

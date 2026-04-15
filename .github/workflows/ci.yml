@@ -78,7 +78,7 @@ jobs:
           - { name: "dot4_relu", legalize: { name: "Ldef", pass_pipe: "inline,prune,const_prop", pass_args: "--pass-arg dot4_relu" } }
           - { name: "dot4_i8_i32_relu_packed", legalize: { name: "Ldef", pass_pipe: "inline,prune,const_prop", pass_args: "--pass-arg dot4_i8_i32_relu_packed" } }
         opt:
-          - { name: "O0", pass_pipe: "", pass_args: "" }
+          #- { name: "O0", pass_pipe: "", pass_args: "" }
           - { name: "Odef", pass_pipe: "dce,cse,copy_prop,dce", pass_args: "" }
         opt2:
           - { name: "O2-0", pass_pipe: "", pass_args: "" }

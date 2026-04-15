@@ -2031,5 +2031,5 @@ class UGLIRSyntaxTests(unittest.TestCase):
         uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
         assign_by_target = {assign.target: assign.expr for assign in uglir_design.assigns}
 
-        self.assertEqual(assign_by_target["v1_n"], "state_q == 2 ? mul0_y_n : state_q == 3 ? mul0_y_n : r_i32_0_q")
+        self.assertEqual(assign_by_target["v1_n"], "state_q == 2 ? mul0_y_n : r_i32_0_q")
         self.assertEqual(assign_by_target["sel_alu0_a_n"], "state_q == 3 ? SRC_V1 : ZERO")

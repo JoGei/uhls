@@ -296,10 +296,11 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         reset_updates=[UGLIRSeqUpdate(_controller_state_id(top_controller, top_controller), str(controller_codes[top_controller.name]["IDLE"]))],
         updates=[UGLIRSeqUpdate(_controller_state_id(top_controller, top_controller), _controller_next_state_id(top_controller, top_controller))],
     )
-    for carry in phi_carries.values():
+    for carry_source_id, carry in phi_carries.items():
         operands = tuple(carry["operands"])
         incoming = tuple(carry["incoming"])
         entry_like = bool(incoming) and incoming[0] == "entry"
+        predecessor_update = _phi_carry_needs_predecessor_update(design, carry_source_id)
         init_region = _producer_region(design, operands[0])
         init_expr = _resolve_phi_carry_update_source(
             design,
@@ -321,30 +322,30 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
             local_live_starts = _value_live_starts(design, operand, region=operand_region) if operand_region is not None else set()
             for step in operand_global_steps:
                 producer_register = _register_for_value_at_step(design, operand, step, region=operand_region)
-                if component_library is None:
+                if component_library is None or predecessor_update:
                     update_step = max(step - 1, 0)
-                elif _value_is_identity_handoff(design, operand, region=operand_region):
-                    update_step = max(step - 1, 0)
+                    source_step = update_step if component_library is not None else step
                 else:
                     update_step = step
+                    source_step = step
                 state_name = f"T{update_step}"
                 if state_name not in controller_codes[top_controller.name]:
                     continue
                 source_expr = _resolve_phi_carry_update_source(
                     design,
                     operand,
-                    step,
+                    source_step,
                     component_library,
                     region=operand_region,
                 )
-                if source_expr is None and producer_register is not None and step not in local_live_starts:
+                if source_expr is None and producer_register is not None and source_step not in local_live_starts:
                     source_expr = producer_register
                 if source_expr is None:
                     source_expr = _resolve_value_signal(
                         design,
                         operand,
                         component_library,
-                        consumer_start=step,
+                        consumer_start=source_step,
                         region=operand_region,
                     )
                 update_sources.append(
@@ -1080,6 +1081,27 @@ def _phi_carry_specs(design: UHIRDesign) -> dict[str, dict[str, object]]:
 
 def _phi_carry_register_id(source_id: str) -> str:
     return f"phi_{source_id}"
+
+
+def _phi_carry_needs_predecessor_update(design: UHIRDesign, source_id: str) -> bool:
+    producer_region = _producer_region(design, source_id)
+    producer_node = _region_producer_node(producer_region, source_id)
+    if producer_node is None or producer_node.opcode != "phi":
+        return False
+    loop_member = producer_node.attributes.get("loop_member")
+    for region in design.regions:
+        if region.id == getattr(producer_region, "id", None):
+            continue
+        for node in region.nodes:
+            if source_id not in getattr(node, "operands", ()):
+                continue
+            if node.attributes.get("loop_member") != loop_member:
+                continue
+            if node.attributes.get("loop_role") != "body":
+                continue
+            if node.attributes.get("start") == 0:
+                return True
+    return False
 
 
 def _value_live_starts(design: UHIRDesign, value_id: str, region=None) -> set[int]:
@@ -2445,8 +2467,6 @@ def _semantic_value_result_expr(
     if not timed_states:
         return direct_expr
 
-    live_starts = _value_live_starts(design, value_id, region=producer_region)
-    producer_component_kind = _producer_bound_component_kind(design, producer_node, component_library)
     timed_exprs: list[tuple[int, int, str]] = []
     for step, state_code in timed_states:
         step_expr = _resolve_value_signal(
@@ -2459,12 +2479,6 @@ def _semantic_value_result_expr(
             allow_forward_handoff=False,
         )
         if step_expr is None or step_expr == value_id:
-            step_expr = direct_expr
-        elif (
-            producer_component_kind in {"pipelined", "sequential"}
-            and step in live_starts
-            and step_expr == _register_for_value_at_step(design, value_id, step, region=producer_region)
-        ):
             step_expr = direct_expr
         timed_exprs.append((step, state_code, step_expr))
 
@@ -2524,23 +2538,6 @@ def _semantic_value_direct_result_expr(
         if expr is not None:
             return expr
     return _node_result_signal(design, producer_node, component_library)
-
-
-def _producer_bound_component_kind(
-    design: UHIRDesign,
-    producer_node,
-    component_library: dict[str, dict[str, Any]] | None,
-) -> str | None:
-    if component_library is None:
-        return None
-    bind = getattr(producer_node, "attributes", {}).get("bind")
-    if not isinstance(bind, str) or not bind:
-        return None
-    try:
-        component_name = _resource_value(design, bind)
-    except ValueError:
-        return None
-    return _component_kind(component_library, component_name)
 
 
 def _value_is_identity_handoff(design: UHIRDesign, value_id: str, *, region=None) -> bool:

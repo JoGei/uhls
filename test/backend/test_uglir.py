@@ -68,30 +68,36 @@ def _full_executability_graph() -> ExecutabilityGraph:
     )
 
 
-def _lower_unrolled_dot4_relu_to_uglir():
-    source = Path("examples/dot4_relu/dot4_relu.c").read_text(encoding="utf-8")
+def _lower_unrolled_example_to_uglir(
+    stem: str,
+    *,
+    factor: int,
+    optimize: bool = True,
+    cleanup_after_unroll: bool = True,
+):
+    source = Path(f"examples/{stem}/{stem}.c").read_text(encoding="utf-8")
     optimized_module = PassManager(
         [
             InlineCallsPass(),
             PruneFunctionsPass(),
-            DCEPass(),
-            CSEPass(),
-            CopyPropPass(),
             ConstPropPass(),
-            DCEPass(),
         ]
-    ).run(lower_source_to_uir(source), PassContext(pass_args=("dot4_relu",)))
-    optimized_module = PassManager(
-        [
-            UnrollLoopsPass("1", 2),
-            CanonicalizeLoopsPass(),
-            ConstPropPass(),
-            CopyPropPass(),
-            DCEPass(),
-        ]
-    ).run(optimized_module)
+    ).run(lower_source_to_uir(source), PassContext(pass_args=(stem,)))
+    if optimize:
+        optimized_module = PassManager(
+            [
+                DCEPass(),
+                CSEPass(),
+                CopyPropPass(),
+                DCEPass(),
+            ]
+        ).run(optimized_module)
+    post_unroll_pipeline = [UnrollLoopsPass("1", factor), CanonicalizeLoopsPass()]
+    if cleanup_after_unroll:
+        post_unroll_pipeline.extend([ConstPropPass(), CopyPropPass(), DCEPass()])
+    optimized_module = PassManager(post_unroll_pipeline).run(optimized_module)
     seq_design = run_gopt_passes(
-        lower_module_to_seq(optimized_module, top="dot4_relu"),
+        lower_module_to_seq(optimized_module, top=stem),
         [
             create_builtin_gopt_pass("infer_loops"),
             create_builtin_gopt_pass("translate_loop_dialect"),
@@ -105,6 +111,10 @@ def _lower_unrolled_dot4_relu_to_uglir():
     sched_design = lower_alloc_to_sched(alloc_design)
     bind_design = lower_sched_to_bind(sched_design)
     return lower_fsm_to_uglir(lower_bind_to_fsm(bind_design))
+
+
+def _lower_unrolled_dot4_relu_to_uglir():
+    return _lower_unrolled_example_to_uglir("dot4_relu", factor=2)
 
 
 class UGLIRLoweringTests(unittest.TestCase):

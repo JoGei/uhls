@@ -2256,12 +2256,24 @@ def _binding_key_expr(
                 f"node '{node.id}' opcode '{node.opcode}' does not provide operand index {operand_index} for binding '{binding_key}'"
             )
         operand_region, operand_value = _specialize_child_call_operand(design, node_region, node.operands[operand_index])
+        consumer_start = node.attributes.get("start")
+        if operand_value in _phi_carry_specs(design):
+            producer_expr = _resolve_producer_signal(
+                design,
+                operand_value,
+                component_library,
+                occurrence_index,
+                consumer_start=consumer_start if isinstance(consumer_start, int) else None,
+                region=operand_region,
+            )
+            if producer_expr is not None:
+                return producer_expr
         return _resolve_value_signal(
             design,
             operand_value,
             component_library,
             occurrence_index,
-            consumer_start=node.attributes.get("start"),
+            consumer_start=consumer_start,
             region=operand_region,
         )
     return binding_key
@@ -2411,14 +2423,19 @@ def _node_value_expr(
     component_library: dict[str, dict[str, Any]] | None,
     occurrence_index: int | None,
     consumer_start: int | None = None,
+    region=None,
 ) -> str | None:
-    if node.opcode == "phi":
-        if not node.operands:
-            return None
-        if occurrence_index is None or occurrence_index > 0:
-            chosen = node.operands[1] if len(node.operands) > 1 else node.operands[0]
-        else:
-            chosen = node.operands[0]
+    def resolve_phi_choice(chosen: str) -> str:
+        producer_expr = _resolve_producer_signal(
+            design,
+            chosen,
+            component_library,
+            None if occurrence_index is None else max(occurrence_index - 1, 0),
+            consumer_start=consumer_start,
+            region=_producer_region(design, chosen),
+        )
+        if producer_expr is not None:
+            return producer_expr
         return _resolve_value_signal(
             design,
             chosen,

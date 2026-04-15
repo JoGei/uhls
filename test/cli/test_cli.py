@@ -2202,6 +2202,154 @@ block entry:
                 )
             self.assertEqual(stdout.getvalue().strip(), "5")
 
+    def test_run_command_executes_uhir_and_prints_return_value(self) -> None:
+        uhir = """design add1
+stage seq
+input  x : i32
+output result : i32
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "add1.seq.uhir"
+            path.write_text(uhir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["run", str(path), "--arg", "x=7"]), 0)
+            self.assertEqual(stdout.getvalue().strip(), "8")
+
+    def test_run_command_executes_attached_uhir_from_uir_entrypoint(self) -> None:
+        uir = """func add1(x:i32) -> i32
+
+block entry:
+    t0:i32 = add x, 1
+    ret t0
+"""
+        uhir = """design add1
+stage seq
+input  x : i32
+output result : i32
+
+region proc_add1 kind=procedure {
+  node v0 = nop role=source
+  node v1 = add x, 1 : i32
+  node v2 = ret v1
+  node v3 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v1 -> v2
+  edge data v2 -> v3
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uir_path = root / "add1.uir"
+            uhir_path = root / "add1.seq.uhir"
+            uir_path.write_text(uir, encoding="utf-8")
+            uhir_path.write_text(uhir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["run", str(uir_path), "--uhir", str(uhir_path), "--arg", "x=7"]), 0)
+            self.assertEqual(stdout.getvalue().strip(), "8")
+
+    def test_run_command_executes_attached_uhir_via_uir_call_from_main(self) -> None:
+        uir = """func dot4_relu(A:i32[], B:i32[]) -> i32
+
+block entry:
+    ret 123:i32
+
+func main() -> i32
+
+local main$A[4]:i32
+local main$B[4]:i32
+
+block entry:
+    store main$A[0:i32], 1:i32
+    store main$A[1:i32], 2:i32
+    store main$A[2:i32], 3:i32
+    store main$A[3:i32], 4:i32
+    store main$B[0:i32], 4:i32
+    store main$B[1:i32], 3:i32
+    store main$B[2:i32], 2:i32
+    store main$B[3:i32], 1:i32
+    res_0:i32 = call dot4_relu(main$A, main$B)
+    ret res_0
+"""
+        uhir = """design dot4_relu
+stage seq
+input  A : memref<i32, 4>
+input  B : memref<i32, 4>
+output result : i32
+
+region proc_dot4_relu kind=procedure {
+  node v0 = nop role=source
+  node v1 = load A[0:i32] : i32
+  node v2 = load B[0:i32] : i32
+  node v3 = mul v1, v2 : i32
+  node v4 = load A[1:i32] : i32
+  node v5 = load B[1:i32] : i32
+  node v6 = mul v4, v5 : i32
+  node v7 = add v3, v6 : i32
+  node v8 = load A[2:i32] : i32
+  node v9 = load B[2:i32] : i32
+  node v10 = mul v8, v9 : i32
+  node v11 = add v7, v10 : i32
+  node v12 = load A[3:i32] : i32
+  node v13 = load B[3:i32] : i32
+  node v14 = mul v12, v13 : i32
+  node v15 = add v11, v14 : i32
+  node v16 = ret v15
+  node v17 = nop role=sink
+
+  edge data v0 -> v1
+  edge data v0 -> v2
+  edge data v1 -> v3
+  edge data v2 -> v3
+  edge data v0 -> v4
+  edge data v0 -> v5
+  edge data v4 -> v6
+  edge data v5 -> v6
+  edge data v3 -> v7
+  edge data v6 -> v7
+  edge data v0 -> v8
+  edge data v0 -> v9
+  edge data v8 -> v10
+  edge data v9 -> v10
+  edge data v7 -> v11
+  edge data v10 -> v11
+  edge data v0 -> v12
+  edge data v0 -> v13
+  edge data v12 -> v14
+  edge data v13 -> v14
+  edge data v11 -> v15
+  edge data v14 -> v15
+  edge data v15 -> v16
+  edge data v16 -> v17
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            uir_path = root / "prog.uir"
+            uhir_path = root / "dot4_relu.seq.uhir"
+            uir_path.write_text(uir, encoding="utf-8")
+            uhir_path.write_text(uhir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["run", str(uir_path), "--uhir", str(uhir_path)]), 0)
+            self.assertEqual(stdout.getvalue().strip(), "20")
+
     def test_run_command_reports_missing_array_arguments_cleanly(self) -> None:
         uir = """func dot4(A:i32[], B:i32[]) -> i32
 

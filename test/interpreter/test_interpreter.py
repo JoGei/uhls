@@ -3,8 +3,9 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass, field
 
-from uhls.interpreter import run_uir
-from uhls.middleend.uir import Module
+from uhls.backend.hls.uhir import create_builtin_gopt_pass, lower_module_to_seq, run_gopt_passes
+from uhls.interpreter import run_uhir, run_uir
+from uhls.middleend.uir import BinaryOp, Block as UIRBlock, CallOp, Function as UIRFunction, Module, Parameter, ReturnOp, parse_module
 
 
 @dataclass
@@ -390,6 +391,111 @@ class InterpreterTests(unittest.TestCase):
         result = run_uir(caller, {"x": 9, "y": 4, "z": 2}, module=module)
 
         self.assertEqual(result.return_value, 7)
+
+    def test_uhir_executes_branch_based_seq_loop(self) -> None:
+        """Seq-stage µhIR should execute lowered branch-based loops directly."""
+
+        module = parse_module(
+            """
+            func dot4(A:i32[]) -> i32
+
+            block entry:
+                br for_header_1
+
+
+            block for_header_1:
+                i_1:i32 = phi(entry: 0:i32, for_body_2: t2_0)
+                sum_1:i32 = phi(entry: 0:i32, for_body_2: t1_0)
+                t0_0:i1 = lt i_1, 4:i32
+                cbr t0_0, for_body_2, for_exit_4
+
+
+            block for_body_2:
+                t0_1:i32 = load A[i_1]
+                t1_0:i32 = add sum_1, t0_1
+                t2_0:i32 = add i_1, 1:i32
+                br for_header_1
+
+
+            block for_exit_4:
+                ret sum_1
+            """
+        )
+
+        design = lower_module_to_seq(module, top="dot4")
+        result = run_uhir(
+            design,
+            arrays={"A": {"data": [1, 2, 3, 4], "element_type": "i32"}},
+        )
+
+        self.assertEqual(result.return_value, 10)
+
+    def test_uhir_executes_explicit_static_loop_after_gopt(self) -> None:
+        """Seq-stage µhIR should execute explicit/static loop dialect forms too."""
+
+        module = parse_module(
+            """
+            func dot4(A:i32[]) -> i32
+
+            block entry:
+                br for_header_1
+
+
+            block for_header_1:
+                i_1:i32 = phi(entry: 0:i32, for_body_2: t2_0)
+                sum_1:i32 = phi(entry: 0:i32, for_body_2: t1_0)
+                t0_0:i1 = lt i_1, 4:i32
+                cbr t0_0, for_body_2, for_exit_4
+
+
+            block for_body_2:
+                t0_1:i32 = load A[i_1]
+                t1_0:i32 = add sum_1, t0_1
+                t2_0:i32 = add i_1, 1:i32
+                br for_header_1
+
+
+            block for_exit_4:
+                ret sum_1
+            """
+        )
+
+        design = run_gopt_passes(
+            lower_module_to_seq(module, top="dot4"),
+            [
+                create_builtin_gopt_pass("infer_loops"),
+                create_builtin_gopt_pass("translate_loop_dialect"),
+                create_builtin_gopt_pass("infer_static"),
+                create_builtin_gopt_pass("simplify_static_control"),
+            ],
+        )
+        result = run_uhir(
+            design,
+            arrays={"A": {"data": [1, 2, 3, 4], "element_type": "i32"}},
+        )
+
+        self.assertEqual(result.return_value, 10)
+
+    def test_uhir_executes_interprocedural_call_with_inferred_live_ins(self) -> None:
+        """Seq-stage µhIR should infer callee live-ins for procedure calls."""
+
+        callee = UIRFunction(
+            name="callee",
+            params=[Parameter("x", "i32")],
+            return_type="i32",
+            blocks=[UIRBlock("entry", instructions=[BinaryOp("add", "y", "i32", "x", 1)], terminator=ReturnOp("y"))],
+        )
+        caller = UIRFunction(
+            name="caller",
+            params=[Parameter("z", "i32")],
+            return_type="i32",
+            blocks=[UIRBlock("entry", instructions=[CallOp("callee", ["z"], dest="r", type="i32")], terminator=ReturnOp("r"))],
+        )
+
+        design = lower_module_to_seq(Module(functions=[callee, caller]), top="caller")
+        result = run_uhir(design, arguments={"z": 7})
+
+        self.assertEqual(result.return_value, 8)
 
 
 if __name__ == "__main__":

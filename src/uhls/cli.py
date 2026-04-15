@@ -904,6 +904,9 @@ def gopt_cmd(
         "\n"
         "\b\n"
         "  uhls run input.uir --backend=verilator --uglir wrapped.uglir\n"
+        "\n"
+        "\b\n"
+        "  uhls run input.uir --uhir lowered.seq.uhir\n"
     ),
 )
 @click.argument("input_path", metavar="input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -921,6 +924,12 @@ def gopt_cmd(
     "uglir_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Wrapped µglIR artifact used by hardware-backed execution backends.",
+)
+@click.option(
+    "--uhir",
+    "uhir_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Optional µhIR artifact used by the interpreter backend while keeping the input .uir as the CLI contract.",
 )
 @click.option(
     "--resources",
@@ -948,20 +957,72 @@ def run_cmd(
     function_name: str | None,
     backend_name: str,
     uglir_path: Path | None,
+    uhir_path: Path | None,
     resources_path: Path | None,
     arguments: tuple[str, ...],
     legacy_arrays: tuple[str, ...],
     trace: bool,
     vcd_path: Path | None,
 ) -> None:
-    """Execute canonical µIR with the selected backend."""
-    module = _load_ir_file(input_path)
-    function = _select_function_for_run(module, function_name)
+    """Execute canonical µIR or seq-style µhIR with the selected backend."""
     raw_arguments = _parse_run_argument_items(list(legacy_arrays))
     raw_arguments.update(_parse_run_argument_items(list(arguments)))
+
+    if input_path.suffix.lower() == ".uhir":
+        if backend_name != "interp":
+            raise CLIError("'run' only supports --backend=interp for µhIR inputs")
+        if uhir_path is not None:
+            raise CLIError("'run' does not accept --uhir when the primary input is already µhIR")
+        if uglir_path is not None:
+            raise CLIError("'run' does not accept --uglir for µhIR inputs")
+        if resources_path is not None:
+            raise CLIError("'run' does not accept --resources for µhIR inputs")
+        if vcd_path is not None:
+            raise CLIError("'run' does not accept --vcd for µhIR inputs")
+
+        design = parse_uhir_file(input_path)
+        scalar_arguments, array_arguments = _parse_uhir_run_arguments(design, raw_arguments)
+        _validate_uhir_run_invocation(design, scalar_arguments, array_arguments)
+        result = run_uhir(
+            design,
+            arguments=scalar_arguments,
+            arrays=array_arguments,
+            function_name=function_name,
+            trace=trace,
+        )
+        _emit_run_result(result)
+        return
+
+    module = _load_ir_file(input_path)
+    function = _select_function_for_run(module, function_name)
     scalar_arguments, array_arguments = _parse_run_arguments(function, raw_arguments)
     _validate_run_invocation(function, scalar_arguments, array_arguments)
-    call_hook = None
+
+    if uhir_path is not None:
+        if backend_name != "interp":
+            raise CLIError("'run --uhir=...' only supports --backend=interp")
+        if uglir_path is not None:
+            raise CLIError("'run' does not accept --uhir together with --uglir")
+        if resources_path is not None:
+            raise CLIError("'run' does not accept --resources for µhIR-backed interpretation")
+        if vcd_path is not None:
+            raise CLIError("'run' does not accept --vcd for µhIR-backed interpretation")
+        design = parse_uhir_file(uhir_path)
+        _validate_uhir_run_target(module, design.name)
+        if getattr(function, "name", None) == design.name:
+            result = run_uhir(
+                design,
+                arguments=scalar_arguments,
+                arrays=array_arguments,
+                function_name=design.name,
+                trace=trace,
+            )
+            _emit_run_result(result)
+            return
+        call_hook = _make_uhir_run_call_hook(design)
+    else:
+        call_hook = None
+
     if backend_name == "verilator":
         if uglir_path is None:
             raise CLIError("'run --backend=verilator' requires --uglir <wrapped.uglir>")
@@ -991,16 +1052,7 @@ def run_cmd(
         if callable(cleanup):
             cleanup()
 
-    if trace:
-        for event in result.state.trace:
-            block = "" if event.block is None else f"[{event.block}] "
-            opcode = "" if event.opcode is None else f"{event.opcode} "
-            detail = "" if event.detail is None else event.detail
-            click.echo(f"{event.step}: {block}{opcode}{detail}".rstrip())
-    for line in result.state.stdout:
-        click.echo(line)
-    if result.return_value is not None:
-        click.echo(result.return_value)
+    _emit_run_result(result)
     if backend_name == "verilator":
         reports = getattr(call_hook, "_uhls_reports", None) if call_hook is not None else None
         if reports:
@@ -2479,6 +2531,27 @@ def _parse_run_arguments(
     return scalar_arguments, array_arguments
 
 
+def _parse_uhir_run_arguments(
+    design: object,
+    raw_arguments: dict[str, str],
+) -> tuple[dict[str, int], dict[str, dict[str, object]]]:
+    scalar_arguments: dict[str, int] = {}
+    array_arguments: dict[str, dict[str, object]] = {}
+    port_types = {
+        getattr(port, "name"): _parse_uhir_port_type(getattr(port, "type"))
+        for port in getattr(design, "inputs", [])
+    }
+
+    for name, payload in raw_arguments.items():
+        parameter_type = port_types.get(name)
+        if isinstance(parameter_type, ArrayType):
+            array_arguments[name] = _parse_array_argument(name, payload)
+            continue
+        scalar_arguments[name] = _parse_scalar_argument(name, payload)
+
+    return scalar_arguments, array_arguments
+
+
 def _parse_scalar_argument(name: str, payload: str) -> int:
     try:
         return int(payload)
@@ -2516,6 +2589,15 @@ def _parse_array_argument(name: str, payload: str) -> dict[str, object]:
             f"invalid array argument for '{name}': {payload!r}; expected integers like --arg {name}=[1,2,3]:i32"
         ) from exc
     return {"data": data, "element_type": element_type.strip() or "i32"}
+
+
+def _parse_uhir_port_type(type_text: str) -> object | None:
+    text = str(type_text).strip()
+    match = re.fullmatch(r"memref<\s*([^,\s>]+)\s*(?:,\s*(\d+)\s*)?>", text)
+    if match is not None:
+        element_text, extent_text = match.groups()
+        return ArrayType(normalize_type(element_text), None if extent_text is None else int(extent_text))
+    return normalize_type(text)
 
 
 def _parse_scheduler_cli_kwargs(*, sgu_latency_max: str | None) -> dict[str, object]:
@@ -2603,6 +2685,57 @@ def _validate_run_invocation(
         )
 
 
+def _validate_uhir_run_invocation(
+    design: object,
+    scalar_arguments: dict[str, int],
+    array_arguments: dict[str, dict[str, object]],
+) -> None:
+    design_name = getattr(design, "name", "<anon>")
+    scalar_parameters: set[str] = set()
+    array_parameters: set[str] = set()
+
+    for port in getattr(design, "inputs", []):
+        name = getattr(port, "name")
+        parameter_type = _parse_uhir_port_type(getattr(port, "type"))
+        if isinstance(parameter_type, ArrayType):
+            array_parameters.add(name)
+        else:
+            scalar_parameters.add(name)
+
+    unexpected_scalars = sorted(name for name in scalar_arguments if name not in scalar_parameters | array_parameters)
+    unexpected_arrays = sorted(name for name in array_arguments if name not in scalar_parameters | array_parameters)
+    unexpected_arguments = sorted(set(unexpected_scalars) | set(unexpected_arrays))
+    if unexpected_arguments:
+        raise CLIError(f"unknown arguments for µhIR design '{design_name}': {', '.join(unexpected_arguments)}")
+
+    missing_scalars = sorted(name for name in scalar_parameters if name not in scalar_arguments)
+    if missing_scalars:
+        raise CLIError(
+            f"missing scalar arguments for µhIR design '{design_name}': "
+            f"{', '.join(missing_scalars)}; pass --arg name=value"
+        )
+
+    missing_arrays = sorted(name for name in array_parameters if name not in array_arguments)
+    if missing_arrays:
+        raise CLIError(
+            f"missing array arguments for µhIR design '{design_name}': "
+            f"{', '.join(missing_arrays)}; pass --arg name=[v1,v2,...][:type]"
+        )
+
+
+def _emit_run_result(result: object) -> None:
+    if getattr(result.state, "trace", None):
+        for event in result.state.trace:
+            block = "" if event.block is None else f"[{event.block}] "
+            opcode = "" if event.opcode is None else f"{event.opcode} "
+            detail = "" if event.detail is None else event.detail
+            click.echo(f"{event.step}: {block}{opcode}{detail}".rstrip())
+    for line in result.state.stdout:
+        click.echo(line)
+    if result.return_value is not None:
+        click.echo(result.return_value)
+
+
 def _validate_verilog_run_target(module: object, design_name: str) -> None:
     getter = getattr(module, "get_function", None)
     if callable(getter):
@@ -2615,6 +2748,47 @@ def _validate_verilog_run_target(module: object, design_name: str) -> None:
     raise CLIError(
         f"'run --backend=verilog' requires wrapped µglIR design '{design_name}' to match one callable µIR function"
     )
+
+
+def _validate_uhir_run_target(module: object, design_name: str) -> None:
+    getter = getattr(module, "get_function", None)
+    if callable(getter):
+        if getter(design_name) is not None:
+            return
+    functions = getattr(module, "functions", None)
+    if functions is not None:
+        if any(getattr(function, "name", None) == design_name for function in functions):
+            return
+    raise CLIError(
+        f"'run --uhir=...' requires µhIR design '{design_name}' to match one callable µIR function"
+    )
+
+
+def _make_uhir_run_call_hook(design):
+    design_name = getattr(design, "name", None)
+
+    def call_hook(callee_name, callee, scalar_arguments, array_arguments, state):
+        if callee_name != design_name:
+            return None
+        child_state = ExecutionState(
+            memory=state.memory,
+            trace_enabled=state.trace_enabled,
+            trace=state.trace,
+            stdout=state.stdout,
+            steps=state.steps,
+        )
+        child_result = run_uhir(
+            design,
+            arguments=scalar_arguments,
+            arrays=array_arguments,
+            function_name=callee_name,
+            trace=state.trace_enabled,
+            state=child_state,
+        )
+        state.steps = child_state.steps
+        return CallHookResult(return_value=child_result.return_value)
+
+    return call_hook
 
 
 def _make_verilog_run_call_hook(

@@ -207,6 +207,26 @@ run_hw_interpret: $(UIR) $(PROT_WRAP_UGLIR)
 		exit 1 ; \
 	fi
 
+run_uhir_interpret: $(UIR) $(GOPT_UHIR)
+	@TMP_OUT="$$(mktemp)" ; \
+	STATUS=0 ; \
+	$(UHLS) run $(UIR) --uhir $(GOPT_UHIR) >"$$TMP_OUT" 2>&1 || STATUS=$$? ; \
+	cat "$$TMP_OUT" ; \
+	if [ "$$STATUS" -ne 0 ]; then \
+		rm -f "$$TMP_OUT" ; \
+		exit "$$STATUS" ; \
+	fi ; \
+	RUN_RESULT="$$(awk '/^-?[0-9]+$$/ { value = $$0 } END { if (value != "") print value }' "$$TMP_OUT")" ; \
+	rm -f "$$TMP_OUT" ; \
+	if [ -z "$$RUN_RESULT" ]; then \
+		echo "error: could not determine µhIR-backed run return value" >&2 ; \
+		exit 1 ; \
+	fi ; \
+	if [ "$$RUN_RESULT" -ne 0 ]; then \
+		echo "error: µhIR-backed run returned $$RUN_RESULT" >&2 ; \
+		exit 1 ; \
+	fi
+
 $(BUILD_DIR):
 	mkdir -p $@
 

@@ -5,6 +5,7 @@ export UHLS_ROOT ?= $(CURDIR)/..
 UHLS ?= $(UHLS_ROOT)/uhls
 DOT ?= dot
 YOSYS ?= yosys
+UHLS_DEPS := $(UHLS) $(shell find $(UHLS_ROOT)/src/uhls -type f \( -name '*.py' -o -name '*.json' \))
 
 STEM ?= dot4_relu
 SRC ?= $(STEM)/$(STEM).c
@@ -209,24 +210,24 @@ run_hw_interpret: $(UIR) $(PROT_WRAP_UGLIR)
 $(BUILD_DIR):
 	mkdir -p $@
 
-$(UIR): $(SRC) | $(BUILD_DIR)
+$(UIR): $(SRC) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) parse $< -o $@
 
-$(LEGALIZE_UIR): $(UIR) | $(BUILD_DIR)
+$(LEGALIZE_UIR): $(UIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	if [ -n "$(strip $(LEGALIZE_PASSES))" ]; then \
 		$(UHLS) opt $< -p $(LEGALIZE_PASSES) $(LEGALIZE_PASSES_ARGS) -o $@; \
 	else \
 		cp $< $@; \
 	fi
 
-$(OPT_UIR): $(LEGALIZE_UIR) | $(BUILD_DIR)
+$(OPT_UIR): $(LEGALIZE_UIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	if [ -n "$(strip $(OPT_PASSES))" ]; then \
 		$(UHLS) opt $< -p $(OPT_PASSES) $(OPT_PASSES_ARGS) -o $@; \
 	else \
 		cp $< $@; \
 	fi
 
-$(OPT2_UIR): $(OPT_UIR) | $(BUILD_DIR)
+$(OPT2_UIR): $(OPT_UIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	if [ -n "$(strip $(OPT2_PASSES))" ]; then \
 		$(UHLS) opt $< -p $(OPT2_PASSES) $(OPT2_PASSES_ARGS) -o $@; \
 	else \
@@ -251,7 +252,7 @@ $(CDFG_DOT): $(OPT2_UIR) | $(BUILD_DIR)
 $(CDFG_SVG): $(CDFG_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(SEQ_UHIR): $(OPT2_UIR) | $(BUILD_DIR)
+$(SEQ_UHIR): $(OPT2_UIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) seq $< --top $(TOP) -o $@
 
 $(SEQ_DOT): $(SEQ_UHIR) | $(BUILD_DIR)
@@ -260,7 +261,7 @@ $(SEQ_DOT): $(SEQ_UHIR) | $(BUILD_DIR)
 $(SEQ_SVG): $(SEQ_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(GOPT_UHIR): $(SEQ_UHIR) | $(BUILD_DIR)
+$(GOPT_UHIR): $(SEQ_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) gopt $< -p $(GOPT_PASSES) $(GOPT_PASSES_ARGS) -o $@
 
 $(GOPT_DOT): $(GOPT_UHIR) | $(BUILD_DIR)
@@ -269,7 +270,7 @@ $(GOPT_DOT): $(GOPT_UHIR) | $(BUILD_DIR)
 $(GOPT_SVG): $(GOPT_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(ALLOC_UHIR): $(GOPT_UHIR) $(RES) $(VENDOR_RES) | $(BUILD_DIR)
+$(ALLOC_UHIR): $(GOPT_UHIR) $(RES) $(VENDOR_RES) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) alloc $< $(ALLOC_ARGS) -o $@
 
 $(ALLOC_DOT): $(ALLOC_UHIR) | $(BUILD_DIR)
@@ -278,10 +279,10 @@ $(ALLOC_DOT): $(ALLOC_UHIR) | $(BUILD_DIR)
 $(ALLOC_SVG): $(ALLOC_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(SCHED_UHIR): $(ALLOC_UHIR) | $(BUILD_DIR)
+$(SCHED_UHIR): $(ALLOC_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) sched --algo $(SCHED_ALGO) $< -o $@
 
-$(BIND_UHIR): $(SCHED_UHIR) | $(BUILD_DIR)
+$(BIND_UHIR): $(SCHED_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) bind $< --algo $(BIND_ALGO) --flatten -o $@
 
 $(BIND_DOT): $(BIND_UHIR) | $(BUILD_DIR)
@@ -308,7 +309,7 @@ $(BIND_TRP_DOT): $(BIND_UHIR) | $(BUILD_DIR)
 $(BIND_TRP_SVG): $(BIND_TRP_DOT) | $(BUILD_DIR)
 	$(DOT) -Lg -Tsvg $< -o $@
 
-$(FSM_UHIR): $(BIND_UHIR) | $(BUILD_DIR)
+$(FSM_UHIR): $(BIND_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) fsm $< --encoding=$(FSM_ENCODING) -o $@
 
 $(FSM_DOT): $(FSM_UHIR) | $(BUILD_DIR)
@@ -317,19 +318,19 @@ $(FSM_DOT): $(FSM_UHIR) | $(BUILD_DIR)
 $(FSM_SVG): $(FSM_DOT) | $(BUILD_DIR)
 	$(DOT) -Lg -Tsvg $< -o $@
 
-$(UGLIR): $(FSM_UHIR) | $(BUILD_DIR)
+$(UGLIR): $(FSM_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) glue $(GLUE_ARGS) $< -o $@
 
-$(RTL): $(UGLIR) | $(BUILD_DIR)
+$(RTL): $(UGLIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) rtl $< --hdl=$(RTL_HDL) -o $@
 
-$(PROT_WRAP_UGLIR): $(FSM_UHIR) | $(BUILD_DIR)
+$(PROT_WRAP_UGLIR): $(FSM_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) glue --wrap=$(GLUE_WRAP_NORM) --protocol=$(GLUE_PROTOCOL_NORM) $< -o $@
 
-$(PROT_WRAP_RTL): $(PROT_WRAP_UGLIR) | $(BUILD_DIR)
+$(PROT_WRAP_RTL): $(PROT_WRAP_UGLIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) rtl $< --hdl=$(RTL_HDL) -o $@
 
-$(PROT_WRAP_DRV): $(PROT_WRAP_UGLIR) | $(BUILD_DIR)
+$(PROT_WRAP_DRV): $(PROT_WRAP_UGLIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) drv $< --lang=$(DRV_LANG) -o $@
 
 $(PROT_WRAP_MMIO): $(PROT_WRAP_UGLIR) | $(BUILD_DIR)

@@ -297,39 +297,81 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         updates=[UGLIRSeqUpdate(_controller_state_id(top_controller, top_controller), _controller_next_state_id(top_controller, top_controller))],
     )
     for carry in phi_carries.values():
-        init_expr = _resolve_value_signal(design, carry["init"], component_library, 0)
-        backedge_region = _producer_region(design, carry["backedge"])
-        backedge_local_steps = sorted(_value_live_starts(design, carry["backedge"], region=backedge_region))
-        backedge_global_steps = sorted(_value_global_live_starts(design, carry["backedge"]))
-        backedge_consumer_start = backedge_local_steps[0] if len(backedge_local_steps) == 1 else None
-        source_expr = _resolve_producer_signal(
-            design,
-            carry["backedge"],
-            component_library,
-            consumer_start=backedge_consumer_start,
-            region=backedge_region,
-        )
-        if source_expr is None:
-            source_expr = _resolve_value_signal(
-                design,
-                carry["backedge"],
-                component_library,
-                consumer_start=backedge_consumer_start,
-                region=backedge_region,
-            )
-        backedge_conditions = [
-            _state_eq_expr(
-                _controller_state_id(top_controller, top_controller),
-                controller_codes[top_controller.name][f"T{step}"],
-            )
-            for step in backedge_global_steps
-            if f"T{step}" in controller_codes[top_controller.name]
-        ]
-        enable_expr = "req_fire"
-        if backedge_conditions:
-            enable_expr = f"req_fire | {' | '.join(backedge_conditions)}"
-        value_expr = f"(req_fire) ? {init_expr} : {source_expr}"
-        top_seq_block.reset_updates.append(UGLIRSeqUpdate(carry["register"], init_expr))
+        operands = tuple(carry["operands"])
+        incoming = tuple(carry["incoming"])
+        entry_like = bool(incoming) and incoming[0] == "entry"
+        init_expr = _resolve_value_signal(design, operands[0], component_library, 0)
+
+        update_sources: list[tuple[str, str]] = []
+        start_index = 1 if entry_like else 0
+        for operand in operands[start_index:]:
+            operand_region = _producer_region(design, operand)
+            operand_local_steps = sorted(_value_live_starts(design, operand, region=operand_region))
+            operand_global_steps = sorted(_value_global_live_starts(design, operand))
+            if not operand_global_steps:
+                continue
+            for index, step in enumerate(operand_global_steps):
+                state_name = f"T{step}"
+                if state_name not in controller_codes[top_controller.name]:
+                    continue
+                operand_consumer_start = None
+                if operand_local_steps:
+                    if len(operand_local_steps) == 1:
+                        operand_consumer_start = operand_local_steps[0]
+                    else:
+                        operand_consumer_start = operand_local_steps[index % len(operand_local_steps)]
+                source_expr = _resolve_producer_signal(
+                    design,
+                    operand,
+                    component_library,
+                    consumer_start=operand_consumer_start,
+                    region=operand_region,
+                )
+                if source_expr is None:
+                    source_expr = _resolve_value_signal(
+                        design,
+                        operand,
+                        component_library,
+                        consumer_start=operand_consumer_start,
+                        region=operand_region,
+                    )
+                update_sources.append(
+                    (
+                        _state_eq_expr(
+                            _controller_state_id(top_controller, top_controller),
+                            controller_codes[top_controller.name][state_name],
+                        ),
+                        source_expr,
+                    )
+                )
+
+        enable_parts: list[str] = ["req_fire"] if entry_like else []
+        enable_parts.extend(condition for condition, _source in update_sources)
+        enable_expr = " | ".join(enable_parts) if enable_parts else "false"
+
+        if entry_like:
+            value_expr = f"(req_fire) ? {init_expr}"
+            if update_sources:
+                value_expr += " : " + " : ".join(
+                    f"({condition}) ? {source}"
+                    for condition, source in update_sources
+                )
+                value_expr += f" : {carry['register']}"
+            else:
+                value_expr += f" : {carry['register']}"
+            reset_expr = init_expr
+        else:
+            if update_sources:
+                value_expr = " : ".join(
+                    f"({condition}) ? {source}"
+                    for condition, source in update_sources
+                )
+                value_expr += f" : {carry['register']}"
+            else:
+                value_expr = carry["register"]
+            reset_expr = _default_net_expr(carry["type"])
+
+        top_seq_block.reset_updates.append(UGLIRSeqUpdate(carry["register"], reset_expr))
         top_seq_block.updates.append(UGLIRSeqUpdate(carry["register"], value_expr, enable_expr))
     for target, value, enable, reset_value in held_input_updates:
         top_seq_block.reset_updates.append(UGLIRSeqUpdate(target, reset_value))
@@ -890,8 +932,8 @@ def _producer_register_map(design: UHIRDesign) -> dict[str, str]:
     return mapping
 
 
-def _phi_carry_specs(design: UHIRDesign) -> dict[str, dict[str, str]]:
-    specs: dict[str, dict[str, str]] = {}
+def _phi_carry_specs(design: UHIRDesign) -> dict[str, dict[str, object]]:
+    specs: dict[str, dict[str, object]] = {}
     for region in design.regions:
         source_by_node = {
             source_map.node_id: source_map.source_id
@@ -905,11 +947,14 @@ def _phi_carry_specs(design: UHIRDesign) -> dict[str, dict[str, str]]:
                 continue
             if not isinstance(node.result_type, str) or not node.result_type:
                 continue
+            loop_role = node.attributes.get("loop_role")
+            if loop_role not in {"header", "body"}:
+                continue
             specs[source_id] = {
                 "register": _phi_carry_register_id(source_id),
                 "type": node.result_type,
-                "init": node.operands[0],
-                "backedge": node.operands[1],
+                "operands": tuple(node.operands),
+                "incoming": tuple(node.attributes.get("incoming", ())),
             }
     return specs
 
@@ -930,6 +975,14 @@ def _value_live_starts(design: UHIRDesign, value_id: str, region=None) -> set[in
         return live_starts
     producer_node = _region_producer_node(region, value_id)
     if producer_node is not None and producer_node.opcode == "phi":
+        incoming = tuple(producer_node.attributes.get("incoming", ()))
+        if incoming and incoming[0] != "entry":
+            operand_steps: set[int] = set()
+            for operand in producer_node.operands:
+                operand_region = _producer_region(design, operand)
+                operand_steps.update(_value_live_starts(design, operand, region=operand_region))
+            if operand_steps:
+                return operand_steps
         start = producer_node.attributes.get("start")
         if isinstance(start, int):
             return {start}
@@ -1019,9 +1072,19 @@ def _producer_global_capture_steps(
             if not matched:
                 producer_node = _region_producer_node(region, producer_id)
                 if producer_node is not None and producer_node.opcode == "phi":
-                    start = producer_node.attributes.get("start")
-                    if isinstance(start, int):
-                        capture_steps.add(offset + start)
+                    incoming = tuple(producer_node.attributes.get("incoming", ()))
+                    used_operand_steps = False
+                    if incoming and incoming[0] != "entry":
+                        for operand in producer_node.operands:
+                            operand_region = _producer_region(design, operand)
+                            operand_steps = sorted(_value_live_starts(design, operand, region=operand_region))
+                            for live_start in operand_steps:
+                                capture_steps.add(offset + _value_capture_step(design, operand, live_start, component_library))
+                        used_operand_steps = True
+                    if not used_operand_steps:
+                        start = producer_node.attributes.get("start")
+                        if isinstance(start, int):
+                            capture_steps.add(offset + start)
         for node in region.nodes:
             node_start = node.attributes.get("start")
             if not isinstance(node_start, int):
@@ -1055,9 +1118,19 @@ def _producer_global_capture_steps(
             if not matched:
                 producer_node = _region_producer_node(region, producer_id)
                 if producer_node is not None and producer_node.opcode == "phi":
-                    start = producer_node.attributes.get("start")
-                    if isinstance(start, int):
-                        capture_steps.add(offset + start)
+                    incoming = tuple(producer_node.attributes.get("incoming", ()))
+                    used_operand_steps = False
+                    if incoming and incoming[0] != "entry":
+                        for operand in producer_node.operands:
+                            operand_region = _producer_region(design, operand)
+                            operand_steps = sorted(_value_live_starts(design, operand, region=operand_region))
+                            for live_start in operand_steps:
+                                capture_steps.add(offset + _value_capture_step(design, operand, live_start, component_library))
+                        used_operand_steps = True
+                    if not used_operand_steps:
+                        start = producer_node.attributes.get("start")
+                        if isinstance(start, int):
+                            capture_steps.add(offset + start)
         for node in region.nodes:
             if node.opcode == "branch":
                 true_child = node.attributes.get("true_child")
@@ -1242,19 +1315,26 @@ def _output_drivers(
     component_library: dict[str, dict[str, Any]] | None,
 ) -> dict[str, str]:
     producer_to_register = _producer_register_map(design)
-    returned_values: list[str] = []
+    returned_values: list[tuple[str, int | None, object | None]] = []
     for region in design.regions:
         if region.parent is not None:
             continue
         for node in region.nodes:
             if node.opcode == "ret" and node.operands:
-                returned_values.append(node.operands[0])
+                start = node.attributes.get("start")
+                returned_values.append((node.operands[0], start if isinstance(start, int) else None, region))
     drivers: dict[str, str] = {}
-    for output, returned in zip(design.outputs, returned_values, strict=False):
+    for output, (returned, consumer_start, region) in zip(design.outputs, returned_values, strict=False):
         if returned in producer_to_register:
             drivers[output.name] = producer_to_register[returned]
         else:
-            drivers[output.name] = _resolve_value_signal(design, returned, component_library)
+            drivers[output.name] = _resolve_value_signal(
+                design,
+                returned,
+                component_library,
+                consumer_start=consumer_start,
+                region=region,
+            )
     return drivers
 
 
@@ -2006,11 +2086,47 @@ def _add_semantic_value_result_nets(
             continue
         if not isinstance(getattr(producer_node, "attributes", {}).get("bind"), str):
             continue
-        raw_signal = _node_result_signal(design, producer_node, component_library)
-        if raw_signal is None or raw_signal == value_id or _is_known_uglir_signal(lowered, value_id):
+        result_expr = _semantic_value_result_expr(design, value_id, producer_node, component_library)
+        if result_expr is None or result_expr == value_id or _is_known_uglir_signal(lowered, value_id):
             continue
         lowered.resources.append(UGLIRResource("net", value_id, result_type))
-        lowered.assigns.append(UGLIRAssign(value_id, raw_signal))
+        lowered.assigns.append(UGLIRAssign(value_id, result_expr))
+
+
+def _semantic_value_result_expr(
+    design: UHIRDesign,
+    value_id: str,
+    producer_node,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> str | None:
+    if producer_node.opcode == "mov":
+        producer_region = _producer_region(design, value_id)
+        operand_region, operand_value = _specialize_child_call_operand(design, producer_region, producer_node.operands[0])
+        phi_carries = _phi_carry_specs(design)
+        if operand_value in phi_carries:
+            expr = _resolve_value_signal(
+                design,
+                operand_value,
+                component_library,
+                region=operand_region,
+            )
+        else:
+            expr = _resolve_producer_signal(
+                design,
+                operand_value,
+                component_library,
+                region=operand_region,
+            )
+        if expr is None:
+            expr = _resolve_value_signal(
+                design,
+                operand_value,
+                component_library,
+                region=operand_region,
+            )
+        if expr is not None:
+            return expr
+    return _node_result_signal(design, producer_node, component_library)
 
 
 def _component_result_port(
@@ -2225,6 +2341,7 @@ def _resolve_value_signal(
                 value_id,
                 component_library,
                 occurrence_index,
+                consumer_start=consumer_start,
                 region=region,
             )
             if result_signal is not None:
@@ -2235,6 +2352,7 @@ def _resolve_value_signal(
         value_id,
         component_library,
         occurrence_index,
+        consumer_start=consumer_start,
         region=region,
     )
     if result_signal is not None:
@@ -2268,7 +2386,14 @@ def _resolve_producer_signal(
     result_signal = _node_result_signal(design, producer_node, component_library)
     if result_signal is not None:
         return result_signal
-    return _node_value_expr(design, producer_node, component_library, occurrence_index, consumer_start=consumer_start)
+    return _node_value_expr(
+        design,
+        producer_node,
+        component_library,
+        occurrence_index,
+        consumer_start=consumer_start,
+        region=region if local_producer is not None else _producer_region(design, value_id),
+    )
 
 
 def _value_may_bypass_register(
@@ -2301,6 +2426,54 @@ def _node_value_expr(
             None if occurrence_index is None else max(occurrence_index - 1, 0),
             consumer_start=consumer_start,
         )
+
+    if node.opcode == "mov" and len(node.operands) == 1:
+        operand_region, operand_value = _specialize_child_call_operand(design, region, node.operands[0])
+        return _resolve_value_signal(
+            design,
+            operand_value,
+            component_library,
+            occurrence_index,
+            consumer_start=consumer_start,
+            region=operand_region,
+        )
+    if node.opcode == "phi":
+        if not node.operands:
+            return None
+        branch_merge_expr = _branch_merge_phi_expr(
+            design,
+            node,
+            component_library,
+            occurrence_index,
+            consumer_start=consumer_start,
+            region=region,
+        )
+        if branch_merge_expr is not None:
+            return branch_merge_expr
+        if consumer_start is not None:
+            incoming = tuple(node.attributes.get("incoming", ()))
+            if incoming and incoming[0] == "entry" and consumer_start == 0:
+                chosen = node.operands[0]
+                return resolve_phi_choice(chosen)
+            best_index: int | None = None
+            best_step: int | None = None
+            for index, operand in enumerate(node.operands):
+                operand_region = _producer_region(design, operand)
+                operand_steps = sorted(_value_live_starts(design, operand, region=operand_region))
+                for step in operand_steps:
+                    if step > consumer_start:
+                        continue
+                    if best_step is None or step >= best_step:
+                        best_index = index
+                        best_step = step
+            if best_index is not None:
+                chosen = node.operands[best_index]
+                return resolve_phi_choice(chosen)
+        if occurrence_index is None or occurrence_index > 0:
+            chosen = node.operands[1] if len(node.operands) > 1 else node.operands[0]
+        else:
+            chosen = node.operands[0]
+        return resolve_phi_choice(chosen)
     if node.opcode == "call":
         returned_value = _call_return_value_id(design, node)
         if returned_value is None:
@@ -2406,6 +2579,83 @@ def _default_net_expr(port_type: str) -> str:
     if port_type == "i1":
         return "false"
     return f"0:{port_type}"
+
+
+def _branch_merge_phi_expr(
+    design: UHIRDesign,
+    node,
+    component_library: dict[str, dict[str, Any]] | None,
+    occurrence_index: int | None,
+    *,
+    consumer_start: int | None = None,
+    region=None,
+) -> str | None:
+    incoming = tuple(node.attributes.get("incoming", ()))
+    if len(node.operands) != 2 or len(incoming) != 2:
+        return None
+    node_region = region if region is not None else _producer_region(design, node.id)
+    if node_region is None:
+        return None
+
+    phi_start = node.attributes.get("start")
+    best_branch = None
+    best_start = -1
+    for candidate in node_region.nodes:
+        if candidate.opcode != "branch" or not candidate.operands:
+            continue
+        true_label = candidate.attributes.get("true_input_label")
+        false_label = candidate.attributes.get("false_input_label")
+        if not isinstance(true_label, str) or not isinstance(false_label, str):
+            continue
+        if {true_label, false_label} != set(incoming):
+            continue
+        candidate_start = candidate.attributes.get("start")
+        if isinstance(phi_start, int) and isinstance(candidate_start, int) and candidate_start > phi_start:
+            continue
+        if isinstance(candidate_start, int) and candidate_start >= best_start:
+            best_branch = candidate
+            best_start = candidate_start
+    if best_branch is None:
+        return None
+
+    true_label = best_branch.attributes.get("true_input_label")
+    false_label = best_branch.attributes.get("false_input_label")
+    assert isinstance(true_label, str)
+    assert isinstance(false_label, str)
+
+    try:
+        true_index = incoming.index(true_label)
+        false_index = incoming.index(false_label)
+    except ValueError:
+        return None
+
+    branch_start = best_branch.attributes.get("start")
+    branch_consumer_start = consumer_start if isinstance(consumer_start, int) else branch_start if isinstance(branch_start, int) else None
+    condition_expr = _resolve_value_signal(
+        design,
+        best_branch.operands[0],
+        component_library,
+        occurrence_index,
+        consumer_start=branch_consumer_start,
+        region=node_region,
+    )
+    true_expr = _resolve_value_signal(
+        design,
+        node.operands[true_index],
+        component_library,
+        occurrence_index,
+        consumer_start=consumer_start,
+        region=node_region,
+    )
+    false_expr = _resolve_value_signal(
+        design,
+        node.operands[false_index],
+        component_library,
+        occurrence_index,
+        consumer_start=consumer_start,
+        region=node_region,
+    )
+    return f"({condition_expr}) ? {true_expr} : {false_expr}"
 
 
 def _opcode_expr(

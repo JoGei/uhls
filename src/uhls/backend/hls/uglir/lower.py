@@ -306,25 +306,29 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         start_index = 1 if entry_like else 0
         for operand in operands[start_index:]:
             operand_region = _producer_region(design, operand)
-            operand_local_steps = sorted(_value_live_starts(design, operand, region=operand_region))
-            operand_global_steps = sorted(_value_global_live_starts(design, operand))
+            operand_global_steps: list[int]
+            if operand_region is not None:
+                operand_global_steps = sorted(
+                    _producer_global_capture_steps(
+                        design,
+                        operand_region.id,
+                        operand,
+                        component_library,
+                    )
+                )
+            else:
+                operand_global_steps = sorted(_value_global_live_starts(design, operand))
             if not operand_global_steps:
                 continue
-            for index, step in enumerate(operand_global_steps):
+            for step in operand_global_steps:
                 state_name = f"T{step}"
                 if state_name not in controller_codes[top_controller.name]:
                     continue
-                operand_consumer_start = None
-                if operand_local_steps:
-                    if len(operand_local_steps) == 1:
-                        operand_consumer_start = operand_local_steps[0]
-                    else:
-                        operand_consumer_start = operand_local_steps[index % len(operand_local_steps)]
-                source_expr = _resolve_producer_signal(
+                source_expr = _resolve_phi_carry_update_source(
                     design,
                     operand,
+                    step,
                     component_library,
-                    consumer_start=operand_consumer_start,
                     region=operand_region,
                 )
                 if source_expr is None:
@@ -332,7 +336,7 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                         design,
                         operand,
                         component_library,
-                        consumer_start=operand_consumer_start,
+                        consumer_start=step,
                         region=operand_region,
                     )
                 update_sources.append(
@@ -881,10 +885,10 @@ def _register_state_sources(
             for binding in region.value_bindings:
                 if binding.register != register:
                     continue
-                source = _resolve_producer_signal(design, binding.producer, component_library, region=region)
-                if source is None:
-                    continue
                 for capture_step in sorted(_producer_global_capture_steps(design, region.id, binding.producer, component_library)):
+                    source = _resolve_producer_signal(design, binding.producer, component_library, region=region)
+                    if source is None:
+                        continue
                     state_name = f"T{capture_step}"
                     if state_name not in controller_codes[controller.name]:
                         continue
@@ -2258,16 +2262,21 @@ def _binding_key_expr(
         operand_region, operand_value = _specialize_child_call_operand(design, node_region, node.operands[operand_index])
         consumer_start = node.attributes.get("start")
         if operand_value in _phi_carry_specs(design):
-            producer_expr = _resolve_producer_signal(
-                design,
-                operand_value,
-                component_library,
-                occurrence_index,
-                consumer_start=consumer_start if isinstance(consumer_start, int) else None,
-                region=operand_region,
-            )
-            if producer_expr is not None:
-                return producer_expr
+            if (
+                occurrence_index is None
+                and isinstance(consumer_start, int)
+                and consumer_start in _value_global_live_starts(design, operand_value)
+            ):
+                producer_expr = _resolve_producer_signal(
+                    design,
+                    operand_value,
+                    component_library,
+                    occurrence_index,
+                    consumer_start=consumer_start,
+                    region=operand_region,
+                )
+                if producer_expr is not None:
+                    return producer_expr
         return _resolve_value_signal(
             design,
             operand_value,
@@ -2394,6 +2403,21 @@ def _resolve_producer_signal(
         and isinstance(getattr(producer_node, "attributes", {}).get("bind"), str)
         and not (local_producer is not None and _value_id_is_ambiguous(design, value_id))
     ):
+        if consumer_start is not None:
+            producer_register = _producer_register_map(design).get(value_id)
+            live_starts = sorted(
+                _value_live_starts(
+                    design,
+                    value_id,
+                    region=region if local_producer is not None else _producer_region(design, value_id),
+                )
+            )
+            if (
+                producer_register is not None
+                and live_starts
+                and max(live_starts) < consumer_start
+            ):
+                return producer_register
         return value_id
     result_signal = _node_result_signal(design, producer_node, component_library)
     if result_signal is not None:
@@ -2405,6 +2429,61 @@ def _resolve_producer_signal(
         occurrence_index,
         consumer_start=consumer_start,
         region=region if local_producer is not None else _producer_region(design, value_id),
+    )
+
+
+def _resolve_phi_carry_update_source(
+    design: UHIRDesign,
+    value_id: str,
+    step: int,
+    component_library: dict[str, dict[str, Any]] | None,
+    *,
+    region=None,
+) -> str | None:
+    producer_node = _region_producer_node(region, value_id)
+    if producer_node is None:
+        producer_node = _producer_node_map(design).get(value_id)
+    if producer_node is not None and producer_node.opcode == "phi":
+        for operand in producer_node.operands:
+            operand_region = _producer_region(design, operand)
+            operand_steps: set[int]
+            if operand_region is not None:
+                operand_steps = _producer_global_capture_steps(
+                    design,
+                    operand_region.id,
+                    operand,
+                    component_library,
+                )
+            else:
+                operand_steps = _value_global_live_starts(design, operand)
+            if step not in operand_steps:
+                continue
+            source = _resolve_phi_carry_update_source(
+                design,
+                operand,
+                step,
+                component_library,
+                region=operand_region,
+            )
+            if source is not None:
+                return source
+    if (
+        producer_node is not None
+        and isinstance(value_id, str)
+        and value_id
+        and isinstance(getattr(producer_node, "result_type", None), str)
+        and getattr(producer_node, "result_type")
+        and isinstance(getattr(producer_node, "attributes", {}).get("bind"), str)
+        and step in _value_global_live_starts(design, value_id)
+        and not (region is not None and _value_id_is_ambiguous(design, value_id))
+    ):
+        return value_id
+    return _resolve_producer_signal(
+        design,
+        value_id,
+        component_library,
+        consumer_start=step,
+        region=region,
     )
 
 
@@ -2469,7 +2548,12 @@ def _node_value_expr(
             return branch_merge_expr
         if consumer_start is not None:
             incoming = tuple(node.attributes.get("incoming", ()))
-            if incoming and incoming[0] == "entry" and consumer_start == 0:
+            if (
+                incoming
+                and incoming[0] == "entry"
+                and consumer_start == 0
+                and (occurrence_index is None or occurrence_index == 0)
+            ):
                 chosen = node.operands[0]
                 return resolve_phi_choice(chosen)
             best_index: int | None = None

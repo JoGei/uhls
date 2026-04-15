@@ -66,7 +66,7 @@ jobs:
 
   examples-all:
     needs: unit-tests
-    name: make all [${{ matrix.example }}, ${{ matrix.legalize.name }}, ${{ matrix.opt.name }}, ${{ matrix.opt2.name }}, ${{ matrix.gopt.name }}]
+    name: make all [${{ matrix.example.name }}, ${{ matrix.example.legalize.name }}, ${{ matrix.opt.name }}, ${{ matrix.opt2.name }}, ${{ matrix.gopt.name }}]
     runs-on: ${{ matrix.os.name }}-${{ matrix.os.version }}
     strategy:
       matrix:
@@ -74,9 +74,9 @@ jobs:
           - { name: "ubuntu", version: "latest" }
         container:
           - { name: "tumeda/eda-osic-tools", version: "latest-default" }
-        example: [ "foo", "dot4_relu", "dot4_i8_i32_relu_packed" ]
-        legalize:
-          - { name: "Ldef", pass_pipe: "inline,prune,const_prop", pass_args: "--pass-arg dot4_relu" }
+        example: 
+          - { name: "dot4_relu", legalize: { name: "Ldef", pass_pipe: "inline,prune,const_prop", pass_args: "--pass-arg dot4_relu" } }
+          - { name: "dot4_i8_i32_relu_packed", legalize: { name: "Ldef", pass_pipe: "inline,prune,const_prop", pass_args: "--pass-arg dot4_i8_i32_relu_packed" } }
         opt:
           - { name: "O0", pass_pipe: "", pass_args: "" }
           - { name: "Odef", pass_pipe: "dce,cse,copy_prop,dce", pass_args: "" }
@@ -122,15 +122,15 @@ jobs:
         run: |
           source ${VENV_ROOT}/bin/activate
           python3 -m pip install -r requirements.txt
-          make -C examples STEM="${{ matrix.example }}" \
-            LEGALIZE_PASSES="${{ matrix.legalize.pass_pipe }}" LEGALIZE_PASSES_ARGS="${{ matrix.legalize.pass_args }}" \
+          make -C examples STEM="${{ matrix.example.name }}" \
+            LEGALIZE_PASSES="${{ matrix.example.legalize.pass_pipe }}" LEGALIZE_PASSES_ARGS="${{ matrix.example.legalize.pass_args }}" \
             OPT_PASSES="${{ matrix.opt.pass_pipe }}" OPT_PASSES_ARGS="${{ matrix.opt.pass_args }}" \
             OPT2_PASSES="${{ matrix.opt2.pass_pipe }}" OPT2_PASSES_ARGS="${{ matrix.opt2.pass_args }}" \
             GOPT_PASSES="${{ matrix.gopt.pass_pipe }}" GOPT_PASSES_ARGS="${{ matrix.gopt.pass_args }}"
 
   examples-asic:
     needs: examples-all
-    name: make asic [${{ matrix.example }}, ${{ matrix.legalize.name }}, ${{ matrix.opt.name }}, ${{ matrix.opt2.name }}, ${{ matrix.gopt.name }}]
+    name: make asic [${{ matrix.example.name }}, ${{ matrix.example.legalize.name }}, ${{ matrix.opt.name }}, ${{ matrix.opt2.name }}, ${{ matrix.gopt.name }}]
     runs-on: ${{ matrix.os.name }}-${{ matrix.os.version }}
     strategy:
       matrix:
@@ -138,9 +138,8 @@ jobs:
           - { name: "ubuntu", version: "latest" }
         container:
           - { name: "tumeda/eda-osic-tools", version: "latest-default" }
-        example: [ "dot4_relu" ]
-        legalize:
-          - { name: "Ldef", pass_pipe: "inline,prune,const_prop", pass_args: "--pass-arg dot4_relu" }
+        example: 
+          - { name: "dot4_relu", legalize: { name: "Ldef", pass_pipe: "inline,prune,const_prop", pass_args: "--pass-arg dot4_relu" } }
         opt:
           #- { name: "O0", pass_pipe: "", pass_args: "" }
           - { name: "Odef", pass_pipe: "dce,cse,copy_prop,dce", pass_args: "" }
@@ -186,8 +185,8 @@ jobs:
         run: |
           source ${VENV_ROOT}/bin/activate
           python3 -m pip install -r requirements.txt
-          make -C examples STEM="${{ matrix.example }}" asic \
-            LEGALIZE_PASSES="${{ matrix.legalize.pass_pipe }}" LEGALIZE_PASSES_ARGS="${{ matrix.legalize.pass_args }}" \
+          make -C examples STEM="${{ matrix.example.name }}" asic \
+            LEGALIZE_PASSES="${{ matrix.example.legalize.pass_pipe }}" LEGALIZE_PASSES_ARGS="${{ matrix.example.legalize.pass_args }}" \
             OPT_PASSES="${{ matrix.opt.pass_pipe }}" OPT_PASSES_ARGS="${{ matrix.opt.pass_args }}" \
             OPT2_PASSES="${{ matrix.opt2.pass_pipe }}" OPT2_PASSES_ARGS="${{ matrix.opt2.pass_args }}" \
             GOPT_PASSES="${{ matrix.gopt.pass_pipe }}" GOPT_PASSES_ARGS="${{ matrix.gopt.pass_args }}"

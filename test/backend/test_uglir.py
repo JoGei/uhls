@@ -1693,3 +1693,57 @@ class UGLIRSyntaxTests(unittest.TestCase):
 
         result_assign = next(assign for assign in uglir_design.assigns if assign.target == "result")
         self.assertIn("phi_sum_1_q", result_assign.expr)
+
+    def test_lower_fsm_to_uglir_handles_n_way_phi_carries_for_unroll_by_4(self) -> None:
+        uglir_design = _lower_unrolled_example_to_uglir("dot4_i8_i32_relu_packed", factor=4)
+
+        seq_block = uglir_design.seq_blocks[0]
+        phi_sum_latch_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_latch_q")
+        phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
+
+        self.assertIn("inl_mac_0_t3_0__u1_n", phi_sum_latch_update.value)
+        self.assertIn("inl_mac_0_t3_0__u2_n", phi_sum_latch_update.value)
+        self.assertIn("inl_mac_0_t3_0__u3_n", phi_sum_latch_update.value)
+        self.assertGreaterEqual(phi_sum_latch_update.enable.count("state_q =="), 3)
+
+        self.assertIn("inl_mac_0_t3_0__u3_n", phi_sum_update.value)
+        self.assertGreaterEqual(phi_sum_update.enable.count("state_q =="), 1)
+
+        select_assign = next(assign for assign in uglir_design.assigns if assign.target == "sel_r_i32_0_n")
+        self.assertGreaterEqual(select_assign.expr.count("state_q =="), 4)
+
+    def test_lower_fsm_to_uglir_lowers_non_loop_merge_phi_as_branch_select(self) -> None:
+        uglir_design = _lower_unrolled_example_to_uglir(
+            "dot4_i8_i32_relu_packed",
+            factor=4,
+            optimize=False,
+            cleanup_after_unroll=False,
+        )
+
+        self.assertFalse(any(resource.id == "phi_sum_4_q" for resource in uglir_design.resources))
+
+        result_assign = next(assign for assign in uglir_design.assigns if assign.target == "result")
+        self.assertIn("? 0:i32 :", result_assign.expr)
+        self.assertIn("phi_sum_1_q", result_assign.expr)
+
+        seq_block = uglir_design.seq_blocks[0]
+        phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
+        self.assertIn("sum_2__u3_n", phi_sum_update.value)
+        self.assertNotIn("r_i32_1_q", phi_sum_update.value)
+
+    def test_lower_fsm_to_uglir_threads_late_mov_aliases_through_semantic_nets(self) -> None:
+        uglir_design = _lower_unrolled_example_to_uglir(
+            "dot4_i8_i32_relu_packed",
+            factor=4,
+            optimize=False,
+            cleanup_after_unroll=False,
+        )
+
+        assign_by_target = {assign.target: assign.expr for assign in uglir_design.assigns}
+
+        self.assertEqual(assign_by_target["sum_2_n"], "t5_0_n")
+        self.assertEqual(assign_by_target["inl_mac_0_c_0__u1_n"], "sum_2_n")
+        self.assertEqual(assign_by_target["sum_2__u1_n"], "t5_0__u1_n")
+        self.assertEqual(assign_by_target["inl_mac_0_c_0__u2_n"], "sum_2__u1_n")
+        self.assertEqual(assign_by_target["sum_2__u2_n"], "t5_0__u2_n")
+        self.assertEqual(assign_by_target["inl_mac_0_c_0__u3_n"], "sum_2__u2_n")

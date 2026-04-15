@@ -88,7 +88,7 @@ from uhls.backend.hls.uhir import (
 )
 from uhls.backend.hls.alloc import executability_graph_to_dot, format_executability_graph
 from uhls.frontend import lower_source_to_uir
-from uhls.interpreter import InterpreterError, run_uir
+from uhls.interpreter import CallHookResult, ExecutionState, InterpreterError, run_uhir, run_uir
 from uhls.middleend.uir import ArrayType, IRParseError, format_module, normalize_type, parse_module, verify_module
 from uhls.middleend.passes.analyze import build_cfg, build_dfg, control_flow
 from uhls.middleend.passes.opt import (

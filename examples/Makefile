@@ -12,8 +12,14 @@ TOP ?= $(STEM)
 RES ?= $(UHLS_ROOT)/src/uhls/backend/hls/impl/generic/gen.uhlslib.json
 VENDOR_RES ?= $(UHLS_ROOT)/src/uhls/backend/hls/impl/vendor/ihp130/ihp130.uhlslib.json
 
-OPT_PASSES ?= inline,prune,dce,cse,copy_prop,const_prop,dce
+LEGALIZE_PASSES ?= inline,prune,const_prop
+LEGALIZE_PASSES_ARGS ?= --pass-arg $(TOP)
+OPT_PASSES ?= dce,cse,copy_prop,dce
+OPT_PASSES_ARGS ?=
+OPT2_PASSES ?=
+OPT2_PASSES_ARGS ?=
 GOPT_PASSES ?= infer_loops,translate_loop_dialect,infer_static,simplify_static_control,predicate,fold_predicates
+GOPT_PASSES_ARGS ?=
 ALLOC_MEM ?= autoram+1024
 SCHED_ALGO ?= asap
 BIND_ALGO ?= left_edge
@@ -53,7 +59,9 @@ GLUE_ARGS += --protocol=$(GLUE_PROTOCOL_NORM)
 endif
 
 UIR := $(BUILD_DIR)/$(STEM).uir
+LEGALIZE_UIR := $(BUILD_DIR)/$(STEM).legalize.uir
 OPT_UIR := $(BUILD_DIR)/$(STEM).opt.uir
+OPT2_UIR := $(BUILD_DIR)/$(STEM).opt2.uir
 SEQ_UHIR := $(BUILD_DIR)/$(STEM).uhir
 GOPT_UHIR := $(BUILD_DIR)/$(STEM).opt.uhir
 ALLOC_UHIR := $(BUILD_DIR)/$(STEM).alloc.uhir
@@ -115,7 +123,7 @@ BIND_TRP_SVG := $(BUILD_DIR)/$(STEM).bind.trp.svg
 FSM_DOT := $(BUILD_DIR)/$(STEM).fsm.dot
 FSM_SVG := $(BUILD_DIR)/$(STEM).fsm.svg
 
-PIPELINE_ARTIFACTS := $(UIR) $(OPT_UIR) $(SEQ_UHIR) $(GOPT_UHIR) $(ALLOC_UHIR) $(SCHED_UHIR) $(BIND_UHIR) $(FSM_UHIR) $(UGLIR) $(RTL)
+PIPELINE_ARTIFACTS := $(UIR) $(LEGALIZE_UIR) $(OPT_UIR) $(OPT2_UIR) $(SEQ_UHIR) $(GOPT_UHIR) $(ALLOC_UHIR) $(SCHED_UHIR) $(BIND_UHIR) $(FSM_UHIR) $(UGLIR) $(RTL)
 WRAPPED_PIPELINE_ARTIFACTS := $(PROT_WRAP_UGLIR) $(PROT_WRAP_RTL) $(PROT_WRAP_DRV)
 VIEW_ARTIFACTS := $(CFG_SVG) $(DFG_SVG) $(CDFG_SVG) $(SEQ_SVG) $(GOPT_SVG) $(ALLOC_SVG) $(BIND_SVG) $(BIND_COMPAT_SVG) $(BIND_CONFLICT_SVG) $(BIND_TRP_SVG) $(FSM_SVG) $(PROT_WRAP_MMIO) $(PROT_WRAP_MMIO_SVG)
 ASIC_ARTIFACTS := $(ASIC_TOP) $(ASIC_SDC) $(ASIC_ORFS) $(ASIC_MACROS) $(ASIC_FLOORPLAN_HINTS) $(ASIC_MACRO_PLACE) $(ASIC_ORFS_CONFIG) $(ASIC_ORFS_RUN)
@@ -134,7 +142,7 @@ synth: $(PIPELINE_ARTIFACTS) $(WRAPPED_PIPELINE_ARTIFACTS)
 
 frontend: $(UIR)
 
-middleend: $(OPT_UIR)
+middleend: $(OPT2_UIR)
 
 backend: $(RTL)
 
@@ -187,28 +195,46 @@ $(BUILD_DIR):
 $(UIR): $(SRC) | $(BUILD_DIR)
 	$(UHLS) parse $< -o $@
 
-$(OPT_UIR): $(UIR) | $(BUILD_DIR)
-	$(UHLS) opt $< -p $(OPT_PASSES) --pass-arg $(TOP) -o $@
+$(LEGALIZE_UIR): $(UIR) | $(BUILD_DIR)
+	if [ -n "$(strip $(LEGALIZE_PASSES))" ]; then \
+		$(UHLS) opt $< -p $(LEGALIZE_PASSES) $(LEGALIZE_PASSES_ARGS) -o $@; \
+	else \
+		cp $< $@; \
+	fi
 
-$(CFG_DOT): $(OPT_UIR) | $(BUILD_DIR)
+$(OPT_UIR): $(LEGALIZE_UIR) | $(BUILD_DIR)
+	if [ -n "$(strip $(OPT_PASSES))" ]; then \
+		$(UHLS) opt $< -p $(OPT_PASSES) $(OPT_PASSES_ARGS) -o $@; \
+	else \
+		cp $< $@; \
+	fi
+
+$(OPT2_UIR): $(OPT_UIR) | $(BUILD_DIR)
+	if [ -n "$(strip $(OPT2_PASSES))" ]; then \
+		$(UHLS) opt $< -p $(OPT2_PASSES) $(OPT2_PASSES_ARGS) -o $@; \
+	else \
+		cp $< $@; \
+	fi
+
+$(CFG_DOT): $(OPT2_UIR) | $(BUILD_DIR)
 	$(UHLS) view $< --what cfg --dot -o $@
 
 $(CFG_SVG): $(CFG_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(DFG_DOT): $(OPT_UIR) | $(BUILD_DIR)
+$(DFG_DOT): $(OPT2_UIR) | $(BUILD_DIR)
 	$(UHLS) view $< --what dfg --dot -o $@
 
 $(DFG_SVG): $(DFG_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(CDFG_DOT): $(OPT_UIR) | $(BUILD_DIR)
+$(CDFG_DOT): $(OPT2_UIR) | $(BUILD_DIR)
 	$(UHLS) view $< --what cdfg --dot -o $@
 
 $(CDFG_SVG): $(CDFG_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(SEQ_UHIR): $(OPT_UIR) | $(BUILD_DIR)
+$(SEQ_UHIR): $(OPT2_UIR) | $(BUILD_DIR)
 	$(UHLS) seq $< --top $(TOP) -o $@
 
 $(SEQ_DOT): $(SEQ_UHIR) | $(BUILD_DIR)
@@ -218,7 +244,7 @@ $(SEQ_SVG): $(SEQ_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
 $(GOPT_UHIR): $(SEQ_UHIR) | $(BUILD_DIR)
-	$(UHLS) gopt $< -p $(GOPT_PASSES) -o $@
+	$(UHLS) gopt $< -p $(GOPT_PASSES) $(GOPT_PASSES_ARGS) -o $@
 
 $(GOPT_DOT): $(GOPT_UHIR) | $(BUILD_DIR)
 	$(UHLS) view $(GOPT_UHIR) --dot -o $@

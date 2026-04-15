@@ -24,9 +24,21 @@ jobs:
     strategy:
       matrix:
         os:
-          - {name: "ubuntu", version: "latest"}
+          - { name: "ubuntu", version: "latest" }
         container:
-          - {name: "tumeda/eda-osic-tools", version: "latest-default"}
+          - { name: "tumeda/eda-osic-tools", version: "latest-default" }
+        legalize:
+          - { name: "Ldef", pass_pipe: "inline,prune,const_prop", pass_args: "--pass-arg dot4_relu" }
+        opt:
+          - { name: "O0", pass_pipe: "", pass_args: "" }
+          - { name: "Odef", pass_pipe: "dce,cse,copy_prop,dce", pass_args: "" }
+        opt2:
+          - { name: "O2-0", pass_pipe: "", pass_args: "" }
+          - { name: "O2-1", pass_pipe: "unroll_loops,canonicalize_loops", pass_args: "--pass-arg 1 --pass-arg 2" }
+          - { name: "O2-2", pass_pipe: "unroll_loops,canonicalize_loops", pass_args: "--pass-arg 1 --pass-arg 4" }
+        gopt:
+          - { name: "gopt-static", pass_pipe: "infer_loops,translate_loop_dialect,infer_static,simplify_static_control,predicate,fold_predicates", pass_args: "" }
+          #- { name: "gopt-dynamic", pass_pipe: "infer_loops,translate_loop_dialect,predicate,fold_predicates", pass_args: "" }
 
     container: ${{ matrix.container.name }}:${{ matrix.container.version }}-${{ matrix.os.name }}-${{ matrix.os.version }}
 
@@ -70,7 +82,11 @@ jobs:
         run: |
           source ${VENV_ROOT}/bin/activate
           python3 -m pip install -r requirements.txt
-          make -C examples STEM=dot4_relu
+          make -C examples STEM=dot4_relu \
+            LEGALIZE_PASSES="${{ matrix.legalize.pass_pipe }}" LEGALIZE_PASSES_ARGS="${{ matrix.legalize.pass_args }}" \
+            OPT_PASSES="${{ matrix.opt.pass_pipe }}" OPT_PASSES_ARGS="${{ matrix.opt.pass_args }}" \
+            OPT2_PASSES="${{ matrix.opt2.pass_pipe }}" OPT2_PASSES_ARGS="${{ matrix.opt2.pass_args }}" \
+            GOPT_PASSES="${{ matrix.gopt.pass_pipe }}" GOPT_PASSES_ARGS="${{ matrix.gopt.pass_args }}"
       
       - name: build µhLS examples asic
         working-directory: uhls_src
@@ -78,4 +94,8 @@ jobs:
         run: |
           source ${VENV_ROOT}/bin/activate
           python3 -m pip install -r requirements.txt
-          make -C examples STEM=dot4_relu asic
+          make -C examples STEM=dot4_relu asic \
+            LEGALIZE_PASSES="${{ matrix.legalize.pass_pipe }}" LEGALIZE_PASSES_ARGS="${{ matrix.legalize.pass_args }}" \
+            OPT_PASSES="${{ matrix.opt.pass_pipe }}" OPT_PASSES_ARGS="${{ matrix.opt.pass_args }}" \
+            OPT2_PASSES="${{ matrix.opt2.pass_pipe }}" OPT2_PASSES_ARGS="${{ matrix.opt2.pass_args }}" \
+            GOPT_PASSES="${{ matrix.gopt.pass_pipe }}" GOPT_PASSES_ARGS="${{ matrix.gopt.pass_args }}"

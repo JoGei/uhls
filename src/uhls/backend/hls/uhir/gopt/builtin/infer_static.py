@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from math import gcd
 
 from uhls.backend.hls.uhir.model import UHIRDesign, UHIRNode, UHIRRegion
 
@@ -72,10 +73,28 @@ def _infer_static_loop_trip_count(region_by_id: dict[str, UHIRRegion], loop_regi
 
     update = _resolve_induction_update(region_by_id, body_region.id, backedge_incoming)
     if update is None:
-        return None
+        canonical = _resolve_induction_progression(region_by_id, body_region.id, backedge_incoming)
+        if canonical is None:
+            return None
+        update_var, steps = canonical
+        if update_var != induction_var or not steps or any(step_value == 0 for step_value in steps):
+            return None
+        if len(steps) == 1:
+            only_step = next(iter(steps))
+            return _compute_trip_count(init, bound, only_step, compare_opcode)
+        return _compute_canonicalized_trip_count(init, bound, steps, compare_opcode)
     update_var, step = update
     if update_var != induction_var or step == 0:
-        return None
+        canonical = _resolve_induction_progression(region_by_id, body_region.id, backedge_incoming)
+        if canonical is None:
+            return None
+        update_var, steps = canonical
+        if update_var != induction_var or not steps or any(step_value == 0 for step_value in steps):
+            return None
+        if len(steps) == 1:
+            only_step = next(iter(steps))
+            return _compute_trip_count(init, bound, only_step, compare_opcode)
+        return _compute_canonicalized_trip_count(init, bound, steps, compare_opcode)
 
     return _compute_trip_count(init, bound, step, compare_opcode)
 
@@ -138,6 +157,80 @@ def _resolve_induction_update(region_by_id: dict[str, UHIRRegion], region_id: st
     return None
 
 
+def _resolve_induction_progression(
+    region_by_id: dict[str, UHIRRegion],
+    region_id: str,
+    value: str,
+    *,
+    _seen: set[tuple[str, str]] | None = None,
+) -> tuple[str, set[int]] | None:
+    seen = set() if _seen is None else set(_seen)
+    key = (region_id, value)
+    if key in seen:
+        return None
+    seen.add(key)
+
+    region = region_by_id[region_id]
+    node = _producer_by_name(region).get(value)
+    if node is None:
+        if region.parent is None:
+            return None
+        return _resolve_induction_progression(region_by_id, region.parent, value, _seen=seen)
+
+    if node.opcode == "mov" and node.operands:
+        return _resolve_induction_progression(region_by_id, region_id, node.operands[0], _seen=seen)
+
+    if node.opcode == "phi" and node.operands:
+        base_var: str | None = None
+        steps: set[int] = set()
+        for operand in node.operands:
+            resolved = _resolve_induction_progression(region_by_id, region_id, operand, _seen=seen)
+            if resolved is None:
+                return None
+            operand_var, operand_steps = resolved
+            if base_var is None:
+                base_var = operand_var
+            elif operand_var != base_var:
+                return None
+            steps.update(operand_steps)
+        if base_var is None or not steps:
+            return None
+        return base_var, steps
+
+    if node.opcode not in {"add", "sub"} or len(node.operands) != 2:
+        return None
+
+    lhs_progression = _operand_progression(region_by_id, region_id, node.operands[0], seen)
+    rhs_progression = _operand_progression(region_by_id, region_id, node.operands[1], seen)
+    lhs_const = _resolve_constant_in_region(region_by_id, region_id, node.operands[0])
+    rhs_const = _resolve_constant_in_region(region_by_id, region_id, node.operands[1])
+
+    if lhs_progression is not None and rhs_const is not None:
+        base_var, lhs_steps = lhs_progression
+        delta = rhs_const if node.opcode == "add" else -rhs_const
+        return base_var, {step + delta for step in lhs_steps}
+    if rhs_progression is not None and lhs_const is not None and node.opcode == "add":
+        base_var, rhs_steps = rhs_progression
+        return base_var, {lhs_const + step for step in rhs_steps}
+    return None
+
+
+def _operand_progression(
+    region_by_id: dict[str, UHIRRegion],
+    region_id: str,
+    operand: str,
+    seen: set[tuple[str, str]],
+) -> tuple[str, set[int]] | None:
+    region = region_by_id[region_id]
+    direct_name = _variable_name(operand)
+    if direct_name is not None:
+        local_producer = _producer_by_name(region).get(direct_name)
+        if local_producer is not None and local_producer.id != direct_name:
+            return _resolve_induction_progression(region_by_id, region_id, direct_name, _seen=seen)
+        return direct_name, {0}
+    return _resolve_induction_progression(region_by_id, region_id, operand, _seen=seen)
+
+
 def _resolve_constant_in_region(region_by_id: dict[str, UHIRRegion], region_id: str, value: str) -> int | None:
     literal = _literal_value(value)
     if literal is not None:
@@ -188,3 +281,34 @@ def _compute_trip_count(init: int, bound: int, step: int, compare_opcode: str) -
             return 0
         return (distance + stride - 1) // stride
     return None
+
+
+def _compute_canonicalized_trip_count(
+    init: int,
+    bound: int,
+    steps: set[int],
+    compare_opcode: str,
+) -> int | None:
+    ordered = sorted(steps)
+    if not ordered:
+        return None
+    same_sign = all(step > 0 for step in ordered) or all(step < 0 for step in ordered)
+    if not same_sign:
+        return None
+
+    base_step = abs(ordered[0])
+    for step in ordered[1:]:
+        base_step = gcd(base_step, abs(step))
+    if base_step == 0:
+        return None
+
+    normalized = sorted(abs(step) // base_step for step in ordered)
+    if normalized != list(range(1, normalized[-1] + 1)):
+        return None
+
+    signed_base = base_step if ordered[0] > 0 else -base_step
+    original_trip_count = _compute_trip_count(init, bound, signed_base, compare_opcode)
+    if original_trip_count is None:
+        return None
+    factor = normalized[-1]
+    return (original_trip_count + factor - 1) // factor

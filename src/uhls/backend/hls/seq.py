@@ -260,9 +260,9 @@ class _SeqLowerer:
         proc_id = _function_region_id(function.name)
         top_level_loops = detect_top_level_loops(function)
         loop_by_header = {loop.header: loop for loop in top_level_loops}
-        branch_layouts = self._branch_layouts(function, loop_by_header)
-        branch_child_blocks = {label for layout in branch_layouts.values() for label in layout.child_blocks}
         loop_body_blocks = {label for loop in top_level_loops for label in loop.body if label != loop.header}
+        branch_layouts = self._branch_layouts(function, loop_by_header, ignored_blocks=loop_body_blocks)
+        branch_child_blocks = {label for layout in branch_layouts.values() for label in layout.child_blocks}
         block_units = [
             self._lower_block(function, label, proc_id)
             for label in sorted(branch_child_blocks - set(loop_body_blocks))
@@ -321,13 +321,21 @@ class _SeqLowerer:
 
         return [proc_unit, *synthetic_loop_units, *block_units]
 
-    def _branch_layouts(self, function: Function, loop_by_header: dict[str, LoopSummary]) -> dict[str, _BranchSummary]:
+    def _branch_layouts(
+        self,
+        function: Function,
+        loop_by_header: dict[str, LoopSummary],
+        *,
+        ignored_blocks: set[str],
+    ) -> dict[str, _BranchSummary]:
         layouts: dict[str, _BranchSummary] = {}
         for block in function.blocks:
             terminator = block.terminator
             if not isinstance(terminator, CondBranchOp):
                 continue
             if block.label in loop_by_header:
+                continue
+            if block.label in ignored_blocks:
                 continue
             join_target = self._branch_join_target(function, terminator.true_target, terminator.false_target)
             empty_region_id: str | None = None

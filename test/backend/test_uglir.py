@@ -2,10 +2,109 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 
-from uhls.backend.hls import lower_fsm_to_uglir
+from uhls.backend.hls import lower_alloc_to_sched, lower_bind_to_fsm, lower_fsm_to_uglir, lower_sched_to_bind
 from uhls.backend.hls.uglir import format_uglir, parse_uglir
-from uhls.backend.hls.uhir import parse_uhir
+from uhls.backend.hls.uhir import (
+    ExecutabilityGraph,
+    create_builtin_gopt_pass,
+    lower_module_to_seq,
+    lower_seq_to_alloc,
+    parse_uhir,
+    run_gopt_passes,
+)
+from uhls.frontend import lower_source_to_uir
+from uhls.middleend.passes.opt import (
+    CSEPass,
+    CanonicalizeLoopsPass,
+    ConstPropPass,
+    CopyPropPass,
+    DCEPass,
+    InlineCallsPass,
+    PruneFunctionsPass,
+    UnrollLoopsPass,
+)
+from uhls.middleend.passes.util import PassContext, PassManager
+
+
+def _full_executability_graph() -> ExecutabilityGraph:
+    operations = (
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "mod",
+        "and",
+        "or",
+        "xor",
+        "shl",
+        "shr",
+        "eq",
+        "ne",
+        "lt",
+        "le",
+        "gt",
+        "ge",
+        "neg",
+        "not",
+        "mov",
+        "const",
+        "load",
+        "store",
+        "phi",
+        "call",
+        "print",
+        "param",
+        "br",
+        "cbr",
+        "ret",
+        "sel",
+    )
+    return ExecutabilityGraph(
+        functional_units=("EWMS",),
+        operations=operations,
+        edges=tuple(("EWMS", operation, 1, 1) for operation in operations),
+    )
+
+
+def _lower_unrolled_dot4_relu_to_uglir():
+    source = Path("examples/dot4_relu/dot4_relu.c").read_text(encoding="utf-8")
+    optimized_module = PassManager(
+        [
+            InlineCallsPass(),
+            PruneFunctionsPass(),
+            DCEPass(),
+            CSEPass(),
+            CopyPropPass(),
+            ConstPropPass(),
+            DCEPass(),
+        ]
+    ).run(lower_source_to_uir(source), PassContext(pass_args=("dot4_relu",)))
+    optimized_module = PassManager(
+        [
+            UnrollLoopsPass("1", 2),
+            CanonicalizeLoopsPass(),
+            ConstPropPass(),
+            CopyPropPass(),
+            DCEPass(),
+        ]
+    ).run(optimized_module)
+    seq_design = run_gopt_passes(
+        lower_module_to_seq(optimized_module, top="dot4_relu"),
+        [
+            create_builtin_gopt_pass("infer_loops"),
+            create_builtin_gopt_pass("translate_loop_dialect"),
+            create_builtin_gopt_pass("infer_static"),
+            create_builtin_gopt_pass("simplify_static_control"),
+            create_builtin_gopt_pass("predicate"),
+            create_builtin_gopt_pass("fold_predicates"),
+        ],
+    )
+    alloc_design = lower_seq_to_alloc(seq_design, executability_graph=_full_executability_graph())
+    sched_design = lower_alloc_to_sched(alloc_design)
+    bind_design = lower_sched_to_bind(sched_design)
+    return lower_fsm_to_uglir(lower_bind_to_fsm(bind_design))
 
 
 class UGLIRLoweringTests(unittest.TestCase):
@@ -1569,3 +1668,28 @@ class UGLIRSyntaxTests(unittest.TestCase):
         rendered = format_uglir(design)
         self.assertIn("assign n_n = (", rendered)
         self.assertIn("r_q <= (", rendered)
+
+    def test_lower_fsm_to_uglir_updates_parent_phi_carries_for_canonicalized_unrolled_loop_backedges(self) -> None:
+        uglir_design = _lower_unrolled_dot4_relu_to_uglir()
+
+        seq_block = uglir_design.seq_blocks[0]
+        phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
+        phi_i_update = next(update for update in seq_block.updates if update.target == "phi_i_1_q")
+
+        self.assertIsNotNone(phi_sum_update.enable)
+        self.assertIsNotNone(phi_i_update.enable)
+        self.assertNotEqual(phi_sum_update.enable, "req_fire_n")
+        self.assertNotEqual(phi_i_update.enable, "req_fire_n")
+        self.assertIn("state_q ==", phi_sum_update.enable)
+        self.assertIn("state_q ==", phi_i_update.enable)
+        self.assertGreaterEqual(phi_sum_update.enable.count("state_q =="), 2)
+        self.assertGreaterEqual(phi_i_update.enable.count("state_q =="), 2)
+        self.assertIn("inl_mac_0_t1_0__u1_n", phi_sum_update.value)
+        self.assertIn("t4_0__u1_n", phi_i_update.value)
+
+        select_assign = next(assign for assign in uglir_design.assigns if assign.target == "sel_r_i32_0_n")
+        self.assertIn("state_q ==", select_assign.expr)
+        self.assertGreaterEqual(select_assign.expr.count("state_q =="), 8)
+
+        result_assign = next(assign for assign in uglir_design.assigns if assign.target == "result")
+        self.assertIn("phi_sum_1_q", result_assign.expr)

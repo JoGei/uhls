@@ -92,6 +92,7 @@ from uhls.interpreter import InterpreterError, run_uir
 from uhls.middleend.uir import ArrayType, IRParseError, format_module, normalize_type, parse_module, verify_module
 from uhls.middleend.passes.analyze import build_cfg, build_dfg, control_flow
 from uhls.middleend.passes.opt import (
+    CanonicalizeLoopsPass,
     CSEPass,
     ConstPropPass,
     CopyPropPass,
@@ -99,6 +100,7 @@ from uhls.middleend.passes.opt import (
     InlineCallsPass,
     PruneFunctionsPass,
     SimplifyCFGPass,
+    UnrollLoopsPass,
 )
 from uhls.middleend.passes.util import PassContext, PassManager
 from uhls.middleend.passes.util.dot import (
@@ -138,6 +140,13 @@ class OptPassSpec:
 
 
 _OPT_PASS_SPECS: tuple[OptPassSpec, ...] = (
+    OptPassSpec(
+        name="canonicalize_loops",
+        factory=CanonicalizeLoopsPass,
+        description="Canonicalize detected loops into a simpler normalized form, including single-latch cleanup for staged unrolled loops.",
+        example="uhls opt input.uir -p canonicalize_loops -o output.uir",
+        aliases=("canon_loops",),
+    ),
     OptPassSpec(
         name="simplify_cfg",
         factory=SimplifyCFGPass,
@@ -189,6 +198,16 @@ _OPT_PASS_SPECS: tuple[OptPassSpec, ...] = (
         description="Remove functions that are unreachable from module entry roots such as 'main'.",
         example="uhls opt input.uir -p prune_functions -o output.uir",
         aliases=("prune",),
+    ),
+    OptPassSpec(
+        name="unroll_loops",
+        factory=UnrollLoopsPass,
+        description=(
+            "Unroll one canonical counted loop by a requested factor. "
+            "Pass two --pass-arg values: the target loop header name or suffix, then the factor."
+        ),
+        example="uhls opt input.uir -p unroll_loops --pass-arg 1 --pass-arg 2 -o output.uir",
+        aliases=("unroll",),
     ),
 )
 

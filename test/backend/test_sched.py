@@ -13,6 +13,8 @@ from uhls.backend.hls.uhir import (
 )
 from uhls.backend.hls.uhir.timing import parse_timing_expr
 from uhls.frontend import lower_source_to_uir
+from uhls.middleend.passes.opt import CanonicalizeLoopsPass, ConstPropPass, CopyPropPass, DCEPass, UnrollLoopsPass
+from uhls.middleend.passes.util import PassManager
 from uhls.middleend.uir import BinaryOp, Block, CallOp, CompareOp, CondBranchOp, Function, Module, Parameter, ReturnOp
 
 
@@ -287,6 +289,72 @@ class SchedulingLoweringTests(unittest.TestCase):
         self.assertNotIn("continue_condition", loop_node.attributes)
         self.assertNotIn("iterate_when", loop_node.attributes)
         self.assertNotIn("exit_when", loop_node.attributes)
+
+    def test_lower_alloc_to_sched_overlaps_duplicated_body_ops_for_unrolled_do_all_loop(self) -> None:
+        source = """
+        int32_t add8(int32_t A[8], int32_t B[8], int32_t C[8]) {
+            int32_t i;
+            for (i = 0; i < 8; i = i + 1) {
+                C[i] = A[i] + B[i];
+            }
+            return 0;
+        }
+        """
+        optimized_module = PassManager(
+            [
+                UnrollLoopsPass("1", 2),
+                CanonicalizeLoopsPass(),
+                ConstPropPass(),
+                CopyPropPass(),
+                DCEPass(),
+            ]
+        ).run(lower_source_to_uir(source))
+        seq_design = run_gopt_passes(
+            lower_module_to_seq(optimized_module, top="add8"),
+            [
+                create_builtin_gopt_pass("infer_loops"),
+                create_builtin_gopt_pass("translate_loop_dialect"),
+            ],
+        )
+        sched_design = lower_alloc_to_sched(
+            lower_seq_to_alloc(seq_design, executability_graph=_full_executability_graph())
+        )
+
+        body_region = sched_design.get_region("loop_body_add8_for_header_1")
+        self.assertIsNotNone(body_region)
+        assert body_region is not None
+
+        producer_by_source = {}
+        nodes_by_id = {node.id: node for node in body_region.nodes}
+        for mapping in body_region.mappings:
+            node = nodes_by_id.get(mapping.node_id)
+            if node is not None:
+                producer_by_source[mapping.source_id] = node
+
+        first_load_a = producer_by_source["t1_0"]
+        first_load_b = producer_by_source["t2_0"]
+        first_add = producer_by_source["t3_0"]
+        first_next_i = producer_by_source["t4_0"]
+        second_load_a = producer_by_source["t1_0__u1"]
+        second_load_b = producer_by_source["t2_0__u1"]
+        second_add = producer_by_source["t3_0__u1"]
+
+        self.assertEqual(first_load_a.opcode, "load")
+        self.assertEqual(first_load_b.opcode, "load")
+        self.assertEqual(first_add.opcode, "add")
+        self.assertEqual(second_load_a.opcode, "load")
+        self.assertEqual(second_load_b.opcode, "load")
+        self.assertEqual(second_add.opcode, "add")
+        self.assertEqual(first_load_a.attributes["start"], 1)
+        self.assertEqual(first_load_b.attributes["start"], 1)
+        self.assertEqual(first_next_i.attributes["start"], 1)
+        self.assertEqual(first_add.attributes["start"], 2)
+        self.assertEqual(second_load_a.attributes["start"], 2)
+        self.assertEqual(second_load_b.attributes["start"], 2)
+        self.assertEqual(second_add.attributes["start"], 3)
+        self.assertEqual(second_load_a.attributes["start"], first_add.attributes["start"])
+        self.assertEqual(second_load_b.attributes["start"], first_add.attributes["start"])
+        self.assertGreater(second_add.attributes["start"], second_load_a.attributes["start"])
 
     def test_lower_alloc_to_sched_uses_max_child_latency_for_branches(self) -> None:
         alloc_design = lower_seq_to_alloc(

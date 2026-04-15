@@ -4,6 +4,8 @@ import unittest
 
 from uhls.backend.hls.uhir import build_sequencing_graph, format_uhir, lower_module_to_seq, parse_uhir, to_dot
 from uhls.frontend import lower_source_to_uir
+from uhls.middleend.passes.opt import CanonicalizeLoopsPass, ConstPropPass, CopyPropPass, DCEPass, UnrollLoopsPass
+from uhls.middleend.passes.util import PassManager
 from uhls.middleend.uir import BinaryOp, Block, CallOp, Function, Module, Parameter, ReturnOp, parse_module
 
 
@@ -218,6 +220,37 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         assert proc is not None
         proc_branch = next(node for node in proc.nodes if node.opcode == "branch")
         self.assertNotIn("static_trip_count", proc_branch.attributes)
+
+    def test_lower_module_to_seq_accepts_canonicalized_unrolled_loop_without_dangling_block_regions(self) -> None:
+        source = """
+        int32_t add8(int32_t A[8], int32_t B[8], int32_t C[8]) {
+            int32_t i;
+            for (i = 0; i < 8; i = i + 1) {
+                C[i] = A[i] + B[i];
+            }
+            return 0;
+        }
+        """
+        optimized_module = PassManager(
+            [
+                UnrollLoopsPass("1", 2),
+                CanonicalizeLoopsPass(),
+                ConstPropPass(),
+                CopyPropPass(),
+                DCEPass(),
+            ]
+        ).run(lower_source_to_uir(source))
+
+        design = lower_module_to_seq(optimized_module, top="add8")
+        rendered = format_uhir(design)
+        reparsed = parse_uhir(rendered)
+
+        proc = design.get_region("proc_add8")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        self.assertIsNotNone(reparsed.get_region("proc_add8"))
+        self.assertNotIn("bb_add8_for_body_2_unroll_1", [ref.target for ref in proc.region_refs])
+        self.assertIn("loop_body_add8_for_header_1", [ref.target for ref in proc.region_refs])
 
     def test_lower_frontend_preserves_fixed_array_extent_in_seq_ports(self) -> None:
         module = lower_source_to_uir(

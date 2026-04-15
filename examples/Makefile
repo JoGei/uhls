@@ -130,7 +130,7 @@ ASIC_ARTIFACTS := $(ASIC_TOP) $(ASIC_SDC) $(ASIC_ORFS) $(ASIC_MACROS) $(ASIC_FLO
 
 .PHONY: all pipeline synth frontend middleend backend wrapped_backend wrapped views asic yosys_smoke orfs_run asic_gui asic_schem run_verilator clean
 
-all: synth views run_hw_interpret
+all: synth run_hw_interpret
 
 yosys: yosys_smoke
 

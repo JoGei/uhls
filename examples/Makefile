@@ -187,7 +187,24 @@ asic_gui: $(ASIC_ORFS_STAMP)
 asic_schem: $(ASIC_SCHEM_SVG)
 
 run_hw_interpret: $(UIR) $(PROT_WRAP_UGLIR)
-	$(UHLS) run $(UIR) --backend=$(RUN_BACKEND) --uglir $(PROT_WRAP_UGLIR)
+	@TMP_OUT="$$(mktemp)" ; \
+	STATUS=0 ; \
+	$(UHLS) run $(UIR) --backend=$(RUN_BACKEND) --uglir $(PROT_WRAP_UGLIR) >"$$TMP_OUT" 2>&1 || STATUS=$$? ; \
+	cat "$$TMP_OUT" ; \
+	if [ "$$STATUS" -ne 0 ]; then \
+		rm -f "$$TMP_OUT" ; \
+		exit "$$STATUS" ; \
+	fi ; \
+	RUN_RESULT="$$(awk '/^-?[0-9]+$$/ { value = $$0 } END { if (value != "") print value }' "$$TMP_OUT")" ; \
+	rm -f "$$TMP_OUT" ; \
+	if [ -z "$$RUN_RESULT" ]; then \
+		echo "error: could not determine hardware-backed run return value" >&2 ; \
+		exit 1 ; \
+	fi ; \
+	if [ "$$RUN_RESULT" -ne 0 ]; then \
+		echo "error: hardware-backed run returned $$RUN_RESULT" >&2 ; \
+		exit 1 ; \
+	fi
 
 $(BUILD_DIR):
 	mkdir -p $@

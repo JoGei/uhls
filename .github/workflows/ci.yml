@@ -18,8 +18,8 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  test-flows:
-    name: run µhLS unit tests, examples, flows, ...
+  unit-tests:
+    name: run µhLS unit tests
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -27,6 +27,53 @@ jobs:
           - { name: "ubuntu", version: "latest" }
         container:
           - { name: "tumeda/eda-osic-tools", version: "latest-default" }
+
+    container: ${{ matrix.container.name }}:${{ matrix.container.version }}-${{ matrix.os.name }}-${{ matrix.os.version }}
+
+    steps:
+      - name: install git on container
+        run: |
+          apt update && apt install -y git
+
+      - name: Clone repo
+        uses: actions/checkout@v4
+        with:
+          path: uhls_src
+          submodules: recursive
+
+      - name: load container env
+        shell: bash
+        run: |
+          source /eda-osic-tools/env.sh /eda-osic-tools/.env
+          {
+            echo "VENV_ROOT=${VENV_ROOT}"
+            echo "YOSYS_EXE=${YOSYS_EXE}"
+            echo "ORFS_ROOT=${ORFS_ROOT}"
+            echo "OPENROAD_EXE=${OPENROAD_EXE}"
+            echo "KEPLERFORMAL_EXE=${KEPLERFORMAL_EXE}"
+            echo "NAJA_EDIT_EXE=${NAJA_EDIT_EXE}"
+            echo "PDK_ROOT=${PDK_ROOT}"
+            echo "IHP130_PDK_ROOT=${IHP130_PDK_ROOT}"
+          } >> "${GITHUB_ENV}"
+
+      - name: run µhLS unit tests
+        working-directory: uhls_src
+        shell: bash
+        run: |
+          source ${VENV_ROOT}/bin/activate
+          python3 -m pip install -r requirements.txt
+          PYTHONPATH=src python3 -m unittest discover -s test -v
+
+  examples-all:
+    name: make all [${{ matrix.example }}, ${{ matrix.legalize.name }}, ${{ matrix.opt.name }}, ${{ matrix.opt2.name }}, ${{ matrix.gopt.name }}]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os:
+          - { name: "ubuntu", version: "latest" }
+        container:
+          - { name: "tumeda/eda-osic-tools", version: "latest-default" }
+        example: [ "foo", "dot4_relu", "dot4_i8_i32_relu_packed" ]
         legalize:
           - { name: "Ldef", pass_pipe: "inline,prune,const_prop", pass_args: "--pass-arg dot4_relu" }
         opt:
@@ -68,33 +115,76 @@ jobs:
             echo "IHP130_PDK_ROOT=${IHP130_PDK_ROOT}"
           } >> "${GITHUB_ENV}"
 
-      - name: run µhLS unit tests
-        working-directory: uhls_src
-        shell: bash
-        run: |
-          source ${VENV_ROOT}/bin/activate
-          python3 -m pip install -r requirements.txt
-          PYTHONPATH=src python3 -m unittest discover -s test -v
-
       - name: build µhLS examples default
         working-directory: uhls_src
         shell: bash
         run: |
           source ${VENV_ROOT}/bin/activate
           python3 -m pip install -r requirements.txt
-          make -C examples STEM=dot4_relu \
+          make -C examples STEM="${{ matrix.example }}" \
             LEGALIZE_PASSES="${{ matrix.legalize.pass_pipe }}" LEGALIZE_PASSES_ARGS="${{ matrix.legalize.pass_args }}" \
             OPT_PASSES="${{ matrix.opt.pass_pipe }}" OPT_PASSES_ARGS="${{ matrix.opt.pass_args }}" \
             OPT2_PASSES="${{ matrix.opt2.pass_pipe }}" OPT2_PASSES_ARGS="${{ matrix.opt2.pass_args }}" \
             GOPT_PASSES="${{ matrix.gopt.pass_pipe }}" GOPT_PASSES_ARGS="${{ matrix.gopt.pass_args }}"
-      
+
+  examples-asic:
+    name: make asic [${{ matrix.example }}, ${{ matrix.legalize.name }}, ${{ matrix.opt.name }}, ${{ matrix.opt2.name }}, ${{ matrix.gopt.name }}]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os:
+          - { name: "ubuntu", version: "latest" }
+        container:
+          - { name: "tumeda/eda-osic-tools", version: "latest-default" }
+        example: [ "dot4_relu" ]
+        legalize:
+          - { name: "Ldef", pass_pipe: "inline,prune,const_prop", pass_args: "--pass-arg dot4_relu" }
+        opt:
+          #- { name: "O0", pass_pipe: "", pass_args: "" }
+          - { name: "Odef", pass_pipe: "dce,cse,copy_prop,dce", pass_args: "" }
+        opt2:
+          - { name: "O2-0", pass_pipe: "", pass_args: "" }
+          #- { name: "O2-1", pass_pipe: "unroll_loops,canonicalize_loops", pass_args: "--pass-arg 1 --pass-arg 2" }
+          #- { name: "O2-2", pass_pipe: "unroll_loops,canonicalize_loops", pass_args: "--pass-arg 1 --pass-arg 4" }
+        gopt:
+          - { name: "gopt-static", pass_pipe: "infer_loops,translate_loop_dialect,infer_static,simplify_static_control,predicate,fold_predicates", pass_args: "" }
+          #- { name: "gopt-dynamic", pass_pipe: "infer_loops,translate_loop_dialect,predicate,fold_predicates", pass_args: "" }
+
+    container: ${{ matrix.container.name }}:${{ matrix.container.version }}-${{ matrix.os.name }}-${{ matrix.os.version }}
+
+    steps:
+      - name: install git on container
+        run: |
+          apt update && apt install -y git
+
+      - name: Clone repo
+        uses: actions/checkout@v4
+        with:
+          path: uhls_src
+          submodules: recursive
+
+      - name: load container env
+        shell: bash
+        run: |
+          source /eda-osic-tools/env.sh /eda-osic-tools/.env
+          {
+            echo "VENV_ROOT=${VENV_ROOT}"
+            echo "YOSYS_EXE=${YOSYS_EXE}"
+            echo "ORFS_ROOT=${ORFS_ROOT}"
+            echo "OPENROAD_EXE=${OPENROAD_EXE}"
+            echo "KEPLERFORMAL_EXE=${KEPLERFORMAL_EXE}"
+            echo "NAJA_EDIT_EXE=${NAJA_EDIT_EXE}"
+            echo "PDK_ROOT=${PDK_ROOT}"
+            echo "IHP130_PDK_ROOT=${IHP130_PDK_ROOT}"
+          } >> "${GITHUB_ENV}"
+
       - name: build µhLS examples asic
         working-directory: uhls_src
         shell: bash
         run: |
           source ${VENV_ROOT}/bin/activate
           python3 -m pip install -r requirements.txt
-          make -C examples STEM=dot4_relu asic \
+          make -C examples STEM="${{ matrix.example }}" asic \
             LEGALIZE_PASSES="${{ matrix.legalize.pass_pipe }}" LEGALIZE_PASSES_ARGS="${{ matrix.legalize.pass_args }}" \
             OPT_PASSES="${{ matrix.opt.pass_pipe }}" OPT_PASSES_ARGS="${{ matrix.opt.pass_args }}" \
             OPT2_PASSES="${{ matrix.opt2.pass_pipe }}" OPT2_PASSES_ARGS="${{ matrix.opt2.pass_args }}" \

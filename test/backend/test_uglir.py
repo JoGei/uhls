@@ -1822,7 +1822,9 @@ class UGLIRSyntaxTests(unittest.TestCase):
 
         seq_block = uglir_design.seq_blocks[0]
         phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
-        self.assertIn("sum_0_n", phi_sum_update.value)
+        self.assertIn("(req_fire_n) ? C_0", phi_sum_update.value)
+        self.assertIn("sum_2_n", phi_sum_update.value)
+        self.assertIn("sum_2__u3_n", phi_sum_update.value)
         self.assertNotIn("r_i32_1_q", phi_sum_update.value)
 
     def test_lower_fsm_to_uglir_threads_late_mov_aliases_through_semantic_nets(self) -> None:
@@ -1861,10 +1863,10 @@ class UGLIRSyntaxTests(unittest.TestCase):
             optimize=False,
         )
 
-        rendered = format_uglir(uglir_design)
+        assign_by_target = {assign.target: assign.expr for assign in uglir_design.assigns}
 
-        self.assertIn("state_q == 14 ? SRC_SUM_2", rendered)
-        self.assertNotIn("state_q == 14 ? SRC_INL_MAC_0_T3_0", rendered)
+        self.assertIn("state_q == 13 ? SRC_SUM_2", assign_by_target["sel_r_i32_0_n"])
+        self.assertNotIn("state_q == 13 ? SRC_INL_MAC_0_T3_0", assign_by_target["sel_r_i32_0_n"])
 
     def test_fsm_global_live_steps_do_not_reexpand_already_scheduled_static_loop_bodies(self) -> None:
         fsm_design = _lower_example_to_fsm(
@@ -1874,10 +1876,10 @@ class UGLIRSyntaxTests(unittest.TestCase):
         producer_region = _producer_region(fsm_design, "sum_2")
 
         self.assertIsNotNone(producer_region)
-        self.assertEqual(sorted(_value_global_live_starts(fsm_design, "sum_2")), [13])
+        self.assertEqual(sorted(_value_global_live_starts(fsm_design, "sum_2")), [12])
         self.assertEqual(
             sorted(_producer_global_capture_steps(fsm_design, producer_region.id, "sum_2", None)),
-            [13],
+            [12],
         )
 
     def test_lower_fsm_to_uglir_avoids_phantom_post_loop_phi_carry_updates_without_opt_cleanup(self) -> None:
@@ -1895,8 +1897,8 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertNotIn("state_q == 59", r_i32_0_update.enable or "")
         self.assertNotIn("state_q == 71", r_i32_0_update.enable or "")
         self.assertNotIn("state_q == 72", r_i32_0_update.enable or "")
-        self.assertIn("state_q == 13) ? sum_2_n", phi_sum_update.value)
-        self.assertNotIn("state_q == 13) ? r_i32_0_q", phi_sum_update.value)
+        self.assertIn("state_q == 12) ? sum_2_n", phi_sum_update.value)
+        self.assertNotIn("state_q == 12) ? r_i32_0_q", phi_sum_update.value)
 
     def test_lower_fsm_to_uglir_uses_entry_value_for_phi_carry_initialization_without_opt_cleanup(self) -> None:
         uglir_design = _lower_example_to_uglir(
@@ -2032,4 +2034,4 @@ class UGLIRSyntaxTests(unittest.TestCase):
         assign_by_target = {assign.target: assign.expr for assign in uglir_design.assigns}
 
         self.assertEqual(assign_by_target["v1_n"], "state_q == 2 ? mul0_y_n : r_i32_0_q")
-        self.assertEqual(assign_by_target["sel_alu0_a_n"], "state_q == 3 ? SRC_V1 : ZERO")
+        self.assertEqual(assign_by_target["sel_alu0_a_n"], "state_q == 3 ? SRC_R_I32_0 : ZERO")

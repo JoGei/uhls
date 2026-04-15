@@ -1135,7 +1135,7 @@ def _value_global_live_starts(design: UHIRDesign, value_id: str) -> set[int]:
                 child_id = node.attributes.get("child")
                 if design.stage == "fsm":
                     if isinstance(child_id, str):
-                        append_loop_header(child_id, offset + node_start, expand_body=True)
+                        append_loop_header(child_id, offset, expand_body=True)
                     continue
                 trip_count = node.attributes.get("static_trip_count")
                 iter_ii = node.attributes.get("iter_initiation_interval")
@@ -1149,7 +1149,8 @@ def _value_global_live_starts(design: UHIRDesign, value_id: str) -> set[int]:
                 child_id = node.attributes.get(key)
                 if not isinstance(child_id, str) or not child_id:
                     continue
-                append_region(child_id, offset + _child_region_shift(node, key))
+                child_offset = offset if design.stage == "fsm" else offset + _child_region_shift(node, key)
+                append_region(child_id, child_offset)
 
     def append_loop_header(region_id: str, offset: int, *, expand_body: bool) -> None:
         region = region_by_id[region_id]
@@ -1174,7 +1175,8 @@ def _value_global_live_starts(design: UHIRDesign, value_id: str) -> set[int]:
                 child_id = node.attributes.get(key)
                 if not isinstance(child_id, str) or not child_id:
                     continue
-                append_region(child_id, offset + _child_region_shift(node, key))
+                child_offset = offset if design.stage == "fsm" else offset + _child_region_shift(node, key)
+                append_region(child_id, child_offset)
 
     for region_id in _root_region_ids(design):
         append_region(region_id, 0)
@@ -1187,6 +1189,36 @@ def _producer_global_capture_steps(
     producer_id: str,
     component_library: dict[str, dict[str, Any]] | None,
 ) -> set[int]:
+    if design.stage == "fsm":
+        region = design.get_region(producer_region_id)
+        if region is None:
+            return set()
+        matched = False
+        capture_steps: set[int] = set()
+        for binding in region.value_bindings:
+            if binding.producer != producer_id:
+                continue
+            matched = True
+            for live_start, _live_end in binding.live_intervals:
+                capture_steps.add(_value_capture_step(design, binding.producer, live_start, component_library))
+        if matched:
+            return capture_steps
+        producer_node = _region_producer_node(region, producer_id)
+        if producer_node is not None and producer_node.opcode == "phi":
+            incoming = tuple(producer_node.attributes.get("incoming", ()))
+            if incoming and incoming[0] != "entry":
+                for operand in producer_node.operands:
+                    operand_region = _producer_region(design, operand)
+                    operand_steps = sorted(_value_live_starts(design, operand, region=operand_region))
+                    for live_start in operand_steps:
+                        capture_steps.add(_value_capture_step(design, operand, live_start, component_library))
+                if capture_steps:
+                    return capture_steps
+            start = producer_node.attributes.get("start")
+            if isinstance(start, int):
+                return {start}
+        return capture_steps
+
     capture_steps: set[int] = set()
     region_by_id = {region.id: region for region in design.regions}
 
@@ -1224,7 +1256,7 @@ def _producer_global_capture_steps(
                 child_id = node.attributes.get("child")
                 if design.stage == "fsm":
                     if isinstance(child_id, str):
-                        append_loop_header(child_id, offset + node_start, expand_body=True)
+                        append_loop_header(child_id, offset, expand_body=True)
                     continue
                 trip_count = node.attributes.get("static_trip_count")
                 iter_ii = node.attributes.get("iter_initiation_interval")
@@ -1238,7 +1270,8 @@ def _producer_global_capture_steps(
                 child_id = node.attributes.get(key)
                 if not isinstance(child_id, str) or not child_id:
                     continue
-                append_region(child_id, offset + _child_region_shift(node, key))
+                child_offset = offset if design.stage == "fsm" else offset + _child_region_shift(node, key)
+                append_region(child_id, child_offset)
 
     def append_loop_header(region_id: str, offset: int, *, expand_body: bool) -> None:
         region = region_by_id[region_id]
@@ -1285,7 +1318,8 @@ def _producer_global_capture_steps(
                 child_id = node.attributes.get(key)
                 if not isinstance(child_id, str) or not child_id:
                     continue
-                append_region(child_id, offset + _child_region_shift(node, key))
+                child_offset = offset if design.stage == "fsm" else offset + _child_region_shift(node, key)
+                append_region(child_id, child_offset)
 
     for region_id in _root_region_ids(design):
         append_region(region_id, 0)
@@ -1298,6 +1332,12 @@ def _binding_global_capture_steps(
     binding,
     component_library: dict[str, dict[str, Any]] | None,
 ) -> set[int]:
+    if design.stage == "fsm":
+        return {
+            _value_capture_step(design, binding.producer, live_start, component_library)
+            for live_start, _live_end in binding.live_intervals
+        }
+
     capture_steps: set[int] = set()
     region_by_id = {region.id: region for region in design.regions}
 
@@ -2405,12 +2445,8 @@ def _semantic_value_result_expr(
     if not timed_states:
         return direct_expr
 
-    capture_registers_by_step = _capture_registers_by_step(
-        design,
-        value_id,
-        component_library,
-        region=producer_region,
-    )
+    live_starts = _value_live_starts(design, value_id, region=producer_region)
+    producer_component_kind = _producer_bound_component_kind(design, producer_node, component_library)
     timed_exprs: list[tuple[int, int, str]] = []
     for step, state_code in timed_states:
         step_expr = _resolve_value_signal(
@@ -2424,15 +2460,16 @@ def _semantic_value_result_expr(
         )
         if step_expr is None or step_expr == value_id:
             step_expr = direct_expr
+        elif (
+            producer_component_kind in {"pipelined", "sequential"}
+            and step in live_starts
+            and step_expr == _register_for_value_at_step(design, value_id, step, region=producer_region)
+        ):
+            step_expr = direct_expr
         timed_exprs.append((step, state_code, step_expr))
 
     default_expr = timed_exprs[-1][2]
-    normalized_exprs: list[tuple[int, str]] = []
-    for step, state_code, expr in timed_exprs:
-        capture_registers = capture_registers_by_step.get(step, set())
-        if capture_registers and expr in capture_registers and expr != default_expr:
-            expr = direct_expr
-        normalized_exprs.append((state_code, expr))
+    normalized_exprs = [(state_code, expr) for _step, state_code, expr in timed_exprs]
 
     unique_exprs = {expr for _state_code, expr in normalized_exprs}
     if len(unique_exprs) == 1:
@@ -2487,6 +2524,23 @@ def _semantic_value_direct_result_expr(
         if expr is not None:
             return expr
     return _node_result_signal(design, producer_node, component_library)
+
+
+def _producer_bound_component_kind(
+    design: UHIRDesign,
+    producer_node,
+    component_library: dict[str, dict[str, Any]] | None,
+) -> str | None:
+    if component_library is None:
+        return None
+    bind = getattr(producer_node, "attributes", {}).get("bind")
+    if not isinstance(bind, str) or not bind:
+        return None
+    try:
+        component_name = _resource_value(design, bind)
+    except ValueError:
+        return None
+    return _component_kind(component_library, component_name)
 
 
 def _value_is_identity_handoff(design: UHIRDesign, value_id: str, *, region=None) -> bool:

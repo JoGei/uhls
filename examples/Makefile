@@ -124,12 +124,23 @@ BIND_TRP_SVG := $(BUILD_DIR)/$(STEM).bind.trp.svg
 FSM_DOT := $(BUILD_DIR)/$(STEM).fsm.dot
 FSM_SVG := $(BUILD_DIR)/$(STEM).fsm.svg
 
+LEGALIZE_PASSES_EFFECTIVE := $(strip $(LEGALIZE_PASSES))
+ifeq ($(strip $(OPT_PASSES)),)
+ifeq ($(findstring mov_to_add_zero,$(LEGALIZE_PASSES_EFFECTIVE)),)
+ifneq ($(LEGALIZE_PASSES_EFFECTIVE),)
+LEGALIZE_PASSES_EFFECTIVE := $(LEGALIZE_PASSES_EFFECTIVE),mov_to_add_zero
+else
+LEGALIZE_PASSES_EFFECTIVE := mov_to_add_zero
+endif
+endif
+endif
+
 PIPELINE_ARTIFACTS := $(UIR) $(LEGALIZE_UIR) $(OPT_UIR) $(OPT2_UIR) $(SEQ_UHIR) $(GOPT_UHIR) $(ALLOC_UHIR) $(SCHED_UHIR) $(BIND_UHIR) $(FSM_UHIR) $(UGLIR) $(RTL)
 WRAPPED_PIPELINE_ARTIFACTS := $(PROT_WRAP_UGLIR) $(PROT_WRAP_RTL) $(PROT_WRAP_DRV)
 VIEW_ARTIFACTS := $(CFG_SVG) $(DFG_SVG) $(CDFG_SVG) $(SEQ_SVG) $(GOPT_SVG) $(ALLOC_SVG) $(BIND_SVG) $(BIND_COMPAT_SVG) $(BIND_CONFLICT_SVG) $(BIND_TRP_SVG) $(FSM_SVG) $(PROT_WRAP_MMIO) $(PROT_WRAP_MMIO_SVG)
 ASIC_ARTIFACTS := $(ASIC_TOP) $(ASIC_SDC) $(ASIC_ORFS) $(ASIC_MACROS) $(ASIC_FLOORPLAN_HINTS) $(ASIC_MACRO_PLACE) $(ASIC_ORFS_CONFIG) $(ASIC_ORFS_RUN)
 
-.PHONY: all pipeline synth frontend middleend backend wrapped_backend wrapped views asic yosys_smoke orfs_run asic_gui asic_schem run_verilator clean
+.PHONY: all pipeline synth frontend middleend backend wrapped_backend wrapped views asic yosys_smoke orfs_run asic_gui asic_schem run_verilator run_uhir_interpret clean
 
 all: synth run_hw_interpret
 
@@ -214,8 +225,8 @@ $(UIR): $(SRC) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) parse $< -o $@
 
 $(LEGALIZE_UIR): $(UIR) $(UHLS_DEPS) | $(BUILD_DIR)
-	if [ -n "$(strip $(LEGALIZE_PASSES))" ]; then \
-		$(UHLS) opt $< -p $(LEGALIZE_PASSES) $(LEGALIZE_PASSES_ARGS) -o $@; \
+	if [ -n "$(strip $(LEGALIZE_PASSES_EFFECTIVE))" ]; then \
+		$(UHLS) opt $< -p $(LEGALIZE_PASSES_EFFECTIVE) $(LEGALIZE_PASSES_ARGS) -o $@; \
 	else \
 		cp $< $@; \
 	fi

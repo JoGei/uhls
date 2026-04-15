@@ -10,6 +10,11 @@ from uhls.middleend.passes.opt.copy_prop import CopyPropPass, copy_prop_function
 from uhls.middleend.passes.opt.cse import CSEPass, cse_function, cse_module
 from uhls.middleend.passes.opt.dce import DCEPass, dce_function, dce_module
 from uhls.middleend.passes.opt.inline_calls import InlineCallsPass, InlineError, inline_calls
+from uhls.middleend.passes.opt.mov_to_add_zero import (
+    MovToAddZeroPass,
+    mov_to_add_zero_function,
+    mov_to_add_zero_module,
+)
 from uhls.middleend.passes.opt.prune_functions import (
     PruneFunctionsPass,
     prune_functions_function,
@@ -34,6 +39,7 @@ __all__ = [
     "DCEPass",
     "InlineCallsPass",
     "InlineError",
+    "MovToAddZeroPass",
     "PruneFunctionsPass",
     "SimplifyCFGPass",
     "UnrollLoopsPass",
@@ -48,6 +54,8 @@ __all__ = [
     "dce_function",
     "dce_module",
     "inline_calls",
+    "mov_to_add_zero_function",
+    "mov_to_add_zero_module",
     "prune_functions_function",
     "prune_functions_module",
     "simplify_cfg_function",

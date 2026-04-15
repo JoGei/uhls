@@ -20,7 +20,7 @@ on:
 jobs:
   unit-tests:
     name: run µhLS unit tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os.name }}-${{ matrix.os.version }}
     strategy:
       matrix:
         os:
@@ -65,8 +65,9 @@ jobs:
           PYTHONPATH=src python3 -m unittest discover -s test -v
 
   examples-all:
+    needs: unit-tests
     name: make all [${{ matrix.example }}, ${{ matrix.legalize.name }}, ${{ matrix.opt.name }}, ${{ matrix.opt2.name }}, ${{ matrix.gopt.name }}]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os.name }}-${{ matrix.os.version }}
     strategy:
       matrix:
         os:
@@ -128,8 +129,9 @@ jobs:
             GOPT_PASSES="${{ matrix.gopt.pass_pipe }}" GOPT_PASSES_ARGS="${{ matrix.gopt.pass_args }}"
 
   examples-asic:
+    needs: examples-all
     name: make asic [${{ matrix.example }}, ${{ matrix.legalize.name }}, ${{ matrix.opt.name }}, ${{ matrix.opt2.name }}, ${{ matrix.gopt.name }}]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os.name }}-${{ matrix.os.version }}
     strategy:
       matrix:
         os:

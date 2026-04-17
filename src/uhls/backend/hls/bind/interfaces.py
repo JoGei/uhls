@@ -35,6 +35,8 @@ class BindingOccurrence:
     end: int
     domain: str
     branch_choices: frozenset[tuple[str, str]]
+    conflict_start: int | None = None
+    conflict_end: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -160,6 +162,13 @@ class OperationBinderBase(ABC):
                 if not consumers:
                     continue
                 live_start, live_end = self.get_value_interval(region, node, consumers)
+                conflict_start, conflict_end = self.get_value_conflict_interval(
+                    region,
+                    node,
+                    live_start,
+                    live_end,
+                    flatten=flatten,
+                )
                 value_type = self.get_value_type(region, node)
                 grouped[value_type][node.id].append(
                     BindingOccurrence(
@@ -169,6 +178,8 @@ class OperationBinderBase(ABC):
                         end=live_end + offset,
                         domain="global" if loop_domain is None else f"loop:{loop_domain}",
                         branch_choices=frozenset(branch_choices),
+                        conflict_start=conflict_start + offset,
+                        conflict_end=conflict_end + offset,
                     )
                 )
 
@@ -231,7 +242,7 @@ class OperationBinderBase(ABC):
             return False
         if not self._branch_choices_compatible(left.branch_choices, right.branch_choices):
             return False
-        return intervals_overlap((left.start, left.end), (right.start, right.end))
+        return intervals_overlap(_occurrence_conflict_interval(left), _occurrence_conflict_interval(right))
 
     def get_node_interval(self, region: UHIRRegion, node: UHIRNode) -> tuple[int, int]:
         """Return one bindable node's occupied inclusive interval."""
@@ -441,6 +452,27 @@ class OperationBinderBase(ABC):
             raise ValueError(f"value '{region.id}/{producer.id}' has live_end < live_start")
         return live_start, live_end
 
+    def get_value_conflict_interval(
+        self,
+        region: UHIRRegion,
+        producer: UHIRNode,
+        live_start: int,
+        live_end: int,
+        *,
+        flatten: bool,
+    ) -> tuple[int, int]:
+        """Return the physical register occupancy used for value coloring.
+
+        Flattened hardware binding must avoid coalescing values whose possible
+        capture cycles collide. The emitted value-binding live interval remains
+        the logical consumer interval, while the conflict interval starts at the
+        producer's scheduled end to cover clocked capture before first use.
+        """
+        if not flatten:
+            return live_start, live_end
+        _producer_start, producer_end = self.get_node_interval(region, producer)
+        return min(producer_end, live_start), live_end
+
     def get_value_type(self, region: UHIRRegion, producer: UHIRNode) -> str:
         """Return one produced value's register type."""
         if producer.result_type is None:
@@ -559,6 +591,12 @@ def _node_children(node: UHIRNode) -> list[str]:
         if isinstance(value, str) and value:
             children.append(value)
     return children
+
+
+def _occurrence_conflict_interval(occurrence: BindingOccurrence) -> tuple[int, int]:
+    start = occurrence.start if occurrence.conflict_start is None else occurrence.conflict_start
+    end = occurrence.end if occurrence.conflict_end is None else occurrence.conflict_end
+    return start, end
 
 
 def _root_region_ids(design: UHIRDesign) -> list[str]:

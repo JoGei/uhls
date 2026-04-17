@@ -2007,6 +2007,145 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertNotIn("sel_gen_mul_pseudopipe_ii1d30_a_n = (\n  state_q == 2 ? SRC_PHI_I_1 : state_q == 8 ? SRC_R_I16_0", rendered)
         self.assertNotIn("sel_gen_mul_pseudopipe_ii1d30_b_n = (\n  state_q == 2 ? CONST_8_I8 : state_q == 8 ? SRC_R_I16_1", rendered)
 
+    def test_lower_fsm_to_uglir_uses_materialized_mov_alias_for_late_consumers(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design late_mov_alias
+            stage fsm
+            schedule kind=control_steps
+            input  x : i32
+            output result : i32
+            resources {
+              fu mul0 : MUL
+              fu alu0 : ALU
+              reg r_i32_0 : i32
+              reg r_i32_1 : i32
+              reg r_i32_2 : i32
+            }
+            controller C0 encoding=binary protocol=req_resp completion_order=in_order overlap=true region=proc_late_mov_alias {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=0
+              state T0 code=1
+              state T1 code=2
+              state T2 code=3
+              state T3 code=4
+              state T4 code=5
+              state T5 code=6
+              state T6 code=7
+              state T7 code=8
+              state T8 code=9
+              state T9 code=10
+              state DONE code=11
+              transition IDLE -> T0 when=req_valid && req_ready
+              transition T0 -> T1
+              transition T1 -> T2
+              transition T2 -> T3
+              transition T3 -> T4
+              transition T4 -> T5
+              transition T5 -> T6
+              transition T6 -> T7
+              transition T7 -> T8
+              transition T8 -> T9
+              transition T9 -> DONE
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[mul0<-v1]
+              emit T2 issue=[alu0<-v2] latch=[r_i32_0]
+              emit T3 latch=[r_i32_1]
+              emit T8 issue=[alu0<-v3]
+              emit T9 latch=[r_i32_2]
+              emit DONE resp_valid=true
+            }
+
+            region proc_late_mov_alias kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = mul x, 2:i32 : i32 class=MUL ii=1 delay=2 start=0 end=1 bind=mul0
+              node v2 = mov v1 : i32 class=ALU ii=1 delay=1 start=2 end=2 bind=alu0
+              node v3 = add 1:i32, v2 : i32 class=ALU ii=1 delay=1 start=8 end=8 bind=alu0
+              node v4 = ret v3 class=CTRL ii=0 delay=0 start=9 end=9
+              node v5 = nop role=sink class=CTRL ii=0 delay=0 start=10 end=10
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+              edge data v4 -> v5
+              steps [0:9]
+              latency 10
+              value v1 -> r_i32_0 live=[2:2]
+              value v2 -> r_i32_1 live=[3:8]
+              value v3 -> r_i32_2 live=[9:9]
+            }
+            """
+        )
+        component_library = json.loads(
+            """
+            {
+              "components": {
+                "ALU": {
+                  "kind": "combinational",
+                  "ports": {
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "op": { "dir": "input", "type": "u5" },
+                    "y": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "add": {
+                      "ii": 1,
+                      "d": 1,
+                      "opcode": 0,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "y": "result"
+                      }
+                    },
+                    "mov": {
+                      "ii": 1,
+                      "d": 1,
+                      "opcode": 1,
+                      "bind": {
+                        "a": "operand0",
+                        "y": "result"
+                      }
+                    }
+                  }
+                },
+                "MUL": {
+                  "kind": "pipelined",
+                  "ports": {
+                    "clk": { "dir": "input", "type": "clock" },
+                    "rst": { "dir": "input", "type": "reset", "active": "hi" },
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "y": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "mul": {
+                      "ii": 1,
+                      "d": 2,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "y": "result"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+        )["components"]
+
+        uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
+        assign_by_target = {assign.target: assign.expr for assign in uglir_design.assigns}
+
+        self.assertIn("state_q == 9 ? SRC_R_I32_1", assign_by_target["sel_alu0_b_n"])
+        self.assertNotIn("state_q == 9 ? SRC_R_I32_0", assign_by_target["sel_alu0_b_n"])
+
     def test_lower_fsm_to_uglir_keeps_pipelined_result_live_for_next_cycle_held_input_consumer(self) -> None:
         fsm_design = parse_uhir(
             """

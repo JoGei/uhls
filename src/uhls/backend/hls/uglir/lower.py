@@ -3062,6 +3062,18 @@ def _resolve_handoff_source(
     producer_region = region if local_producer is not None else _producer_region(design, value_id)
     identity_source = _identity_handoff_source(design, producer_region, producer_node)
     if identity_source is not None:
+        register = _register_for_value_at_step(design, value_id, consumer_start, occurrence_index=occurrence_index, region=region)
+        live_starts = _value_live_starts(design, value_id, region=producer_region)
+        if register is not None and consumer_start not in live_starts:
+            return _resolve_value_signal(
+                design,
+                value_id,
+                component_library,
+                occurrence_index,
+                consumer_start=consumer_start,
+                region=region,
+                allow_forward_handoff=False,
+            )
         operand_region, operand_value = identity_source
         return _resolve_handoff_source(
             design,

@@ -3357,6 +3357,12 @@ def _node_value_expr(
             consumer_start=consumer_start,
             region=child_region,
         )
+    if node.opcode == "const" and node.operands:
+        result_type = getattr(node, "result_type", None)
+        value = node.operands[0]
+        if isinstance(result_type, str) and result_type and ":" not in value:
+            return f"{value}:{result_type}"
+        return value
     if node.opcode == "sel" and len(node.operands) == 3:
         condition = _resolve_value_signal(design, node.operands[0], component_library, occurrence_index)
         true_value = _resolve_value_signal(design, node.operands[1], component_library, occurrence_index)

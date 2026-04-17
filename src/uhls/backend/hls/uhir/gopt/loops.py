@@ -54,6 +54,8 @@ def collect_loop_candidates(design: UHIRDesign) -> list[LoopCandidate]:
                 incoming.setdefault(edge.target, set()).add(edge.source)
 
         for branch_node in sorted((node for node in parent_region.nodes if node.opcode == "branch"), key=lambda node: node.id):
+            if branch_node.attributes.get("control_kind") != "loop":
+                continue
             true_child = branch_node.attributes.get("true_child")
             false_child = branch_node.attributes.get("false_child")
             if not isinstance(true_child, str) or not isinstance(false_child, str):

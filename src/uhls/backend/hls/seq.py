@@ -403,6 +403,7 @@ class _SeqLowerer:
                     "branch",
                     (_format_operand_name(header_block.terminator.cond),),
                     attributes={
+                        "control_kind": "loop",
                         "header_label": header_block.label,
                         "true_label": header_block.terminator.true_target,
                         "false_label": header_block.terminator.false_target,
@@ -449,6 +450,7 @@ class _SeqLowerer:
                     "branch",
                     (_format_operand_name(terminator.cond),),
                     attributes={
+                        "control_kind": "branch",
                         "header_label": block.label,
                         "true_label": terminator.true_target,
                         "false_label": terminator.false_target,

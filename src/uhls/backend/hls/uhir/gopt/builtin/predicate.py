@@ -171,6 +171,7 @@ def _materialize_predicated_nodes(parent_region, child_region, slice_node_ids: l
         (node.id for node in parent_region.nodes if node.opcode == "nop" and node.attributes.get("role") == "source"),
         None,
     )
+    predicate_producer = producer_by_name.get(predicate[1:] if predicate.startswith("!") else predicate)
     child_nodes = {node.id: node for node in child_region.nodes}
     mapping_by_node: dict[str, list[UHIRSourceMap]] = {}
     for mapping in child_region.mappings:
@@ -185,6 +186,8 @@ def _materialize_predicated_nodes(parent_region, child_region, slice_node_ids: l
         node.attributes["pred"] = predicate
         moved_nodes.append(node)
         moved_mappings.extend(mapping_by_node.get(node.id, []))
+        if predicate_producer is not None:
+            moved_edges.append(UHIREdge("data", predicate_producer.id, node.id))
         for operand in node.operands:
             producer = producer_by_name.get(operand)
             if producer is None:

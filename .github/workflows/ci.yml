@@ -76,7 +76,7 @@ jobs:
           - { name: "tumeda/eda-osic-tools", version: "latest-default" }
         example: 
           - { name: "dot4_relu", legalize: { name: "Ldef", pass_pipe: "const_prop", pass_args: "" } }
-          - { name: "dot4_i8_i32_relu_packed", legalize: { name: "Ldef", pass_pipe: "const_prop", pass_args: "" } }
+          - { name: "dot4_i8_i32_relu_packed", legalize: { name: "Ldef", pass_pipe: "canonicalize", pass_args: "" } }
         opt:
           - { name: "O0", pass_pipe: "", pass_args: "" }
           - { name: "O1", pass_pipe: "dce,cse,copy_prop,dce", pass_args: "" }
@@ -140,7 +140,7 @@ jobs:
         container:
           - { name: "tumeda/eda-osic-tools", version: "latest-default" }
         example: 
-          - { name: "dot4_relu", legalize: { name: "Ldef", pass_pipe: "const_prop", pass_args: "" } }
+          - { name: "dot4_relu", legalize: { name: "Ldef", pass_pipe: "canonicalize", pass_args: "" } }
         opt:
           #- { name: "O0", pass_pipe: "", pass_args: "" }
           #- { name: "O1", pass_pipe: "dce,cse,copy_prop,dce", pass_args: "" }

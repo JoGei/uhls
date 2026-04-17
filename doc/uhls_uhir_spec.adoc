@@ -732,6 +732,32 @@ A well-formed executability graph must satisfy:
 * every edge weight defines integer `ii` and integer `d`
 * `ii<=d` for all edge weights in the graph
 
+When allocation consumes richer component-library collateral, each executable
+operation support should define a *resource type model*.
+The resource type model describes the physical operand datatypes expected at the
+selected resource boundary and the physical return datatype produced by that
+resource.
+It should be explicit through a support-local `types` map such as
+`operand0=base_t`, `operand1=base_t`, `return=base_t`.
+The legacy key `result` may be accepted as an alias for `return`, but new
+component libraries should prefer `return` so the support contract clearly
+describes what the resource produces and the compiler later consumes.
+If `types` is omitted, allocation may infer the same model from the component
+port types referenced by the support binding, but explicit support-local types
+are preferred because they avoid ambiguous glue behavior.
+
+The operation type carried by `seq` µhIR is the *semantic* operation type.
+The resource type model is the *physical* execution contract of the selected
+resource.
+Allocation and later glue lowering are responsible for provisioning values that
+match the support's expected operand datatypes and for consuming the support's
+declared return datatype.
+If the semantic operation type and physical resource type differ only by legal
+integer widening or narrowing, allocation must materialize that adaptation
+explicitly in the allocated µhIR graph.
+Allocation must not leave this adaptation implicit for µglIR or RTL lowering to
+guess later.
+
 === Required elements
 
 A valid `alloc` file must contain:
@@ -769,6 +795,97 @@ Optional attributes:
 
 * width/type information via `: <type>`
 * implementation-specific annotations
+
+=== Resource-boundary type adapters
+
+The `alloc` stage is responsible for making resource-boundary type adaptation
+explicit.
+This is an integrated part of allocation, not a separate optimization pass.
+
+For every resource-backed node, allocation first selects one executable resource
+support.
+It then compares:
+
+* the semantic µhIR operand/result types of the node
+* the expected operand datatypes and declared return datatype of the selected
+  resource support
+
+If the types differ by a legal integer adaptation, `alloc` inserts explicit
+adapter nodes so the resource-backed operation itself is wired only with values
+matching the selected resource type model.
+
+Supported structural adapter opcodes are:
+
+* `sext` — signed integer widening
+* `zext` — unsigned integer widening
+* `trunc` — integer narrowing by keeping the low bits
+
+The adapter operation is encoded by the node opcode itself.
+No separate `adapter_op` attribute is required or allowed by the canonical
+form; duplicating the opcode would introduce an unnecessary consistency point.
+
+Adapters are structural datapath nodes.
+They should be emitted with:
+
+* `class=ADAPT`
+* `ii=0`
+* `delay=0`
+* `source_type=<type>` — the scalar datatype consumed by the adapter
+* `target_type=<type>` — the scalar datatype produced by the adapter
+
+They do not represent user arithmetic and do not consume a normal functional
+unit.
+Scheduling and binding should preserve their data dependencies while treating
+them like zero-cost structural wiring.
+
+Adapter selection is determined by source and destination scalar integer types:
+
+* same width and same signedness: no adapter is needed
+* narrower signed source to wider destination: `sext`
+* narrower unsigned source to wider destination: `zext`
+* wider source to narrower destination: `trunc`
+* same width but different signedness: no bit-level adapter is needed, but later
+  comparisons or arithmetic must still use the signedness required by their
+  selected resource model
+* non-integer, aggregate, or memory-reference adaptations are not legal unless a
+  later extension defines them explicitly
+
+When an operation result needs narrowing, allocation should keep the
+resource-backed operation node as the physical operation and place the semantic
+result identity on the result adapter.
+This preserves the operation identity while making the value handoff explicit.
+In that case the resource-backed node's result type is the selected physical
+resource result type, while the adapter's result type is the original semantic
+µIR type.
+
+Example:
+
+[source,text]
+----
+# Before allocation:
+node v_mul = mul a_i8, b_i8 : i16
+
+# If allocation selects one physical i32 x i32 -> i32 multiplier:
+node v_a32  = sext  a_i8  : i32 class=ADAPT ii=0 delay=0 source_type=i8 target_type=i32
+node v_b32  = sext  b_i8  : i32 class=ADAPT ii=0 delay=0 source_type=i8 target_type=i32
+node v_mul  = mul   v_a32, v_b32 : i32 class=GEN_MUL_PSEUDOPIPE_II1D3 ii=1 delay=2
+node v_i16  = trunc v_mul : i16 class=ADAPT ii=0 delay=0 source_type=i32 target_type=i16
+map  v_i16 <- mul_0
+----
+
+After adapter materialization, downstream stages may assume:
+
+* every non-adapter resource-backed node's operands match the selected resource
+  operand datatypes
+* every non-adapter resource-backed node's result type matches the selected
+  resource return datatype
+* every semantic consumer sees the original µIR type through either the
+  resource-backed node itself or an explicit adapter node
+* µglIR lowering does not need to invent implicit sign-extension,
+  zero-extension, or truncation for resource ports
+
+Allocation must reject a resource support if the required semantic-to-physical
+adaptation is not expressible by the adapter rules above.
 
 === Example: flat allocated form
 
@@ -1077,7 +1194,7 @@ A valid `bind` file must contain:
 * a schedule declaration
 * a `resources` block
 * at least one `region`
-* bound nodes with `bind=<resource-id>`
+* resource-backed nodes with `bind=<resource-id>`
 
 === Resources block
 
@@ -1144,13 +1261,17 @@ resources {
 
 === Required node attributes in `bind`
 
-Each bound operation node should include at least:
+Each resource-backed operation node should include at least:
 
 * `class=<resource-class>`
 * `delay=<int>`
 * `start=<int>`
 * `end=<int>`
 * `bind=<resource-id>`
+
+Structural nodes such as `CTRL` nodes and allocation-materialized `ADAPT`
+adapter nodes may remain unbound when they do not consume a concrete
+functional-unit resource.
 
 The same inclusive timing convention as `sched` applies:
 
@@ -1514,9 +1635,13 @@ An `exg` file is well-formed only if:
 
 === Stage-specific rules for `alloc`
 
-A `alloc` file is well-formed only if:
+An `alloc` file is well-formed only if:
 
 * every allocated node has `class`, `ii`, and `delay`
+* every `class=ADAPT` node uses one of `sext`, `zext`, or `trunc`
+* every `class=ADAPT` node declares `source_type` and `target_type`
+* every `class=ADAPT` node's result type matches its `target_type`
+* every resource-backed non-adapter node's operand datatypes and return datatype match the selected resource type model after adapter insertion
 * no `start`, `end`, or `bind` attributes appear unless explicitly allowed by an extension
 * no `resources` block appears
 * any executability graph collateral used to produce the file is well-formed under the rules above

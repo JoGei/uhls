@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from uhls.middleend.passes.analyze import detect_loops
-from uhls.middleend.uir import Function
+from uhls.middleend.uir import Function, PhiOp, UnaryOp
 
 
 @dataclass
@@ -63,16 +63,18 @@ def lower_loop_body_unit(
     node_defs: dict[str, str] = {}
     last_memory: dict[str, str] = {}
     produced_nodes: list[str] = []
+    predecessor_label = loop.header
 
     for block in ordered_blocks:
         _, block_nodes = append_instructions(
             unit,
-            block.instructions,
+            _resolve_flattened_block_phis(block.instructions, predecessor_label),
             cursor=source.id,
             node_defs=node_defs,
             last_memory=last_memory,
         )
         produced_nodes.extend(block_nodes)
+        predecessor_label = block.label
 
     connect_produced_nodes_to_sink(unit, produced_nodes)
     return unit
@@ -108,6 +110,23 @@ def loop_defined_names(function: Function, loop: LoopSummary, *, instruction_des
             if dest is not None:
                 names.add(dest)
     return names
+
+
+def _resolve_flattened_block_phis(instructions: list[object], predecessor_label: str) -> list[object]:
+    resolved: list[object] = []
+    for instruction in instructions:
+        if not isinstance(instruction, PhiOp):
+            resolved.append(instruction)
+            continue
+        incoming = next(
+            (item for item in instruction.incoming if item.pred == predecessor_label),
+            None,
+        )
+        if incoming is None:
+            resolved.append(instruction)
+            continue
+        resolved.append(UnaryOp("mov", instruction.dest, instruction.type, incoming.value))
+    return resolved
 
 
 def _loop_body_region_id(function_name: str, header: str) -> str:

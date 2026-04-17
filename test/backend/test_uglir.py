@@ -563,6 +563,111 @@ class UGLIRLoweringTests(unittest.TestCase):
         self.assertNotIn("c_0", rendered)
         self.assertIn("SRC_Z", rendered)
 
+    def test_lower_fsm_to_uglir_uses_captured_mapped_child_return_for_late_parent_consumer(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design child_return_capture
+            stage fsm
+            schedule kind=hierarchical
+            input  x : i32
+            output result : i32
+            resources {
+              fu alu0 : ALU
+              reg r_i32_0 : i32
+              reg r_i32_1 : i32
+            }
+            controller C0 encoding=binary protocol=req_resp completion_order=in_order overlap=true region=proc_top {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=0
+              state T0 code=1
+              state T1 code=2
+              state T2 code=3
+              state T3 code=4
+              state DONE code=5
+              transition IDLE -> T0 when=req_valid && req_ready
+              transition T0 -> T1
+              transition T1 -> T2
+              transition T2 -> T3
+              transition T3 -> DONE
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[alu0<-c1]
+              emit T1 latch=[r_i32_0]
+              emit T2 issue=[alu0<-v2]
+              emit T3 latch=[r_i32_1]
+              emit DONE resp_valid=true
+            }
+
+            region proc_top kind=procedure {
+              region_ref proc_child
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = call child, x : i32 child=proc_child class=CTRL ii=2 delay=2 timing=static start=0 end=1 child_timebase=global
+              node v2 = add v1, 1:i32 : i32 class=ALU ii=1 delay=1 start=2 end=2 bind=alu0
+              node v3 = ret v2 class=CTRL ii=0 delay=0 start=3 end=3
+              node v4 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+              steps [0:3]
+              latency 4
+              value v2 -> r_i32_1 live=[3:3]
+            }
+
+            region proc_child kind=procedure {
+              node c0 = nop role=source params=[a_0] param_types=[i32] class=CTRL ii=0 delay=0 start=0 end=0
+              node c1 = add a_0, 0:i32 : i32 class=ALU ii=1 delay=1 start=0 end=0 bind=alu0
+              node c2 = ret out_0 class=CTRL ii=0 delay=0 start=1 end=1
+              node c3 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data c0 -> c1
+              edge data c1 -> c2
+              edge data c2 -> c3
+              map c1 <- out_0
+              steps [0:1]
+              latency 2
+              value c1 -> r_i32_0 live=[1:1]
+            }
+            """
+        )
+        component_library = json.loads(
+            """
+            {
+              "components": {
+                "ALU": {
+                  "kind": "combinational",
+                  "ports": {
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "op": { "dir": "input", "type": "u5" },
+                    "y": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "add": {
+                      "ii": 1,
+                      "d": 1,
+                      "opcode": 0,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "y": "result"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+        )["components"]
+
+        uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
+        assign_by_target = {assign.target: assign.expr for assign in uglir_design.assigns}
+
+        self.assertIn("state_q == 3 ? SRC_R_I32_0", assign_by_target["sel_alu0_a_n"])
+        self.assertNotIn("state_q == 3 ? SRC_ALU0_Y", assign_by_target["sel_alu0_a_n"])
+
     def test_lower_fsm_to_uglir_keeps_duplicated_source_ids_region_local(self) -> None:
         fsm_design = parse_uhir(
             """
@@ -1892,7 +1997,7 @@ class UGLIRSyntaxTests(unittest.TestCase):
         seq_block = uglir_design.seq_blocks[0]
         phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
         self.assertIn("(req_fire_n) ? C_0", phi_sum_update.value)
-        self.assertIn("r_i32_0_q", phi_sum_update.value)
+        self.assertIn("sum_2__u3_n", phi_sum_update.value)
         self.assertNotIn("r_i32_1_q", phi_sum_update.value)
 
     def test_lower_fsm_to_uglir_threads_late_mov_aliases_through_semantic_nets(self) -> None:

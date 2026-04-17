@@ -3369,7 +3369,7 @@ def _node_value_expr(
         if returned_value is None:
             return None
         child_region = design.get_region(node.attributes.get("child"))
-        producer_signal = _resolve_producer_signal(
+        value_signal = _resolve_value_signal(
             design,
             returned_value,
             component_library,
@@ -3377,9 +3377,9 @@ def _node_value_expr(
             consumer_start=consumer_start,
             region=child_region,
         )
-        if producer_signal is not None:
-            return producer_signal
-        return _resolve_value_signal(
+        if value_signal is not None:
+            return value_signal
+        return _resolve_producer_signal(
             design,
             returned_value,
             component_library,
@@ -3504,6 +3504,9 @@ def _producer_capture_steps_for_value(
     producer_region = region if region is not None else _producer_region(design, value_id)
     if producer_region is None:
         return _value_global_live_starts(design, value_id)
+    producer_node = _region_producer_node(producer_region, value_id)
+    if producer_node is not None and producer_node.id != value_id:
+        value_id = producer_node.id
     return _producer_global_capture_steps(
         design,
         producer_region.id,

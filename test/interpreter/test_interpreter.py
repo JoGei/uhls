@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass, field
+from textwrap import dedent
 
-from uhls.interpreter import run_uir
-from uhls.middleend.uir import Module
+from uhls.backend.hls.uhir import create_builtin_gopt_pass, lower_module_to_seq, parse_uhir, run_gopt_passes
+from uhls.interpreter import run_uhir, run_uir
+from uhls.middleend.uir import BinaryOp, Block as UIRBlock, CallOp, Function as UIRFunction, Module, Parameter, ReturnOp, parse_module
 
 
 @dataclass
@@ -390,6 +392,207 @@ class InterpreterTests(unittest.TestCase):
         result = run_uir(caller, {"x": 9, "y": 4, "z": 2}, module=module)
 
         self.assertEqual(result.return_value, 7)
+
+    def test_uhir_executes_branch_based_seq_loop(self) -> None:
+        """Seq-stage µhIR should execute lowered branch-based loops directly."""
+
+        module = parse_module(
+            """
+            func dot4(A:i32[]) -> i32
+
+            block entry:
+                br for_header_1
+
+
+            block for_header_1:
+                i_1:i32 = phi(entry: 0:i32, for_body_2: t2_0)
+                sum_1:i32 = phi(entry: 0:i32, for_body_2: t1_0)
+                t0_0:i1 = lt i_1, 4:i32
+                cbr t0_0, for_body_2, for_exit_4
+
+
+            block for_body_2:
+                t0_1:i32 = load A[i_1]
+                t1_0:i32 = add sum_1, t0_1
+                t2_0:i32 = add i_1, 1:i32
+                br for_header_1
+
+
+            block for_exit_4:
+                ret sum_1
+            """
+        )
+
+        design = lower_module_to_seq(module, top="dot4")
+        result = run_uhir(
+            design,
+            arrays={"A": {"data": [1, 2, 3, 4], "element_type": "i32"}},
+        )
+
+        self.assertEqual(result.return_value, 10)
+
+    def test_uhir_executes_parsed_seq_arithmetic_and_memory(self) -> None:
+        """Seq-stage µhIR text should run directly through the µhIR interpreter."""
+
+        design = parse_uhir(
+            """
+            design direct_seq
+            stage seq
+            input  A : memref<i32, 2>
+            input  x : i32
+            output result : i32
+            const  K = 3 : i32
+
+            region proc_direct_seq kind=procedure {
+              node v0 = nop role=source
+              node v1 = load A[1:i32] : i32
+              node v2 = add v1, x : i32
+              node v3 = add v2, K : i32
+              node v4 = store A[0:i32], v3
+              node v5 = ret v3
+              node v6 = nop role=sink
+
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+              edge data v4 -> v5
+              edge data v5 -> v6
+            }
+            """
+        )
+
+        result = run_uhir(
+            design,
+            arguments={"x": 5},
+            arrays={"A": {"data": [0, 7], "element_type": "i32"}},
+        )
+
+        self.assertEqual(result.return_value, 15)
+        self.assertEqual(result.state.memory.snapshot()["A"], [15, 7])
+
+    def test_uhir_executes_loop_with_canonical_latch_block(self) -> None:
+        """Seq-stage µhIR should use the actual latch predecessor for loop phis."""
+
+        module = parse_module(
+            dedent(
+                """
+                func dot4(A:i32[], B:i32[]) -> i32
+
+                block entry:
+                    br for_header_1
+
+                block for_header_1:
+                    i_1:i32 = phi(entry: 0:i32, for_header_1_latch: i_1_latch)
+                    sum_1:i32 = phi(entry: 0:i32, for_header_1_latch: sum_1_latch)
+                    t0_0:i1 = lt i_1, 4:i32
+                    cbr t0_0, for_body_2, for_exit_4
+
+                block for_body_2:
+                    a0:i32 = load A[i_1]
+                    b0:i32 = load B[i_1]
+                    p0:i32 = mul a0, b0
+                    s0:i32 = add sum_1, p0
+                    i_next:i32 = add i_1, 1:i32
+                    t0_1:i1 = lt i_next, 4:i32
+                    cbr t0_1, for_body_2_unroll_1, for_header_1_latch
+
+                block for_body_2_unroll_1:
+                    a1:i32 = load A[i_next]
+                    b1:i32 = load B[i_next]
+                    p1:i32 = mul a1, b1
+                    s1:i32 = add s0, p1
+                    i_next_1:i32 = add i_next, 1:i32
+                    br for_header_1_latch
+
+                block for_header_1_latch:
+                    i_1_latch:i32 = phi(for_body_2: i_next, for_body_2_unroll_1: i_next_1)
+                    sum_1_latch:i32 = phi(for_body_2: s0, for_body_2_unroll_1: s1)
+                    br for_header_1
+
+                block for_exit_4:
+                    ret sum_1
+                """
+            )
+        )
+
+        design = lower_module_to_seq(module, top="dot4")
+        result = run_uhir(
+            design,
+            arrays={
+                "A": {"data": [1, 2, 3, 4], "element_type": "i32"},
+                "B": {"data": [4, 3, 2, 1], "element_type": "i32"},
+            },
+        )
+
+        self.assertEqual(result.return_value, 20)
+
+    def test_uhir_executes_explicit_static_loop_after_gopt(self) -> None:
+        """Seq-stage µhIR should execute explicit/static loop dialect forms too."""
+
+        module = parse_module(
+            """
+            func dot4(A:i32[]) -> i32
+
+            block entry:
+                br for_header_1
+
+
+            block for_header_1:
+                i_1:i32 = phi(entry: 0:i32, for_body_2: t2_0)
+                sum_1:i32 = phi(entry: 0:i32, for_body_2: t1_0)
+                t0_0:i1 = lt i_1, 4:i32
+                cbr t0_0, for_body_2, for_exit_4
+
+
+            block for_body_2:
+                t0_1:i32 = load A[i_1]
+                t1_0:i32 = add sum_1, t0_1
+                t2_0:i32 = add i_1, 1:i32
+                br for_header_1
+
+
+            block for_exit_4:
+                ret sum_1
+            """
+        )
+
+        design = run_gopt_passes(
+            lower_module_to_seq(module, top="dot4"),
+            [
+                create_builtin_gopt_pass("infer_loops"),
+                create_builtin_gopt_pass("translate_loop_dialect"),
+                create_builtin_gopt_pass("infer_static"),
+                create_builtin_gopt_pass("simplify_static_control"),
+            ],
+        )
+        result = run_uhir(
+            design,
+            arrays={"A": {"data": [1, 2, 3, 4], "element_type": "i32"}},
+        )
+
+        self.assertEqual(result.return_value, 10)
+
+    def test_uhir_executes_interprocedural_call_with_inferred_live_ins(self) -> None:
+        """Seq-stage µhIR should infer callee live-ins for procedure calls."""
+
+        callee = UIRFunction(
+            name="callee",
+            params=[Parameter("x", "i32")],
+            return_type="i32",
+            blocks=[UIRBlock("entry", instructions=[BinaryOp("add", "y", "i32", "x", 1)], terminator=ReturnOp("y"))],
+        )
+        caller = UIRFunction(
+            name="caller",
+            params=[Parameter("z", "i32")],
+            return_type="i32",
+            blocks=[UIRBlock("entry", instructions=[CallOp("callee", ["z"], dest="r", type="i32")], terminator=ReturnOp("r"))],
+        )
+
+        design = lower_module_to_seq(Module(functions=[callee, caller]), top="caller")
+        result = run_uhir(design, arguments={"z": 7})
+
+        self.assertEqual(result.return_value, 8)
 
 
 if __name__ == "__main__":

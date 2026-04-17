@@ -406,7 +406,7 @@ class _SeqLowerer:
                         "header_label": header_block.label,
                         "true_label": header_block.terminator.true_target,
                         "false_label": header_block.terminator.false_target,
-                        "true_input_label": header_block.terminator.true_target,
+                        "true_input_label": _loop_latch_label(function, loop, header_block),
                         "false_input_label": header_block.label,
                     },
                     children=(loop.body_region_id, loop.empty_region_id),
@@ -854,6 +854,35 @@ def _block_region_id(function_name: str, block_label: str) -> str:
 
 def _branch_empty_region_id(function_name: str, header: str, arm: str) -> str:
     return f"branch_empty_{_sanitize(function_name)}_{_sanitize(header)}_{_sanitize(arm)}"
+
+
+def _loop_latch_label(function: Function, loop: LoopSummary, header_block: object) -> str:
+    predecessors: set[str] = set()
+    for block in function.blocks:
+        if block.label == loop.header or block.label not in loop.body:
+            continue
+        terminator = block.terminator
+        if isinstance(terminator, BranchOp) and terminator.target == loop.header:
+            predecessors.add(block.label)
+        elif isinstance(terminator, CondBranchOp):
+            if terminator.true_target == loop.header or terminator.false_target == loop.header:
+                predecessors.add(block.label)
+
+    if len(predecessors) == 1:
+        return next(iter(predecessors))
+
+    phi_predecessors: set[str] = set()
+    for instruction in getattr(header_block, "instructions", []):
+        if not isinstance(instruction, PhiOp):
+            continue
+        for incoming in instruction.incoming:
+            predecessor = incoming.pred
+            if predecessor != loop.header and predecessor in loop.body:
+                phi_predecessors.add(predecessor)
+    if len(phi_predecessors) == 1:
+        return next(iter(phi_predecessors))
+
+    return header_block.terminator.true_target
 
 
 def _sanitize(text: str) -> str:

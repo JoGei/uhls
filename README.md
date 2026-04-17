@@ -229,10 +229,11 @@ To inspect artifacts directly from the CLI:
 dot -Tsvg dot4_relu.cdfg.dot > dot4_relu.cdfg.svg
 ```
 
-To run artifacts directly from the CLI with the interpreter:
+To run artifacts directly from the CLI with the interpreter. `--uhir/--uglir` hooks hardware IRs into the µIR interpreter for co-simulation:
 
 ```bash
 ./uhls run build/dot4_relu.uir
+./uhls run build/dot4_relu.uir --uhir dot4_relu.seq.uhir
 ./uhls run dot4_relu.opt.uir --backend=verilator --uglir dot4_relu.obi_slave.uglir
 ```
 

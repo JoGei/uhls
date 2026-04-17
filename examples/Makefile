@@ -140,9 +140,9 @@ WRAPPED_PIPELINE_ARTIFACTS := $(PROT_WRAP_UGLIR) $(PROT_WRAP_RTL) $(PROT_WRAP_DR
 VIEW_ARTIFACTS := $(CFG_SVG) $(DFG_SVG) $(CDFG_SVG) $(SEQ_SVG) $(GOPT_SVG) $(ALLOC_SVG) $(BIND_SVG) $(BIND_COMPAT_SVG) $(BIND_CONFLICT_SVG) $(BIND_TRP_SVG) $(FSM_SVG) $(PROT_WRAP_MMIO) $(PROT_WRAP_MMIO_SVG)
 ASIC_ARTIFACTS := $(ASIC_TOP) $(ASIC_SDC) $(ASIC_ORFS) $(ASIC_MACROS) $(ASIC_FLOORPLAN_HINTS) $(ASIC_MACRO_PLACE) $(ASIC_ORFS_CONFIG) $(ASIC_ORFS_RUN)
 
-.PHONY: all pipeline synth frontend middleend backend wrapped_backend wrapped views asic yosys_smoke orfs_run asic_gui asic_schem run_verilator clean
+.PHONY: all pipeline synth frontend middleend backend wrapped_backend wrapped views asic yosys_smoke orfs_run asic_gui asic_schem run_hw_interpret run_uhir_interpret run_verilator clean
 
-all: synth run_hw_interpret
+all: synth run_uhir_interpret run_hw_interpret
 
 yosys: yosys_smoke
 
@@ -215,6 +215,26 @@ run_hw_interpret: $(UIR) $(PROT_WRAP_UGLIR)
 	fi ; \
 	if [ "$$RUN_RESULT" -ne 0 ]; then \
 		echo "error: hardware-backed run returned $$RUN_RESULT" >&2 ; \
+		exit 1 ; \
+	fi
+
+run_uhir_interpret: $(UIR) $(GOPT_UHIR)
+	@TMP_OUT="$$(mktemp)" ; \
+	STATUS=0 ; \
+	$(UHLS) run $(UIR) --uhir $(GOPT_UHIR) >"$$TMP_OUT" 2>&1 || STATUS=$$? ; \
+	cat "$$TMP_OUT" ; \
+	if [ "$$STATUS" -ne 0 ]; then \
+		rm -f "$$TMP_OUT" ; \
+		exit "$$STATUS" ; \
+	fi ; \
+	RUN_RESULT="$$(awk '/^-?[0-9]+$$/ { value = $$0 } END { if (value != "") print value }' "$$TMP_OUT")" ; \
+	rm -f "$$TMP_OUT" ; \
+	if [ -z "$$RUN_RESULT" ]; then \
+		echo "error: could not determine µhIR-backed run return value" >&2 ; \
+		exit 1 ; \
+	fi ; \
+	if [ "$$RUN_RESULT" -ne 0 ]; then \
+		echo "error: µhIR-backed run returned $$RUN_RESULT" >&2 ; \
 		exit 1 ; \
 	fi
 

@@ -13,9 +13,9 @@ TOP ?= $(STEM)
 RES ?= $(UHLS_ROOT)/src/uhls/backend/hls/impl/generic/gen.uhlslib.json
 VENDOR_RES ?= $(UHLS_ROOT)/src/uhls/backend/hls/impl/vendor/ihp130/ihp130.uhlslib.json
 
-LEGALIZE_PASSES ?= inline,prune,const_prop
-LEGALIZE_PASSES_ARGS ?= --pass-arg $(TOP)
-OPT_PASSES ?= dce,cse,copy_prop,dce
+LEGALIZE_PASSES ?= canonicalize
+LEGALIZE_PASSES_ARGS ?=
+OPT_PASSES ?= dce,cse,copy_prop,const_prop,dce
 OPT_PASSES_ARGS ?=
 OPT2_PASSES ?=
 OPT2_PASSES_ARGS ?=

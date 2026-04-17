@@ -3264,13 +3264,13 @@ block for_exit_4:
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["opt", str(path), "-p", "canonicalize", "--pass-arg", "sum_to_8"]), 0)
+                self.assertEqual(main(["opt", str(path), "-p", "canonicalize"]), 0)
 
             rendered = stdout.getvalue()
             self.assertIn("block for_header_1_latch:", rendered)
             self.assertIn("for_header_1_latch:", rendered)
             self.assertIn("func sum_to_8", rendered)
-            self.assertNotIn("func unused", rendered)
+            self.assertIn("func unused", rendered)
 
     def test_opt_command_inline_calls_warns_for_missing_requested_caller(self) -> None:
         uir = """func foo(x:i32) -> i32

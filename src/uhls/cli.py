@@ -220,7 +220,7 @@ _OPT_PASS_SPECS: tuple[OptPassSpec, ...] = (
 )
 
 _OPT_PIPELINE_ALIASES: dict[str, tuple[str, ...]] = {
-    "canonicalize": ("prune_functions", "canonicalize_loops"),
+    "canonicalize": ("canonicalize_loops",),
 }
 
 

@@ -296,6 +296,8 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         reset_updates=[UGLIRSeqUpdate(_controller_state_id(top_controller, top_controller), str(controller_codes[top_controller.name]["IDLE"]))],
         updates=[UGLIRSeqUpdate(_controller_state_id(top_controller, top_controller), _controller_next_state_id(top_controller, top_controller))],
     )
+    top_state_signal = _controller_state_id(top_controller, top_controller)
+    top_state_codes = controller_codes[top_controller.name]
     for carry_source_id, carry in phi_carries.items():
         operands = tuple(carry["operands"])
         incoming = tuple(carry["incoming"])
@@ -313,6 +315,42 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
             init_expr = _resolve_value_signal(design, operands[0], component_library, 0)
 
         update_sources: list[tuple[str, str]] = []
+
+        def add_update_source(
+            *,
+            update_step: int,
+            operand: str,
+            source_step: int,
+            operand_region,
+            producer_register: str | None = None,
+            local_live_starts: set[int] | None = None,
+        ) -> None:
+            state_code = top_state_codes.get(f"T{update_step}")
+            if state_code is None:
+                return
+            source_expr = _resolve_phi_carry_update_source(
+                design,
+                operand,
+                source_step,
+                component_library,
+                region=operand_region,
+            )
+            if (
+                source_expr is None
+                and producer_register is not None
+                and (local_live_starts is None or source_step not in local_live_starts)
+            ):
+                source_expr = producer_register
+            if source_expr is None:
+                source_expr = _resolve_value_signal(
+                    design,
+                    operand,
+                    component_library,
+                    consumer_start=source_step,
+                    region=operand_region,
+                )
+            update_sources.append((_state_eq_expr(top_state_signal, state_code), source_expr))
+
         start_index = 1 if entry_like else 0
         for operand in operands[start_index:]:
             operand_region = _producer_region(design, operand)
@@ -320,32 +358,11 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                 completion_steps = _loop_body_completion_steps(design, operand_region)
                 if completion_steps:
                     for update_step in completion_steps:
-                        state_name = f"T{update_step}"
-                        if state_name not in controller_codes[top_controller.name]:
-                            continue
-                        source_expr = _resolve_phi_carry_update_source(
-                            design,
-                            operand,
-                            update_step,
-                            component_library,
-                            region=operand_region,
-                        )
-                        if source_expr is None:
-                            source_expr = _resolve_value_signal(
-                                design,
-                                operand,
-                                component_library,
-                                consumer_start=update_step,
-                                region=operand_region,
-                            )
-                        update_sources.append(
-                            (
-                                _state_eq_expr(
-                                    _controller_state_id(top_controller, top_controller),
-                                    controller_codes[top_controller.name][state_name],
-                                ),
-                                source_expr,
-                            )
+                        add_update_source(
+                            update_step=update_step,
+                            operand=operand,
+                            source_step=update_step,
+                            operand_region=operand_region,
                         )
                     continue
             operand_global_steps = sorted(_value_global_live_starts(design, operand))
@@ -360,64 +377,31 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
                 else:
                     update_step = step
                     source_step = step
-                state_name = f"T{update_step}"
-                if state_name not in controller_codes[top_controller.name]:
-                    continue
-                source_expr = _resolve_phi_carry_update_source(
-                    design,
-                    operand,
-                    source_step,
-                    component_library,
-                    region=operand_region,
-                )
-                if source_expr is None and producer_register is not None and source_step not in local_live_starts:
-                    source_expr = producer_register
-                if source_expr is None:
-                    source_expr = _resolve_value_signal(
-                        design,
-                        operand,
-                        component_library,
-                        consumer_start=source_step,
-                        region=operand_region,
-                    )
-                update_sources.append(
-                    (
-                        _state_eq_expr(
-                            _controller_state_id(top_controller, top_controller),
-                            controller_codes[top_controller.name][state_name],
-                        ),
-                        source_expr,
-                    )
+                add_update_source(
+                    update_step=update_step,
+                    operand=operand,
+                    source_step=source_step,
+                    operand_region=operand_region,
+                    producer_register=producer_register,
+                    local_live_starts=local_live_starts,
                 )
 
         enable_parts: list[str] = ["req_fire"] if entry_like else []
         enable_parts.extend(condition for condition, _source in update_sources)
         enable_expr = " | ".join(enable_parts) if enable_parts else "false"
 
+        carry_register = carry["register"]
+        update_value_expr = " : ".join(f"({condition}) ? {source}" for condition, source in update_sources)
+        update_value_expr = f"{update_value_expr} : {carry_register}" if update_value_expr else carry_register
         if entry_like:
-            value_expr = f"(req_fire) ? {init_expr}"
-            if update_sources:
-                value_expr += " : " + " : ".join(
-                    f"({condition}) ? {source}"
-                    for condition, source in update_sources
-                )
-                value_expr += f" : {carry['register']}"
-            else:
-                value_expr += f" : {carry['register']}"
+            value_expr = f"(req_fire) ? {init_expr} : {update_value_expr}"
             reset_expr = init_expr
         else:
-            if update_sources:
-                value_expr = " : ".join(
-                    f"({condition}) ? {source}"
-                    for condition, source in update_sources
-                )
-                value_expr += f" : {carry['register']}"
-            else:
-                value_expr = carry["register"]
+            value_expr = update_value_expr
             reset_expr = _default_net_expr(carry["type"])
 
-        top_seq_block.reset_updates.append(UGLIRSeqUpdate(carry["register"], reset_expr))
-        top_seq_block.updates.append(UGLIRSeqUpdate(carry["register"], value_expr, enable_expr))
+        top_seq_block.reset_updates.append(UGLIRSeqUpdate(carry_register, reset_expr))
+        top_seq_block.updates.append(UGLIRSeqUpdate(carry_register, value_expr, enable_expr))
     for target, value, enable, reset_value in held_input_updates:
         top_seq_block.reset_updates.append(UGLIRSeqUpdate(target, reset_value))
         top_seq_block.updates.append(UGLIRSeqUpdate(target, value, enable))
@@ -1005,14 +989,6 @@ def _value_capture_step(
     return live_start
 
 
-def _producer_register_map(design: UHIRDesign) -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    for region in design.regions:
-        for binding in region.value_bindings:
-            mapping.setdefault(binding.producer, binding.register)
-    return mapping
-
-
 def _bindings_for_value(design: UHIRDesign, value_id: str, *, region=None) -> tuple[object | None, tuple[object, ...]]:
     producer_region = region if region is not None and _region_producer_node(region, value_id) is not None else _producer_region(design, value_id)
     if producer_region is None:
@@ -1023,28 +999,6 @@ def _bindings_for_value(design: UHIRDesign, value_id: str, *, region=None) -> tu
         producer_ids.add(local_producer.id)
     bindings = tuple(binding for binding in producer_region.value_bindings if binding.producer in producer_ids)
     return producer_region, bindings
-
-
-def _capture_registers_by_step(
-    design: UHIRDesign,
-    value_id: str,
-    component_library: dict[str, dict[str, Any]] | None,
-    *,
-    region=None,
-) -> dict[int, set[str]]:
-    producer_region, bindings = _bindings_for_value(design, value_id, region=region)
-    if producer_region is None:
-        return {}
-    capture_registers: dict[int, set[str]] = {}
-    for binding in bindings:
-        for capture_step in _binding_global_capture_steps(
-            design,
-            producer_region.id,
-            binding,
-            component_library,
-        ):
-            capture_registers.setdefault(capture_step, set()).add(binding.register)
-    return capture_registers
 
 
 def _register_for_value_at_step(

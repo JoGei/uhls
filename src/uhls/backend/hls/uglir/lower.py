@@ -3380,12 +3380,77 @@ def _node_value_expr(
         if isinstance(result_type, str) and result_type and ":" not in value:
             return f"{value}:{result_type}"
         return value
+    if node.opcode in {"sext", "zext", "trunc"} and len(node.operands) == 1:
+        operand_region, operand_value = _specialize_child_call_operand(design, region, node.operands[0])
+        operand_expr = _resolve_value_signal(
+            design,
+            operand_value,
+            component_library,
+            occurrence_index,
+            consumer_start=consumer_start,
+            region=operand_region,
+        )
+        source_type = node.attributes.get("source_type")
+        if not isinstance(source_type, str) or not source_type:
+            source_type = _value_type(design, operand_value, region=operand_region)
+        target_type = getattr(node, "result_type", None)
+        if isinstance(source_type, str) and isinstance(target_type, str):
+            return _adapter_expr(node.opcode, operand_expr, source_type, target_type)
+        return operand_expr
     if node.opcode == "sel" and len(node.operands) == 3:
         condition = _resolve_value_signal(design, node.operands[0], component_library, occurrence_index)
         true_value = _resolve_value_signal(design, node.operands[1], component_library, occurrence_index)
         false_value = _resolve_value_signal(design, node.operands[2], component_library, occurrence_index)
         return f"{condition} ? {true_value} : {false_value}"
     return None
+
+
+def _adapter_expr(opcode: str, operand_expr: str, source_type: str, target_type: str) -> str:
+    literal = _adapt_typed_literal(operand_expr, source_type, target_type)
+    if literal is not None:
+        return literal
+    source = _parse_integer_type(source_type)
+    target = _parse_integer_type(target_type)
+    if source is None or target is None:
+        return operand_expr
+    _source_signed, source_width = source
+    _target_signed, target_width = target
+    if source_width == target_width:
+        return operand_expr
+    if opcode == "trunc" or source_width > target_width:
+        return f"{operand_expr}[{target_width - 1}:0]"
+    if opcode == "zext":
+        return f"{{{target_width - source_width}'d0, {operand_expr}}}"
+    return f"{{{{{target_width - source_width}{{{operand_expr}[{source_width - 1}]}}}}, {operand_expr}}}"
+
+
+def _adapt_typed_literal(operand_expr: str, source_type: str, target_type: str) -> str | None:
+    match = re.fullmatch(r"(-?\d+):([iu]\d+)", operand_expr)
+    if match is None:
+        return None
+    source = _parse_integer_type(source_type)
+    target = _parse_integer_type(target_type)
+    if source is None or target is None:
+        return None
+    value = int(match.group(1))
+    source_signed, source_width = source
+    target_signed, target_width = target
+    source_mask = (1 << source_width) - 1
+    value &= source_mask
+    if source_signed and value >= (1 << (source_width - 1)):
+        value -= 1 << source_width
+    target_mask = (1 << target_width) - 1
+    value &= target_mask
+    if target_signed and value >= (1 << (target_width - 1)):
+        value -= 1 << target_width
+    return f"{value}:{target_type}"
+
+
+def _parse_integer_type(type_name: str) -> tuple[bool, int] | None:
+    match = re.fullmatch(r"([iu])(\d+)", type_name)
+    if match is None:
+        return None
+    return match.group(1) == "i", int(match.group(2))
 
 
 def _phi_handoff_operand_for_step(

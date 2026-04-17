@@ -257,3 +257,4 @@ make -C examples STEM=dot4_relu asic
 
 > **Warning**
 > This project started as a baseline project to teach university-level courses on HLS algorithms and hardware compilers and heavily relied on LLM-based coding agents to "glue" together the different tools, abstraction levels, and building the µhLS framework. As such many design decisions, such as "*why python only?*" might seem off, but µhLS *tries* to keep it simple.
+> More detailed specifications and reasonings can be found in `doc/*spec.adoc`.

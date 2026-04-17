@@ -12,6 +12,8 @@ from uhls.backend.hls.uhir.model import UHIREdge, UHIRDesign, UHIRNode, UHIRRegi
 from uhls.backend.hls.uhir.timing import TimingExpr
 from uhls.utils.graph import intervals_overlap
 
+_NON_BINDABLE_CLASSES = frozenset({"CTRL", "ADAPT"})
+
 
 @dataclass(slots=True, frozen=True)
 class OperationBindingResult:
@@ -59,7 +61,7 @@ class OperationBinderBase(ABC):
         for region in design.regions:
             for node in region.nodes:
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 yield region, node
 
@@ -117,7 +119,7 @@ class OperationBinderBase(ABC):
         def visit_region(region: UHIRRegion, offset: int, branch_choices: tuple[tuple[str, str], ...], loop_domain: str | None) -> None:
             for node in region.nodes:
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 start, end = self.get_node_interval(region, node)
                 grouped[class_name][node.id].append(
@@ -148,7 +150,7 @@ class OperationBinderBase(ABC):
                 if node.result_type is None:
                     continue
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 consumers = (
                     self.get_flattened_value_consumers(design, region, node)
@@ -253,7 +255,7 @@ class OperationBinderBase(ABC):
     def get_node_class(self, region: UHIRRegion, node: UHIRNode) -> str:
         """Return one bindable node's allocated resource class."""
         class_name = node.attributes.get("class")
-        if not isinstance(class_name, str) or not class_name or class_name == "CTRL":
+        if not isinstance(class_name, str) or not class_name or class_name in _NON_BINDABLE_CLASSES:
             raise ValueError(f"bindable node '{region.id}/{node.id}' must declare one non-CTRL class")
         return class_name
 
@@ -389,7 +391,7 @@ class OperationBinderBase(ABC):
                 if node.result_type is None:
                     continue
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 consumers = self.get_value_consumers(design, region, node)
                 if not consumers:

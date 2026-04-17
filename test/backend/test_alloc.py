@@ -286,6 +286,90 @@ class AllocationLoweringTests(unittest.TestCase):
         self.assertEqual(div_i8.attributes["delay"], 3)
         self.assertEqual(div_i32.attributes["ii"], 1)
 
+    def test_lower_seq_to_alloc_materializes_resource_type_adapters(self) -> None:
+        seq_design = parse_uhir(
+            """
+            design typed_mul
+            stage seq
+            input  a : i8
+            input  b : i8
+            output result : i16
+
+            region proc_typed_mul kind=procedure {
+              node v0 = nop role=source
+              node v1 = mul a, b : i16
+              node v2 = ret v1
+              node v3 = nop role=sink
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+            }
+            """
+        )
+
+        operations = tuple(sorted(COMPACT_OPCODE_LABELS))
+        graph = ExecutabilityGraph(
+            functional_units=("fu_generic", "MUL32"),
+            operations=operations,
+            edges=tuple(("fu_generic", operation, 2, 4) for operation in operations if operation != "mul")
+            + (("fu_generic", "mul", 2, 4), ("MUL32", "mul", 1, 2)),
+            support_types=(("MUL32", "mul", (("operand0", "i32"), ("operand1", "i32"), ("return", "i32"))),),
+        )
+
+        alloc_design = lower_seq_to_alloc(seq_design, executability_graph=graph)
+        proc = alloc_design.get_region("proc_typed_mul")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+
+        sext_nodes = [node for node in proc.nodes if node.opcode == "sext"]
+        trunc_node = next(node for node in proc.nodes if node.opcode == "trunc")
+        mul_node = next(node for node in proc.nodes if node.id == "v1")
+        ret_node = next(node for node in proc.nodes if node.id == "v2")
+
+        self.assertEqual(len(sext_nodes), 2)
+        self.assertTrue(all(node.attributes["class"] == "ADAPT" for node in [*sext_nodes, trunc_node]))
+        self.assertEqual(mul_node.result_type, "i32")
+        self.assertEqual(trunc_node.result_type, "i16")
+        self.assertEqual(ret_node.operands, (trunc_node.id,))
+
+    def test_lower_seq_to_alloc_uses_region_param_types_for_adapters(self) -> None:
+        seq_design = parse_uhir(
+            """
+            design typed_param
+            stage seq
+            output result : i16
+
+            region proc_typed_param kind=procedure {
+              node v0 = nop role=source params=[a] param_types=[i8]
+              node v1 = add a, 0:i16 : i16
+              node v2 = ret v1
+              node v3 = nop role=sink
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+            }
+            """
+        )
+
+        operations = tuple(sorted(COMPACT_OPCODE_LABELS))
+        graph = ExecutabilityGraph(
+            functional_units=("fu_generic", "ALU32"),
+            operations=operations,
+            edges=tuple(("fu_generic", operation, 2, 4) for operation in operations if operation != "add")
+            + (("ALU32", "add", 1, 1),),
+            support_types=(("ALU32", "add", (("operand0", "i32"), ("operand1", "i32"), ("return", "i32"))),),
+        )
+
+        alloc_design = lower_seq_to_alloc(seq_design, executability_graph=graph)
+        proc = alloc_design.get_region("proc_typed_param")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+
+        param_adapter = next(node for node in proc.nodes if node.opcode == "sext" and node.operands == ("a",))
+
+        self.assertEqual(param_adapter.attributes["source_type"], "i8")
+        self.assertEqual(param_adapter.result_type, "i32")
+
     def test_lower_seq_to_alloc_autoram_selects_vendor_memory_macro(self) -> None:
         seq_design = parse_uhir(
             """

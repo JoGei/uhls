@@ -503,7 +503,7 @@ def _collect_local_dfgsb_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
             if node.result_type is None:
                 continue
             class_name = node.attributes.get("class")
-            if not isinstance(class_name, str) or class_name == "CTRL":
+            if not isinstance(class_name, str) or class_name in {"CTRL", "ADAPT"}:
                 continue
             all_consumers = helper.get_value_consumers(design, region, node)
             if not all_consumers:

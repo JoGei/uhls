@@ -138,7 +138,7 @@ def _build_dynamic_controller(design: UHIRDesign, encoding: str) -> UHIRControll
             for node in phase_nodes
             if isinstance((bind := node.attributes.get("bind")), str)
             and isinstance(node.attributes.get("class"), str)
-            and node.attributes.get("class") != "CTRL"
+            and node.attributes.get("class") not in {"CTRL", "ADAPT"}
         )
         activate_actions = sorted(node.id for node in symbolic_nodes)
         emit_attrs: dict[str, object] = {}
@@ -632,7 +632,7 @@ def _collect_time_step_actions(design: UHIRDesign) -> dict[int, dict[str, list[s
         for node in region.nodes:
             bind = node.attributes.get("bind")
             class_name = node.attributes.get("class")
-            if isinstance(bind, str) and isinstance(class_name, str) and class_name != "CTRL":
+            if isinstance(bind, str) and isinstance(class_name, str) and class_name not in {"CTRL", "ADAPT"}:
                 start = node.attributes["start"] + offset
                 actions[start]["issue"].append(f"{bind}<-{node.id}{suffix}")
         for binding in region.value_bindings:
@@ -672,7 +672,7 @@ def _collect_time_step_actions(design: UHIRDesign) -> dict[int, dict[str, list[s
         for node in region.nodes:
             bind = node.attributes.get("bind")
             class_name = node.attributes.get("class")
-            if isinstance(bind, str) and isinstance(class_name, str) and class_name != "CTRL":
+            if isinstance(bind, str) and isinstance(class_name, str) and class_name not in {"CTRL", "ADAPT"}:
                 start = node.attributes["start"] + offset
                 actions[start]["issue"].append(f"{bind}<-{node.id}{suffix}")
         for binding in region.value_bindings:
@@ -757,7 +757,7 @@ def _collect_region_local_actions(region: UHIRRegion) -> dict[int, dict[str, tup
         bind = node.attributes.get("bind")
         class_name = node.attributes.get("class")
         start = node.attributes.get("start")
-        if isinstance(bind, str) and isinstance(class_name, str) and class_name != "CTRL" and isinstance(start, int):
+        if isinstance(bind, str) and isinstance(class_name, str) and class_name not in {"CTRL", "ADAPT"} and isinstance(start, int):
             actions[start]["issue"].append(f"{bind}<-{node.id}")
     for binding in region.value_bindings:
         if not binding.live_intervals:
@@ -789,7 +789,7 @@ def _collect_region_subtree_actions(region_id: str, region_by_id: dict[str, UHIR
             bind = node.attributes.get("bind")
             class_name = node.attributes.get("class")
             start = node.attributes.get("start")
-            if isinstance(bind, str) and isinstance(class_name, str) and class_name != "CTRL" and isinstance(start, int):
+            if isinstance(bind, str) and isinstance(class_name, str) and class_name not in {"CTRL", "ADAPT"} and isinstance(start, int):
                 actions[start]["issue"].append(f"{bind}<-{node.id}")
         for binding in region.value_bindings:
             if not binding.live_intervals:

@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from uhls.backend.hls import lower_alloc_to_sched, lower_bind_to_fsm, lower_fsm_to_uglir, lower_sched_to_bind
+from uhls.backend.hls.bind.builtin.left_edge import LeftEdgeBinder
 from uhls.backend.hls.uglir import format_uglir, parse_uglir
 from uhls.backend.hls.uglir.lower import _producer_global_capture_steps, _producer_region, _value_global_live_starts
 from uhls.backend.hls.uhir import (
@@ -70,12 +71,45 @@ def _full_executability_graph() -> ExecutabilityGraph:
     )
 
 
+def _generic_component_library() -> dict[str, dict[str, object]]:
+    return json.loads(Path("src/uhls/backend/hls/impl/generic/gen.uhlslib.json").read_text(encoding="utf-8"))["components"]
+
+
+def _executability_graph_from_component_library(
+    component_library: dict[str, dict[str, object]]
+) -> ExecutabilityGraph:
+    functional_units: list[str] = []
+    operations: dict[str, None] = {}
+    edges: list[tuple[str, str, int, int]] = []
+    for component_name, component in component_library.items():
+        supports = component.get("supports")
+        if not isinstance(supports, dict):
+            continue
+        functional_units.append(component_name)
+        for operation_name, support in supports.items():
+            if not isinstance(support, dict):
+                continue
+            ii = support.get("ii")
+            delay = support.get("d")
+            if not isinstance(ii, int) or not isinstance(delay, int):
+                continue
+            operations.setdefault(str(operation_name), None)
+            edges.append((component_name, str(operation_name), ii, delay))
+    return ExecutabilityGraph(
+        functional_units=tuple(functional_units),
+        operations=tuple(operations),
+        edges=tuple(edges),
+    )
+
+
 def _lower_unrolled_example_to_uglir(
     stem: str,
     *,
     factor: int,
     optimize: bool = True,
     cleanup_after_unroll: bool = True,
+    component_library: dict[str, dict[str, object]] | None = None,
+    flatten: bool = False,
 ):
     source = Path(f"examples/{stem}/{stem}.c").read_text(encoding="utf-8")
     optimized_module = PassManager(
@@ -109,10 +143,15 @@ def _lower_unrolled_example_to_uglir(
             create_builtin_gopt_pass("fold_predicates"),
         ],
     )
-    alloc_design = lower_seq_to_alloc(seq_design, executability_graph=_full_executability_graph())
+    executability_graph = (
+        _full_executability_graph()
+        if component_library is None
+        else _executability_graph_from_component_library(component_library)
+    )
+    alloc_design = lower_seq_to_alloc(seq_design, executability_graph=executability_graph)
     sched_design = lower_alloc_to_sched(alloc_design)
-    bind_design = lower_sched_to_bind(sched_design)
-    return lower_fsm_to_uglir(lower_bind_to_fsm(bind_design))
+    bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=flatten))
+    return lower_fsm_to_uglir(lower_bind_to_fsm(bind_design), component_library=component_library)
 
 
 def _lower_unrolled_dot4_relu_to_uglir():
@@ -1779,7 +1818,7 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertGreaterEqual(phi_sum_update.enable.count("state_q =="), 2)
         self.assertGreaterEqual(phi_i_update.enable.count("state_q =="), 2)
         self.assertIn("inl_mac_0_t1_0__u1_n", phi_sum_update.value)
-        self.assertIn("t4_0__u1_n", phi_i_update.value)
+        self.assertNotIn("t4_0_n", phi_i_update.value)
 
         select_assign = next(assign for assign in uglir_design.assigns if assign.target == "sel_r_i32_0_n")
         self.assertIn("state_q ==", select_assign.expr)
@@ -1787,6 +1826,32 @@ class UGLIRSyntaxTests(unittest.TestCase):
 
         result_assign = next(assign for assign in uglir_design.assigns if assign.target == "result")
         self.assertIn("phi_sum_1_q", result_assign.expr)
+
+    def test_lower_fsm_to_uglir_updates_header_phi_from_completed_latch_phi_for_flattened_unroll(self) -> None:
+        uglir_design = _lower_unrolled_example_to_uglir(
+            "dot4_relu",
+            factor=2,
+            component_library=_generic_component_library(),
+            flatten=True,
+        )
+
+        seq_block = uglir_design.seq_blocks[0]
+        phi_i_update = next(update for update in seq_block.updates if update.target == "phi_i_1_q")
+        phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
+
+        self.assertIn("state_q == 6", phi_i_update.enable)
+        self.assertIn("state_q == 12", phi_i_update.enable)
+        self.assertNotIn("state_q == 2", phi_i_update.enable)
+        self.assertNotIn("state_q == 8", phi_i_update.enable)
+        self.assertIn("t4_0__u1_n", phi_i_update.value)
+        self.assertNotIn("t4_0_n", phi_i_update.value)
+
+        self.assertIn("state_q == 6", phi_sum_update.enable)
+        self.assertIn("state_q == 12", phi_sum_update.enable)
+        self.assertNotIn("state_q == 5", phi_sum_update.enable)
+        self.assertNotIn("state_q == 11", phi_sum_update.enable)
+        self.assertIn("inl_mac_0_t1_0__u1_n", phi_sum_update.value)
+        self.assertNotIn("inl_mac_0_t1_0_n", phi_sum_update.value)
 
     def test_lower_fsm_to_uglir_handles_n_way_phi_carries_for_unroll_by_4(self) -> None:
         uglir_design = _lower_unrolled_example_to_uglir("dot4_i8_i32_relu_packed", factor=4)
@@ -1823,8 +1888,7 @@ class UGLIRSyntaxTests(unittest.TestCase):
         seq_block = uglir_design.seq_blocks[0]
         phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
         self.assertIn("(req_fire_n) ? C_0", phi_sum_update.value)
-        self.assertIn("sum_2_n", phi_sum_update.value)
-        self.assertIn("sum_2__u3_n", phi_sum_update.value)
+        self.assertIn("r_i32_0_q", phi_sum_update.value)
         self.assertNotIn("r_i32_1_q", phi_sum_update.value)
 
     def test_lower_fsm_to_uglir_threads_late_mov_aliases_through_semantic_nets(self) -> None:

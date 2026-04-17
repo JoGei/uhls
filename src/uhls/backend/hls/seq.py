@@ -157,6 +157,12 @@ def _memref_type_name(array_type: ArrayType) -> str:
     return f"memref<{array_type.element_type}, {array_type.extent}>"
 
 
+def _parameter_type_name(parameter_type: object) -> str:
+    if isinstance(parameter_type, ArrayType):
+        return _memref_type_name(parameter_type)
+    return type_name(parameter_type) or "i32"
+
+
 def _node_id_by_role(unit: SGUnit, role: str) -> str | None:
     for node in unit.nodes:
         if node.opcode == "nop" and node.attributes.get("role") == role:
@@ -298,6 +304,9 @@ class _SeqLowerer:
 
         proc_unit = SGUnit(id=proc_id, kind="procedure")
         source = self._nop_node("source")
+        if function.params:
+            source.attributes["params"] = tuple(parameter.name for parameter in function.params)
+            source.attributes["param_types"] = tuple(_parameter_type_name(parameter.type) for parameter in function.params)
         sink = self._nop_node("sink")
         proc_unit.nodes.extend([source, sink])
 

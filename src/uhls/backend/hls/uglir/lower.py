@@ -2833,6 +2833,10 @@ def _specialize_child_call_operand(design: UHIRDesign, node_region, value_id: st
 
 
 def _region_external_operands(design: UHIRDesign, region) -> tuple[str, ...]:
+    declared = _region_declared_params(region)
+    if declared is not None:
+        return declared
+
     local_value_ids = {node.id for node in region.nodes}
     local_value_ids.update(mapping.source_id for mapping in region.mappings)
     global_ids = {port.name for port in [*design.inputs, *design.outputs]}
@@ -2852,6 +2856,19 @@ def _region_external_operands(design: UHIRDesign, region) -> tuple[str, ...]:
             seen.add(operand)
             externals.append(operand)
     return tuple(externals)
+
+
+def _region_declared_params(region) -> tuple[str, ...] | None:
+    source_node = next(
+        (node for node in region.nodes if node.opcode == "nop" and node.attributes.get("role") == "source"),
+        None,
+    )
+    if source_node is None:
+        return None
+    params = source_node.attributes.get("params")
+    if not isinstance(params, tuple) or not all(isinstance(param, str) for param in params):
+        return None
+    return params
 
 
 def _resolve_value_signal(

@@ -137,6 +137,8 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         self.assertIsNotNone(proc)
         assert proc is not None
         self.assertIn("branch", [node.opcode for node in proc.nodes])
+        branch = next(node for node in proc.nodes if node.opcode == "branch")
+        self.assertEqual(branch.attributes.get("control_kind"), "branch")
 
     def test_lower_frontend_for_loop_keeps_branch_based_shape_before_gopt_loop_dialect(self) -> None:
         module = lower_source_to_uir(
@@ -184,6 +186,7 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         self.assertNotIn(("data", body_source.id, body_add.id), body_edges)
 
         proc_branch = next(node for node in proc.nodes if node.opcode == "branch")
+        self.assertEqual(proc_branch.attributes.get("control_kind"), "loop")
         self.assertNotIn("static_trip_count", proc_branch.attributes)
         proc_seq_edges = {(edge.source, edge.target) for edge in proc.edges if edge.kind == "seq"}
         proc_data_edges = {(edge.source, edge.target) for edge in proc.edges if edge.kind == "data"}

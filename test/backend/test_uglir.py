@@ -162,14 +162,16 @@ def _lower_example_to_uglir(
     stem: str,
     *,
     optimize: bool = True,
+    legalize_const_prop: bool = True,
     legalize_mov_to_add_zero: bool = False,
 ):
     source = Path(f"examples/{stem}/{stem}.c").read_text(encoding="utf-8")
     legalize_pipeline = [
         InlineCallsPass(),
         PruneFunctionsPass(),
-        ConstPropPass(),
     ]
+    if legalize_const_prop:
+        legalize_pipeline.append(ConstPropPass())
     if legalize_mov_to_add_zero:
         legalize_pipeline.append(MovToAddZeroPass())
     optimized_module = PassManager(legalize_pipeline).run(lower_source_to_uir(source), PassContext(pass_args=(stem,)))
@@ -1920,6 +1922,20 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertEqual(assign_by_target["inl_mac_0_acc_1_n"], "state_q == 7 ? ewms0_y_n : r_i32_0_q")
         self.assertEqual(assign_by_target["t3_0_n"], "state_q == 8 ? ewms0_y_n : r_i32_0_q")
         self.assertEqual(assign_by_target["sum_2_n"], "state_q == 9 ? ewms0_y_n : r_i32_0_q")
+
+    def test_lower_fsm_to_uglir_lowers_branch_const_phi_without_const_prop(self) -> None:
+        uglir_design = _lower_example_to_uglir(
+            "dot4_relu",
+            optimize=False,
+            legalize_const_prop=False,
+            legalize_mov_to_add_zero=True,
+        )
+
+        rendered = format_uglir(uglir_design)
+        result_assign = next(assign for assign in uglir_design.assigns if assign.target == "result")
+
+        self.assertIn("? 0:i32 :", result_assign.expr)
+        self.assertNotIn("sum_3", rendered)
 
     def test_lower_fsm_to_uglir_uses_final_loop_carried_sum_for_post_loop_compare_without_opt_cleanup(self) -> None:
         uglir_design = _lower_example_to_uglir(

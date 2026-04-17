@@ -3221,6 +3221,57 @@ block exit:
             self.assertIn("func cleanup", rendered)
             self.assertNotIn("block jump:", rendered)
 
+    def test_opt_command_expands_canonicalize_pipeline_alias(self) -> None:
+        uir = """func unused() -> i32
+
+block entry:
+    ret 0:i32
+
+func sum_to_8() -> i32
+
+block entry:
+    acc_0:i32 = const 0:i32
+    i_0:i32 = const 0:i32
+    br for_header_1
+
+block for_header_1:
+    acc_1:i32 = phi(entry: acc_0, for_body_2: acc_2, for_body_2_unroll_1: acc_2__u1)
+    i_1:i32 = phi(entry: i_0, for_body_2: i_2, for_body_2_unroll_1: i_2__u1)
+    t0_0:i1 = lt i_1, 8:i32
+    cbr t0_0, for_body_2, for_exit_4
+
+block for_body_2:
+    t1_0:i32 = add acc_1, i_1
+    acc_2:i32 = mov t1_0
+    t2_0:i32 = add i_1, 1:i32
+    i_2:i32 = mov t2_0
+    t0_0__u1:i1 = lt i_2, 8:i32
+    cbr t0_0__u1, for_body_2_unroll_1, for_header_1
+
+block for_body_2_unroll_1:
+    t1_0__u1:i32 = add acc_2, i_2
+    acc_2__u1:i32 = mov t1_0__u1
+    t2_0__u1:i32 = add i_2, 1:i32
+    i_2__u1:i32 = mov t2_0__u1
+    br for_header_1
+
+block for_exit_4:
+    ret acc_1
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sum_to_8.uir"
+            path.write_text(uir, encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["opt", str(path), "-p", "canonicalize", "--pass-arg", "sum_to_8"]), 0)
+
+            rendered = stdout.getvalue()
+            self.assertIn("block for_header_1_latch:", rendered)
+            self.assertIn("for_header_1_latch:", rendered)
+            self.assertIn("func sum_to_8", rendered)
+            self.assertNotIn("func unused", rendered)
+
     def test_opt_command_inline_calls_warns_for_missing_requested_caller(self) -> None:
         uir = """func foo(x:i32) -> i32
 

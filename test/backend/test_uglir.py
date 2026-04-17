@@ -154,6 +154,31 @@ def _lower_unrolled_example_to_uglir(
     return lower_fsm_to_uglir(lower_bind_to_fsm(bind_design), component_library=component_library)
 
 
+def _lower_hierarchical_unrolled_example_to_uglir(stem: str, *, factor: int):
+    source = Path(f"examples/{stem}/{stem}.c").read_text(encoding="utf-8")
+    module = PassManager([MovToAddZeroPass()]).run(lower_source_to_uir(source))
+    module = PassManager([UnrollLoopsPass("1", factor), CanonicalizeLoopsPass()]).run(module)
+    component_library = _generic_component_library()
+    seq_design = run_gopt_passes(
+        lower_module_to_seq(module, top=stem),
+        [
+            create_builtin_gopt_pass("infer_loops"),
+            create_builtin_gopt_pass("translate_loop_dialect"),
+            create_builtin_gopt_pass("infer_static"),
+            create_builtin_gopt_pass("simplify_static_control"),
+            create_builtin_gopt_pass("predicate"),
+            create_builtin_gopt_pass("fold_predicates"),
+        ],
+    )
+    alloc_design = lower_seq_to_alloc(
+        seq_design,
+        executability_graph=_executability_graph_from_component_library(component_library),
+    )
+    sched_design = lower_alloc_to_sched(alloc_design)
+    bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
+    return lower_fsm_to_uglir(lower_bind_to_fsm(bind_design), component_library=component_library)
+
+
 def _lower_unrolled_dot4_relu_to_uglir():
     return _lower_unrolled_example_to_uglir("dot4_relu", factor=2)
 
@@ -1915,6 +1940,7 @@ class UGLIRSyntaxTests(unittest.TestCase):
         uglir_design = _lower_unrolled_dot4_relu_to_uglir()
 
         seq_block = uglir_design.seq_blocks[0]
+        phi_sum_latch_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_latch_q")
         phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
         phi_i_update = next(update for update in seq_block.updates if update.target == "phi_i_1_q")
 
@@ -1926,7 +1952,8 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertIn("state_q ==", phi_i_update.enable)
         self.assertGreaterEqual(phi_sum_update.enable.count("state_q =="), 2)
         self.assertGreaterEqual(phi_i_update.enable.count("state_q =="), 2)
-        self.assertIn("inl_mac_0_t1_0__u1_n", phi_sum_update.value)
+        self.assertIn("inl_mac_0_t1_0__u1_n", phi_sum_latch_update.value)
+        self.assertIn("phi_sum_1_latch_q", phi_sum_update.value)
         self.assertNotIn("t4_0_n", phi_i_update.value)
 
         select_assign = next(assign for assign in uglir_design.assigns if assign.target == "sel_r_i32_0_n")
@@ -1945,6 +1972,7 @@ class UGLIRSyntaxTests(unittest.TestCase):
         )
 
         seq_block = uglir_design.seq_blocks[0]
+        phi_i_latch_update = next(update for update in seq_block.updates if update.target == "phi_i_1_latch_q")
         phi_i_update = next(update for update in seq_block.updates if update.target == "phi_i_1_q")
         phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
 
@@ -1952,7 +1980,8 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertIn("state_q == 12", phi_i_update.enable)
         self.assertNotIn("state_q == 2", phi_i_update.enable)
         self.assertNotIn("state_q == 8", phi_i_update.enable)
-        self.assertIn("t4_0__u1_n", phi_i_update.value)
+        self.assertIn("t4_0__u1_n", phi_i_latch_update.value)
+        self.assertIn("phi_i_1_latch_q", phi_i_update.value)
         self.assertNotIn("t4_0_n", phi_i_update.value)
 
         self.assertIn("state_q == 6", phi_sum_update.enable)
@@ -1961,6 +1990,17 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertNotIn("state_q == 11", phi_sum_update.enable)
         self.assertIn("inl_mac_0_t1_0__u1_n", phi_sum_update.value)
         self.assertNotIn("inl_mac_0_t1_0_n", phi_sum_update.value)
+
+    def test_lower_fsm_to_uglir_uses_body_phi_latch_for_delayed_header_index_update(self) -> None:
+        uglir_design = _lower_hierarchical_unrolled_example_to_uglir("dot4_relu", factor=2)
+
+        seq_block = uglir_design.seq_blocks[0]
+        phi_i_update = next(update for update in seq_block.updates if update.target == "phi_i_1_q")
+        phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
+
+        self.assertIn("phi_i_1_latch_q", phi_i_update.value)
+        self.assertNotIn("i_2__u1_n", phi_i_update.value)
+        self.assertIn("sum_2__u1_n", phi_sum_update.value)
 
     def test_lower_fsm_to_uglir_handles_n_way_phi_carries_for_unroll_by_4(self) -> None:
         uglir_design = _lower_unrolled_example_to_uglir("dot4_i8_i32_relu_packed", factor=4)
@@ -1974,7 +2014,7 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertIn("inl_mac_0_t3_0__u3_n", phi_sum_latch_update.value)
         self.assertGreaterEqual(phi_sum_latch_update.enable.count("state_q =="), 3)
 
-        self.assertIn("inl_mac_0_t3_0__u3_n", phi_sum_update.value)
+        self.assertIn("phi_sum_1_latch_q", phi_sum_update.value)
         self.assertGreaterEqual(phi_sum_update.enable.count("state_q =="), 1)
 
         select_assign = next(assign for assign in uglir_design.assigns if assign.target == "sel_r_i32_0_n")
@@ -1995,9 +2035,11 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertIn("phi_sum_1_q", result_assign.expr)
 
         seq_block = uglir_design.seq_blocks[0]
+        phi_sum_latch_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_latch_q")
         phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
         self.assertIn("(req_fire_n) ? C_0", phi_sum_update.value)
-        self.assertIn("sum_2__u3_n", phi_sum_update.value)
+        self.assertIn("sum_2__u3_n", phi_sum_latch_update.value)
+        self.assertIn("phi_sum_1_latch_q", phi_sum_update.value)
         self.assertNotIn("r_i32_1_q", phi_sum_update.value)
 
     def test_lower_fsm_to_uglir_threads_late_mov_aliases_through_semantic_nets(self) -> None:

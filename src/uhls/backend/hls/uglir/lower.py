@@ -357,7 +357,24 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
             if entry_like and operand in phi_carries:
                 completion_steps = _loop_body_completion_steps(design, operand_region)
                 if completion_steps:
+                    operand_update_steps = _phi_carry_update_steps(
+                        design,
+                        operand,
+                        phi_carries,
+                        component_library,
+                    )
                     for update_step in completion_steps:
+                        state_code = top_state_codes.get(f"T{update_step}")
+                        if state_code is None:
+                            continue
+                        if update_step not in operand_update_steps:
+                            update_sources.append(
+                                (
+                                    _state_eq_expr(top_state_signal, state_code),
+                                    phi_carries[operand]["register"],
+                                )
+                            )
+                            continue
                         add_update_source(
                             update_step=update_step,
                             operand=operand,
@@ -1067,6 +1084,30 @@ def _phi_carry_specs(design: UHIRDesign) -> dict[str, dict[str, object]]:
 
 def _phi_carry_register_id(source_id: str) -> str:
     return f"phi_{source_id}"
+
+
+def _phi_carry_update_steps(
+    design: UHIRDesign,
+    source_id: str,
+    phi_carries: dict[str, dict[str, object]],
+    component_library: dict[str, dict[str, Any]] | None,
+) -> set[int]:
+    carry = phi_carries.get(source_id)
+    if carry is None:
+        return set()
+    incoming = tuple(carry["incoming"])
+    operands = tuple(carry["operands"])
+    entry_like = bool(incoming) and incoming[0] == "entry"
+    predecessor_update = _phi_carry_needs_predecessor_update(design, source_id)
+    update_steps: set[int] = set()
+    for operand in operands[1 if entry_like else 0:]:
+        operand_global_steps = _value_global_live_starts(design, operand)
+        for step in operand_global_steps:
+            if component_library is None or predecessor_update:
+                update_steps.add(max(step - 1, 0))
+            else:
+                update_steps.add(step)
+    return update_steps
 
 
 def _phi_carry_needs_predecessor_update(design: UHIRDesign, source_id: str) -> bool:

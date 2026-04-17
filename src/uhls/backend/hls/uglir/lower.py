@@ -316,6 +316,38 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
         start_index = 1 if entry_like else 0
         for operand in operands[start_index:]:
             operand_region = _producer_region(design, operand)
+            if entry_like and operand in phi_carries:
+                completion_steps = _loop_body_completion_steps(design, operand_region)
+                if completion_steps:
+                    for update_step in completion_steps:
+                        state_name = f"T{update_step}"
+                        if state_name not in controller_codes[top_controller.name]:
+                            continue
+                        source_expr = _resolve_phi_carry_update_source(
+                            design,
+                            operand,
+                            update_step,
+                            component_library,
+                            region=operand_region,
+                        )
+                        if source_expr is None:
+                            source_expr = _resolve_value_signal(
+                                design,
+                                operand,
+                                component_library,
+                                consumer_start=update_step,
+                                region=operand_region,
+                            )
+                        update_sources.append(
+                            (
+                                _state_eq_expr(
+                                    _controller_state_id(top_controller, top_controller),
+                                    controller_codes[top_controller.name][state_name],
+                                ),
+                                source_expr,
+                            )
+                        )
+                    continue
             operand_global_steps = sorted(_value_global_live_starts(design, operand))
             if not operand_global_steps:
                 continue
@@ -1102,6 +1134,34 @@ def _phi_carry_needs_predecessor_update(design: UHIRDesign, source_id: str) -> b
             if node.attributes.get("start") == 0:
                 return True
     return False
+
+
+def _loop_body_completion_steps(design: UHIRDesign, body_region) -> tuple[int, ...]:
+    if body_region is None or getattr(body_region, "kind", None) != "body":
+        return ()
+    parent_id = getattr(body_region, "parent", None)
+    if not isinstance(parent_id, str) or not parent_id:
+        return ()
+    body_end_steps = [
+        node.attributes.get("end")
+        for node in body_region.nodes
+        if isinstance(node.attributes.get("end"), int)
+    ]
+    if not body_end_steps:
+        return ()
+    body_end = max(body_end_steps)
+    completion_steps: list[int] = []
+    for region in design.regions:
+        for node in region.nodes:
+            if node.opcode != "loop" or node.attributes.get("child") != parent_id:
+                continue
+            loop_start = node.attributes.get("start", 0)
+            trip_count = node.attributes.get("static_trip_count")
+            iter_ii = node.attributes.get("iter_initiation_interval")
+            if not isinstance(loop_start, int) or not isinstance(trip_count, int) or not isinstance(iter_ii, int):
+                continue
+            completion_steps.extend(loop_start + iteration * iter_ii + body_end for iteration in range(trip_count))
+    return tuple(sorted(set(completion_steps)))
 
 
 def _value_live_starts(design: UHIRDesign, value_id: str, region=None) -> set[int]:

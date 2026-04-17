@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass, field
+from textwrap import dedent
 
 from uhls.backend.hls.uhir import create_builtin_gopt_pass, lower_module_to_seq, parse_uhir, run_gopt_passes
 from uhls.interpreter import run_uhir, run_uir
@@ -469,6 +470,62 @@ class InterpreterTests(unittest.TestCase):
 
         self.assertEqual(result.return_value, 15)
         self.assertEqual(result.state.memory.snapshot()["A"], [15, 7])
+
+    def test_uhir_executes_loop_with_canonical_latch_block(self) -> None:
+        """Seq-stage µhIR should use the actual latch predecessor for loop phis."""
+
+        module = parse_module(
+            dedent(
+                """
+                func dot4(A:i32[], B:i32[]) -> i32
+
+                block entry:
+                    br for_header_1
+
+                block for_header_1:
+                    i_1:i32 = phi(entry: 0:i32, for_header_1_latch: i_1_latch)
+                    sum_1:i32 = phi(entry: 0:i32, for_header_1_latch: sum_1_latch)
+                    t0_0:i1 = lt i_1, 4:i32
+                    cbr t0_0, for_body_2, for_exit_4
+
+                block for_body_2:
+                    a0:i32 = load A[i_1]
+                    b0:i32 = load B[i_1]
+                    p0:i32 = mul a0, b0
+                    s0:i32 = add sum_1, p0
+                    i_next:i32 = add i_1, 1:i32
+                    t0_1:i1 = lt i_next, 4:i32
+                    cbr t0_1, for_body_2_unroll_1, for_header_1_latch
+
+                block for_body_2_unroll_1:
+                    a1:i32 = load A[i_next]
+                    b1:i32 = load B[i_next]
+                    p1:i32 = mul a1, b1
+                    s1:i32 = add s0, p1
+                    i_next_1:i32 = add i_next, 1:i32
+                    br for_header_1_latch
+
+                block for_header_1_latch:
+                    i_1_latch:i32 = phi(for_body_2: i_next, for_body_2_unroll_1: i_next_1)
+                    sum_1_latch:i32 = phi(for_body_2: s0, for_body_2_unroll_1: s1)
+                    br for_header_1
+
+                block for_exit_4:
+                    ret sum_1
+                """
+            )
+        )
+
+        design = lower_module_to_seq(module, top="dot4")
+        result = run_uhir(
+            design,
+            arrays={
+                "A": {"data": [1, 2, 3, 4], "element_type": "i32"},
+                "B": {"data": [4, 3, 2, 1], "element_type": "i32"},
+            },
+        )
+
+        self.assertEqual(result.return_value, 20)
 
     def test_uhir_executes_explicit_static_loop_after_gopt(self) -> None:
         """Seq-stage µhIR should execute explicit/static loop dialect forms too."""

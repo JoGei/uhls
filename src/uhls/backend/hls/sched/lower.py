@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from uhls.backend.hls.uhir.model import (
+    AttributeValue,
     UHIRConstant,
     UHIRDesign,
     UHIREdge,
@@ -38,6 +39,7 @@ def lower_alloc_to_sched(
     scheduled.schedule = UHIRSchedule("hierarchical")
     scheduled.regions = [_clone_sched_region(region) for region in design.regions if region.kind != "executability"]
 
+    _uniquify_shared_hierarchy_regions(scheduled)
     region_by_id = {region.id: region for region in scheduled.regions}
     child_to_parent_node, children_by_region = _build_hierarchy(region_by_id)
     _schedule_bottom_up(region_by_id, children_by_region, scheduler=flat_scheduler)
@@ -87,14 +89,11 @@ def _build_hierarchy(
     for region in region_by_id.values():
         for node in region.nodes:
             child_ids = _hierarchy_children(node)
-            if node.opcode == "loop":
-                pass
-            elif len(child_ids) > 1:
-                if node.opcode != "branch":
-                    raise NotImplementedError(
-                        f"sched lowering currently supports only call, branch, and loop hierarchy; "
-                        f"region '{region.id}' node '{node.id}' uses unsupported '{node.opcode}' timing"
-                    )
+            if len(child_ids) > 1 and node.opcode not in {"branch", "loop"}:
+                raise NotImplementedError(
+                    f"sched lowering currently supports only call, branch, and loop hierarchy; "
+                    f"region '{region.id}' node '{node.id}' uses unsupported '{node.opcode}' timing"
+                )
             for child_id in child_ids:
                 if child_id not in region_by_id:
                     raise ValueError(f"region '{region.id}' references unknown child region '{child_id}'")
@@ -108,6 +107,195 @@ def _build_hierarchy(
                 child_to_parent_node[child_id] = (region.id, node.id)
                 children_by_region[region.id].append(child_id)
     return child_to_parent_node, children_by_region
+
+
+def _uniquify_shared_hierarchy_regions(design: UHIRDesign) -> None:
+    region_by_id = {region.id: region for region in design.regions}
+    used_region_ids = set(region_by_id)
+    used_node_ids = {node.id for region in design.regions for node in region.nodes}
+
+    while True:
+        shared = _first_shared_child_groups(design.regions)
+        if shared is None:
+            return
+        child_id, owner_groups = shared
+        for owner_group in owner_groups:
+            owner_region, owner_node, _ = owner_group[0]
+            suffix = f"__inst_{_sanitize_region_id(owner_region.id)}_{_sanitize_region_id(owner_node.id)}"
+            clone_id = _clone_region_subtree(
+                design,
+                region_by_id,
+                child_id,
+                suffix=suffix,
+                used_region_ids=used_region_ids,
+                used_node_ids=used_node_ids,
+                root_parent=owner_region.id,
+            )
+            for _, node, attr_name in owner_group:
+                node.attributes[attr_name] = clone_id
+                _retarget_hierarchy_edges(owner_region, node.id, child_id, clone_id)
+            _add_region_ref(owner_region, clone_id)
+
+
+def _first_shared_child_groups(
+    regions: list[UHIRRegion],
+) -> tuple[str, list[list[tuple[UHIRRegion, UHIRNode, str]]]] | None:
+    owners_by_child: dict[str, list[tuple[UHIRRegion, UHIRNode, str]]] = {}
+    for region in regions:
+        for node in region.nodes:
+            for attr_name, child_id in _hierarchy_child_attrs(node):
+                owners_by_child.setdefault(child_id, []).append((region, node, attr_name))
+
+    for child_id in sorted(owners_by_child):
+        groups_by_owner: dict[tuple[str, str], list[tuple[UHIRRegion, UHIRNode, str]]] = {}
+        group_order: list[tuple[str, str]] = []
+        for owner in owners_by_child[child_id]:
+            region, node, _ = owner
+            key = (region.id, node.id)
+            if key not in groups_by_owner:
+                groups_by_owner[key] = []
+                group_order.append(key)
+            groups_by_owner[key].append(owner)
+        if len(group_order) > 1:
+            return child_id, [groups_by_owner[key] for key in group_order[1:]]
+    return None
+
+
+def _clone_region_subtree(
+    design: UHIRDesign,
+    region_by_id: dict[str, UHIRRegion],
+    root_id: str,
+    *,
+    suffix: str,
+    used_region_ids: set[str],
+    used_node_ids: set[str],
+    root_parent: str | None,
+) -> str:
+    cloned_ids: dict[str, str] = {}
+
+    def clone_one(region_id: str, parent_id: str | None) -> str:
+        existing = cloned_ids.get(region_id)
+        if existing is not None:
+            return existing
+        original = region_by_id.get(region_id)
+        if original is None:
+            raise ValueError(f"cannot clone unknown child region '{region_id}'")
+
+        clone_id = _fresh_region_id(f"{region_id}{suffix}", used_region_ids)
+        cloned_ids[region_id] = clone_id
+        clone = _clone_sched_region(original)
+        clone.id = clone_id
+        if original.parent is not None:
+            clone.parent = parent_id
+        node_id_map = _rename_cloned_region_nodes(clone, suffix, used_node_ids)
+        design.regions.append(clone)
+        region_by_id[clone_id] = clone
+
+        for node in clone.nodes:
+            for attr_name, child_id in _hierarchy_child_attrs(node):
+                if child_id in region_by_id:
+                    child_parent = clone.id if region_by_id[child_id].parent is not None else None
+                    node.attributes[attr_name] = clone_one(child_id, child_parent)
+
+        remapped_refs: list[UHIRRegionRef] = []
+        seen_refs: set[str] = set()
+        for ref in clone.region_refs:
+            target = cloned_ids.get(ref.target, ref.target)
+            if target in seen_refs:
+                continue
+            seen_refs.add(target)
+            remapped_refs.append(UHIRRegionRef(target))
+        clone.region_refs = remapped_refs
+        for edge in clone.edges:
+            edge.source = cloned_ids.get(edge.source, edge.source)
+            edge.target = cloned_ids.get(edge.target, edge.target)
+        for node in clone.nodes:
+            node.attributes = {
+                name: _remap_attribute_value(value, {**node_id_map, **cloned_ids})
+                for name, value in node.attributes.items()
+            }
+        return clone_id
+
+    return clone_one(root_id, root_parent)
+
+
+def _rename_cloned_region_nodes(region: UHIRRegion, suffix: str, used_node_ids: set[str]) -> dict[str, str]:
+    node_id_map = {
+        node.id: _fresh_node_id(f"{node.id}{suffix}", used_node_ids)
+        for node in region.nodes
+    }
+    for node in region.nodes:
+        node.id = node_id_map[node.id]
+        node.operands = tuple(node_id_map.get(operand, operand) for operand in node.operands)
+        node.attributes = {
+            name: _remap_attribute_value(value, node_id_map)
+            for name, value in node.attributes.items()
+        }
+    for edge in region.edges:
+        edge.source = node_id_map.get(edge.source, edge.source)
+        edge.target = node_id_map.get(edge.target, edge.target)
+        edge.attributes = {
+            name: _remap_attribute_value(value, node_id_map)
+            for name, value in edge.attributes.items()
+        }
+    region.mappings = [
+        UHIRSourceMap(node_id_map.get(mapping.node_id, mapping.node_id), mapping.source_id)
+        for mapping in region.mappings
+    ]
+    return node_id_map
+
+
+def _fresh_region_id(preferred: str, used_region_ids: set[str]) -> str:
+    candidate = preferred
+    index = 1
+    while candidate in used_region_ids:
+        index += 1
+        candidate = f"{preferred}_{index}"
+    used_region_ids.add(candidate)
+    return candidate
+
+
+def _fresh_node_id(preferred: str, used_node_ids: set[str]) -> str:
+    candidate = preferred
+    index = 1
+    while candidate in used_node_ids:
+        index += 1
+        candidate = f"{preferred}_{index}"
+    used_node_ids.add(candidate)
+    return candidate
+
+
+def _sanitize_region_id(value: str) -> str:
+    sanitized = "".join(char if (char.isalnum() or char == "_") else "_" for char in value)
+    if not sanitized or sanitized[0].isdigit():
+        return f"r_{sanitized}"
+    return sanitized
+
+
+def _remap_attribute_value(value: AttributeValue, name_map: dict[str, str]) -> AttributeValue:
+    if isinstance(value, str):
+        if value.startswith("!") and value[1:] in name_map:
+            return f"!{name_map[value[1:]]}"
+        return name_map.get(value, value)
+    if isinstance(value, tuple):
+        return tuple(name_map.get(item, item) for item in value)
+    return value
+
+
+def _retarget_hierarchy_edges(region: UHIRRegion, owner_node_id: str, old_child_id: str, new_child_id: str) -> None:
+    for edge in region.edges:
+        if edge.kind != "seq" or edge.attributes.get("hierarchy") is not True:
+            continue
+        if edge.source == owner_node_id and edge.target == old_child_id:
+            edge.target = new_child_id
+        elif edge.source == old_child_id and edge.target == owner_node_id:
+            edge.source = new_child_id
+
+
+def _add_region_ref(region: UHIRRegion, target: str) -> None:
+    if target in {ref.target for ref in region.region_refs}:
+        return
+    region.region_refs.append(UHIRRegionRef(target))
 
 
 def _materialize_child_latencies(region: UHIRRegion, region_by_id: dict[str, UHIRRegion]) -> None:
@@ -217,17 +405,23 @@ def _shift_region(region: UHIRRegion, region_by_id: dict[str, UHIRRegion], *, of
             region.steps = (_timing_add(region.steps[0], offset), _timing_add(region.steps[1], offset))
 
     for node in region.nodes:
-        for child_id in _hierarchy_children(node):
+        for attr_name, child_id in _hierarchy_child_attrs(node):
             child_offset = 0 if node.opcode == "loop" else node.attributes["start"]
+            if attr_name == "child" and child_offset:
+                node.attributes["child_timebase"] = "global"
             _shift_region(region_by_id[child_id], region_by_id, offset=child_offset)
 
 
 def _hierarchy_children(node: UHIRNode) -> list[str]:
-    children: list[str] = []
+    return [child_id for _, child_id in _hierarchy_child_attrs(node)]
+
+
+def _hierarchy_child_attrs(node: UHIRNode) -> list[tuple[str, str]]:
+    children: list[tuple[str, str]] = []
     for key in ("child", "true_child", "false_child"):
         value = node.attributes.get(key)
         if isinstance(value, str) and value:
-            children.append(value)
+            children.append((key, value))
     return children
 
 

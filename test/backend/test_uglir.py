@@ -154,6 +154,31 @@ def _lower_unrolled_example_to_uglir(
     return lower_fsm_to_uglir(lower_bind_to_fsm(bind_design), component_library=component_library)
 
 
+def _lower_hierarchical_unrolled_example_to_uglir(stem: str, *, factor: int):
+    source = Path(f"examples/{stem}/{stem}.c").read_text(encoding="utf-8")
+    module = PassManager([MovToAddZeroPass()]).run(lower_source_to_uir(source))
+    module = PassManager([UnrollLoopsPass("1", factor), CanonicalizeLoopsPass()]).run(module)
+    component_library = _generic_component_library()
+    seq_design = run_gopt_passes(
+        lower_module_to_seq(module, top=stem),
+        [
+            create_builtin_gopt_pass("infer_loops"),
+            create_builtin_gopt_pass("translate_loop_dialect"),
+            create_builtin_gopt_pass("infer_static"),
+            create_builtin_gopt_pass("simplify_static_control"),
+            create_builtin_gopt_pass("predicate"),
+            create_builtin_gopt_pass("fold_predicates"),
+        ],
+    )
+    alloc_design = lower_seq_to_alloc(
+        seq_design,
+        executability_graph=_executability_graph_from_component_library(component_library),
+    )
+    sched_design = lower_alloc_to_sched(alloc_design)
+    bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
+    return lower_fsm_to_uglir(lower_bind_to_fsm(bind_design), component_library=component_library)
+
+
 def _lower_unrolled_dot4_relu_to_uglir():
     return _lower_unrolled_example_to_uglir("dot4_relu", factor=2)
 
@@ -162,14 +187,16 @@ def _lower_example_to_uglir(
     stem: str,
     *,
     optimize: bool = True,
+    legalize_const_prop: bool = True,
     legalize_mov_to_add_zero: bool = False,
 ):
     source = Path(f"examples/{stem}/{stem}.c").read_text(encoding="utf-8")
     legalize_pipeline = [
         InlineCallsPass(),
         PruneFunctionsPass(),
-        ConstPropPass(),
     ]
+    if legalize_const_prop:
+        legalize_pipeline.append(ConstPropPass())
     if legalize_mov_to_add_zero:
         legalize_pipeline.append(MovToAddZeroPass())
     optimized_module = PassManager(legalize_pipeline).run(lower_source_to_uir(source), PassContext(pass_args=(stem,)))
@@ -475,6 +502,8 @@ class UGLIRLoweringTests(unittest.TestCase):
             stage fsm
             schedule kind=hierarchical
             input  x : i32
+            input  y : i32
+            input  z : i32
             output result : i32
             resources {
               fu alu0 : ALU
@@ -501,7 +530,7 @@ class UGLIRLoweringTests(unittest.TestCase):
             region proc_top kind=procedure {
               region_ref proc_child
               node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
-              node v1 = call child, x : i32 child=proc_child class=CTRL ii=1 delay=1 start=0 end=0
+              node v1 = call child, x, y, z : i32 child=proc_child class=CTRL ii=1 delay=1 start=0 end=0
               node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
               node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
               edge data v0 -> v1
@@ -512,7 +541,7 @@ class UGLIRLoweringTests(unittest.TestCase):
             }
 
             region proc_child kind=procedure {
-              node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node c0 = nop role=source params=[a_0, b_0, c_0] param_types=[i32, i32, i32] class=CTRL ii=0 delay=0 start=0 end=0
               node c1 = add c_0, 1:i32 : i32 class=ALU ii=1 delay=1 start=0 end=0 bind=alu0
               node c2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
               edge data c0 -> c1
@@ -557,7 +586,112 @@ class UGLIRLoweringTests(unittest.TestCase):
 
         rendered = format_uglir(uglir_design)
         self.assertNotIn("c_0", rendered)
-        self.assertIn("SRC_X", rendered)
+        self.assertIn("SRC_Z", rendered)
+
+    def test_lower_fsm_to_uglir_uses_captured_mapped_child_return_for_late_parent_consumer(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design child_return_capture
+            stage fsm
+            schedule kind=hierarchical
+            input  x : i32
+            output result : i32
+            resources {
+              fu alu0 : ALU
+              reg r_i32_0 : i32
+              reg r_i32_1 : i32
+            }
+            controller C0 encoding=binary protocol=req_resp completion_order=in_order overlap=true region=proc_top {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=0
+              state T0 code=1
+              state T1 code=2
+              state T2 code=3
+              state T3 code=4
+              state DONE code=5
+              transition IDLE -> T0 when=req_valid && req_ready
+              transition T0 -> T1
+              transition T1 -> T2
+              transition T2 -> T3
+              transition T3 -> DONE
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[alu0<-c1]
+              emit T1 latch=[r_i32_0]
+              emit T2 issue=[alu0<-v2]
+              emit T3 latch=[r_i32_1]
+              emit DONE resp_valid=true
+            }
+
+            region proc_top kind=procedure {
+              region_ref proc_child
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = call child, x : i32 child=proc_child class=CTRL ii=2 delay=2 timing=static start=0 end=1 child_timebase=global
+              node v2 = add v1, 1:i32 : i32 class=ALU ii=1 delay=1 start=2 end=2 bind=alu0
+              node v3 = ret v2 class=CTRL ii=0 delay=0 start=3 end=3
+              node v4 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+              steps [0:3]
+              latency 4
+              value v2 -> r_i32_1 live=[3:3]
+            }
+
+            region proc_child kind=procedure {
+              node c0 = nop role=source params=[a_0] param_types=[i32] class=CTRL ii=0 delay=0 start=0 end=0
+              node c1 = add a_0, 0:i32 : i32 class=ALU ii=1 delay=1 start=0 end=0 bind=alu0
+              node c2 = ret out_0 class=CTRL ii=0 delay=0 start=1 end=1
+              node c3 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
+              edge data c0 -> c1
+              edge data c1 -> c2
+              edge data c2 -> c3
+              map c1 <- out_0
+              steps [0:1]
+              latency 2
+              value c1 -> r_i32_0 live=[1:1]
+            }
+            """
+        )
+        component_library = json.loads(
+            """
+            {
+              "components": {
+                "ALU": {
+                  "kind": "combinational",
+                  "ports": {
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "op": { "dir": "input", "type": "u5" },
+                    "y": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "add": {
+                      "ii": 1,
+                      "d": 1,
+                      "opcode": 0,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "y": "result"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+        )["components"]
+
+        uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
+        assign_by_target = {assign.target: assign.expr for assign in uglir_design.assigns}
+
+        self.assertIn("state_q == 3 ? SRC_R_I32_0", assign_by_target["sel_alu0_a_n"])
+        self.assertNotIn("state_q == 3 ? SRC_ALU0_Y", assign_by_target["sel_alu0_a_n"])
 
     def test_lower_fsm_to_uglir_keeps_duplicated_source_ids_region_local(self) -> None:
         fsm_design = parse_uhir(
@@ -1806,6 +1940,7 @@ class UGLIRSyntaxTests(unittest.TestCase):
         uglir_design = _lower_unrolled_dot4_relu_to_uglir()
 
         seq_block = uglir_design.seq_blocks[0]
+        phi_sum_latch_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_latch_q")
         phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
         phi_i_update = next(update for update in seq_block.updates if update.target == "phi_i_1_q")
 
@@ -1817,7 +1952,8 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertIn("state_q ==", phi_i_update.enable)
         self.assertGreaterEqual(phi_sum_update.enable.count("state_q =="), 2)
         self.assertGreaterEqual(phi_i_update.enable.count("state_q =="), 2)
-        self.assertIn("inl_mac_0_t1_0__u1_n", phi_sum_update.value)
+        self.assertIn("inl_mac_0_t1_0__u1_n", phi_sum_latch_update.value)
+        self.assertIn("phi_sum_1_latch_q", phi_sum_update.value)
         self.assertNotIn("t4_0_n", phi_i_update.value)
 
         select_assign = next(assign for assign in uglir_design.assigns if assign.target == "sel_r_i32_0_n")
@@ -1836,6 +1972,7 @@ class UGLIRSyntaxTests(unittest.TestCase):
         )
 
         seq_block = uglir_design.seq_blocks[0]
+        phi_i_latch_update = next(update for update in seq_block.updates if update.target == "phi_i_1_latch_q")
         phi_i_update = next(update for update in seq_block.updates if update.target == "phi_i_1_q")
         phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
 
@@ -1843,7 +1980,8 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertIn("state_q == 12", phi_i_update.enable)
         self.assertNotIn("state_q == 2", phi_i_update.enable)
         self.assertNotIn("state_q == 8", phi_i_update.enable)
-        self.assertIn("t4_0__u1_n", phi_i_update.value)
+        self.assertIn("t4_0__u1_n", phi_i_latch_update.value)
+        self.assertIn("phi_i_1_latch_q", phi_i_update.value)
         self.assertNotIn("t4_0_n", phi_i_update.value)
 
         self.assertIn("state_q == 6", phi_sum_update.enable)
@@ -1852,6 +1990,17 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertNotIn("state_q == 11", phi_sum_update.enable)
         self.assertIn("inl_mac_0_t1_0__u1_n", phi_sum_update.value)
         self.assertNotIn("inl_mac_0_t1_0_n", phi_sum_update.value)
+
+    def test_lower_fsm_to_uglir_uses_body_phi_latch_for_delayed_header_index_update(self) -> None:
+        uglir_design = _lower_hierarchical_unrolled_example_to_uglir("dot4_relu", factor=2)
+
+        seq_block = uglir_design.seq_blocks[0]
+        phi_i_update = next(update for update in seq_block.updates if update.target == "phi_i_1_q")
+        phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
+
+        self.assertIn("phi_i_1_latch_q", phi_i_update.value)
+        self.assertNotIn("i_2__u1_n", phi_i_update.value)
+        self.assertIn("sum_2__u1_n", phi_sum_update.value)
 
     def test_lower_fsm_to_uglir_handles_n_way_phi_carries_for_unroll_by_4(self) -> None:
         uglir_design = _lower_unrolled_example_to_uglir("dot4_i8_i32_relu_packed", factor=4)
@@ -1865,7 +2014,7 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertIn("inl_mac_0_t3_0__u3_n", phi_sum_latch_update.value)
         self.assertGreaterEqual(phi_sum_latch_update.enable.count("state_q =="), 3)
 
-        self.assertIn("inl_mac_0_t3_0__u3_n", phi_sum_update.value)
+        self.assertIn("phi_sum_1_latch_q", phi_sum_update.value)
         self.assertGreaterEqual(phi_sum_update.enable.count("state_q =="), 1)
 
         select_assign = next(assign for assign in uglir_design.assigns if assign.target == "sel_r_i32_0_n")
@@ -1886,9 +2035,11 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertIn("phi_sum_1_q", result_assign.expr)
 
         seq_block = uglir_design.seq_blocks[0]
+        phi_sum_latch_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_latch_q")
         phi_sum_update = next(update for update in seq_block.updates if update.target == "phi_sum_1_q")
         self.assertIn("(req_fire_n) ? C_0", phi_sum_update.value)
-        self.assertIn("r_i32_0_q", phi_sum_update.value)
+        self.assertIn("sum_2__u3_n", phi_sum_latch_update.value)
+        self.assertIn("phi_sum_1_latch_q", phi_sum_update.value)
         self.assertNotIn("r_i32_1_q", phi_sum_update.value)
 
     def test_lower_fsm_to_uglir_threads_late_mov_aliases_through_semantic_nets(self) -> None:
@@ -1920,6 +2071,20 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertEqual(assign_by_target["inl_mac_0_acc_1_n"], "state_q == 7 ? ewms0_y_n : r_i32_0_q")
         self.assertEqual(assign_by_target["t3_0_n"], "state_q == 8 ? ewms0_y_n : r_i32_0_q")
         self.assertEqual(assign_by_target["sum_2_n"], "state_q == 9 ? ewms0_y_n : r_i32_0_q")
+
+    def test_lower_fsm_to_uglir_lowers_branch_const_phi_without_const_prop(self) -> None:
+        uglir_design = _lower_example_to_uglir(
+            "dot4_relu",
+            optimize=False,
+            legalize_const_prop=False,
+            legalize_mov_to_add_zero=True,
+        )
+
+        rendered = format_uglir(uglir_design)
+        result_assign = next(assign for assign in uglir_design.assigns if assign.target == "result")
+
+        self.assertIn("? 0:i32 :", result_assign.expr)
+        self.assertNotIn("sum_3", rendered)
 
     def test_lower_fsm_to_uglir_uses_final_loop_carried_sum_for_post_loop_compare_without_opt_cleanup(self) -> None:
         uglir_design = _lower_example_to_uglir(
@@ -1988,6 +2153,145 @@ class UGLIRSyntaxTests(unittest.TestCase):
         self.assertIn("SRC_INL_MAC_0_T2_0", rendered)
         self.assertNotIn("sel_gen_mul_pseudopipe_ii1d30_a_n = (\n  state_q == 2 ? SRC_PHI_I_1 : state_q == 8 ? SRC_R_I16_0", rendered)
         self.assertNotIn("sel_gen_mul_pseudopipe_ii1d30_b_n = (\n  state_q == 2 ? CONST_8_I8 : state_q == 8 ? SRC_R_I16_1", rendered)
+
+    def test_lower_fsm_to_uglir_uses_materialized_mov_alias_for_late_consumers(self) -> None:
+        fsm_design = parse_uhir(
+            """
+            design late_mov_alias
+            stage fsm
+            schedule kind=control_steps
+            input  x : i32
+            output result : i32
+            resources {
+              fu mul0 : MUL
+              fu alu0 : ALU
+              reg r_i32_0 : i32
+              reg r_i32_1 : i32
+              reg r_i32_2 : i32
+            }
+            controller C0 encoding=binary protocol=req_resp completion_order=in_order overlap=true region=proc_late_mov_alias {
+              input  req_valid : i1
+              input  resp_ready : i1
+              output req_ready : i1
+              output resp_valid : i1
+              state IDLE code=0
+              state T0 code=1
+              state T1 code=2
+              state T2 code=3
+              state T3 code=4
+              state T4 code=5
+              state T5 code=6
+              state T6 code=7
+              state T7 code=8
+              state T8 code=9
+              state T9 code=10
+              state DONE code=11
+              transition IDLE -> T0 when=req_valid && req_ready
+              transition T0 -> T1
+              transition T1 -> T2
+              transition T2 -> T3
+              transition T3 -> T4
+              transition T4 -> T5
+              transition T5 -> T6
+              transition T6 -> T7
+              transition T7 -> T8
+              transition T8 -> T9
+              transition T9 -> DONE
+              transition DONE -> IDLE when=resp_valid && resp_ready
+              emit IDLE req_ready=true
+              emit T0 issue=[mul0<-v1]
+              emit T2 issue=[alu0<-v2] latch=[r_i32_0]
+              emit T3 latch=[r_i32_1]
+              emit T8 issue=[alu0<-v3]
+              emit T9 latch=[r_i32_2]
+              emit DONE resp_valid=true
+            }
+
+            region proc_late_mov_alias kind=procedure {
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = mul x, 2:i32 : i32 class=MUL ii=1 delay=2 start=0 end=1 bind=mul0
+              node v2 = mov v1 : i32 class=ALU ii=1 delay=1 start=2 end=2 bind=alu0
+              node v3 = add 1:i32, v2 : i32 class=ALU ii=1 delay=1 start=8 end=8 bind=alu0
+              node v4 = ret v3 class=CTRL ii=0 delay=0 start=9 end=9
+              node v5 = nop role=sink class=CTRL ii=0 delay=0 start=10 end=10
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+              edge data v4 -> v5
+              steps [0:9]
+              latency 10
+              value v1 -> r_i32_0 live=[2:2]
+              value v2 -> r_i32_1 live=[3:8]
+              value v3 -> r_i32_2 live=[9:9]
+            }
+            """
+        )
+        component_library = json.loads(
+            """
+            {
+              "components": {
+                "ALU": {
+                  "kind": "combinational",
+                  "ports": {
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "op": { "dir": "input", "type": "u5" },
+                    "y": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "add": {
+                      "ii": 1,
+                      "d": 1,
+                      "opcode": 0,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "y": "result"
+                      }
+                    },
+                    "mov": {
+                      "ii": 1,
+                      "d": 1,
+                      "opcode": 1,
+                      "bind": {
+                        "a": "operand0",
+                        "y": "result"
+                      }
+                    }
+                  }
+                },
+                "MUL": {
+                  "kind": "pipelined",
+                  "ports": {
+                    "clk": { "dir": "input", "type": "clock" },
+                    "rst": { "dir": "input", "type": "reset", "active": "hi" },
+                    "a": { "dir": "input", "type": "i32" },
+                    "b": { "dir": "input", "type": "i32" },
+                    "y": { "dir": "output", "type": "i32" }
+                  },
+                  "supports": {
+                    "mul": {
+                      "ii": 1,
+                      "d": 2,
+                      "bind": {
+                        "a": "operand0",
+                        "b": "operand1",
+                        "y": "result"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+        )["components"]
+
+        uglir_design = lower_fsm_to_uglir(fsm_design, component_library=component_library)
+        assign_by_target = {assign.target: assign.expr for assign in uglir_design.assigns}
+
+        self.assertIn("state_q == 9 ? SRC_R_I32_1", assign_by_target["sel_alu0_b_n"])
+        self.assertNotIn("state_q == 9 ? SRC_R_I32_0", assign_by_target["sel_alu0_b_n"])
 
     def test_lower_fsm_to_uglir_keeps_pipelined_result_live_for_next_cycle_held_input_consumer(self) -> None:
         fsm_design = parse_uhir(

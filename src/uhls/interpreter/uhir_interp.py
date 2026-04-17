@@ -143,6 +143,14 @@ class UHIRInterpreter:
         for region in design.regions:
             if region.kind != "procedure":
                 continue
+            declared_params = self._declared_procedure_params(region)
+            if declared_params is not None:
+                self.procedure_params[region.id] = declared_params
+                self.procedure_return_types[region.id] = None
+                if self._is_entry_procedure(region.id):
+                    output_port = next((port for port in design.outputs if port.name == "result"), None)
+                    self.procedure_return_types[region.id] = None if output_port is None else normalize_type(output_port.type)
+                continue
             if self._is_entry_procedure(region.id):
                 params = []
                 for port in design.inputs:
@@ -675,6 +683,29 @@ class UHIRInterpreter:
         if not expect_store and len(node.operands) == 2:
             return (node.operands[0], node.operands[1])
         raise InterpreterError(f"malformed {node.opcode} node '{node.id}'")
+
+    def _declared_procedure_params(self, region: UHIRRegion) -> tuple[_ProcedureParam, ...] | None:
+        source_node = next(
+            (node for node in region.nodes if node.opcode == "nop" and node.attributes.get("role") == "source"),
+            None,
+        )
+        if source_node is None:
+            return None
+        params = source_node.attributes.get("params")
+        if not isinstance(params, tuple) or not all(isinstance(param, str) for param in params):
+            return None
+        param_types = source_node.attributes.get("param_types")
+        if not isinstance(param_types, tuple) or len(param_types) != len(params):
+            param_types = tuple("" for _ in params)
+
+        declared: list[_ProcedureParam] = []
+        for name, type_text in zip(params, param_types, strict=True):
+            if isinstance(type_text, str) and type_text:
+                kind, type_hint = self._port_param_kind(type_text)
+            else:
+                kind, type_hint = "scalar", None
+            declared.append(_ProcedureParam(name, kind, type_hint))
+        return tuple(declared)
 
     def _infer_procedure_params(self, region: UHIRRegion) -> tuple[_ProcedureParam, ...]:
         produced = {node.id for node in region.nodes}

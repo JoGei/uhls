@@ -73,6 +73,8 @@ def select_memory_implementation(
     vendor_components: Mapping[str, Mapping[str, object]] | None,
 ) -> MemoryImplementationChoice:
     """Select one concrete memory implementation contract."""
+    # The first memory model stores exactly one logical memref element per
+    # resident word. Wider resident words need lane extraction/RMW lowering.
     generic_spec = _generic_memory_spec(component_name, element_type, depth_words)
     generic_choice = MemoryImplementationChoice(
         component_spec=generic_spec,

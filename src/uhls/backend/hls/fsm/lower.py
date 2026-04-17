@@ -27,6 +27,7 @@ from uhls.backend.hls.uhir.model import (
 )
 
 FSM_ENCODINGS = ("binary", "one_hot")
+_NON_ISSUABLE_CLASSES = frozenset({"CTRL", "ADAPT"})
 
 
 def lower_bind_to_fsm(design: UHIRDesign, *, encoding: str = "binary") -> UHIRDesign:
@@ -136,9 +137,7 @@ def _build_dynamic_controller(design: UHIRDesign, encoding: str) -> UHIRControll
         issue_actions = sorted(
             f"{bind}<-{node.id}"
             for node in phase_nodes
-            if isinstance((bind := node.attributes.get("bind")), str)
-            and isinstance(node.attributes.get("class"), str)
-            and node.attributes.get("class") != "CTRL"
+            if _is_issuable_binding((bind := node.attributes.get("bind")), node.attributes.get("class"))
         )
         activate_actions = sorted(node.id for node in symbolic_nodes)
         emit_attrs: dict[str, object] = {}
@@ -632,7 +631,7 @@ def _collect_time_step_actions(design: UHIRDesign) -> dict[int, dict[str, list[s
         for node in region.nodes:
             bind = node.attributes.get("bind")
             class_name = node.attributes.get("class")
-            if isinstance(bind, str) and isinstance(class_name, str) and class_name != "CTRL":
+            if _is_issuable_binding(bind, class_name):
                 start = node.attributes["start"] + offset
                 actions[start]["issue"].append(f"{bind}<-{node.id}{suffix}")
         for binding in region.value_bindings:
@@ -672,7 +671,7 @@ def _collect_time_step_actions(design: UHIRDesign) -> dict[int, dict[str, list[s
         for node in region.nodes:
             bind = node.attributes.get("bind")
             class_name = node.attributes.get("class")
-            if isinstance(bind, str) and isinstance(class_name, str) and class_name != "CTRL":
+            if _is_issuable_binding(bind, class_name):
                 start = node.attributes["start"] + offset
                 actions[start]["issue"].append(f"{bind}<-{node.id}{suffix}")
         for binding in region.value_bindings:
@@ -739,10 +738,16 @@ def _root_regions(design: UHIRDesign) -> list[UHIRRegion]:
 def _child_region_shift(node: UHIRNode, key: str) -> int:
     if key != "child":
         return 0
+    if node.attributes.get("child_timebase") == "global":
+        return 0
     node_start = node.attributes.get("start")
     if isinstance(node_start, int):
         return node_start
     return 0
+
+
+def _is_issuable_binding(bind: object, class_name: object) -> bool:
+    return isinstance(bind, str) and isinstance(class_name, str) and class_name not in _NON_ISSUABLE_CLASSES
 
 
 def _collect_region_local_actions(region: UHIRRegion) -> dict[int, dict[str, tuple[str, ...]]]:
@@ -755,7 +760,7 @@ def _collect_region_local_actions(region: UHIRRegion) -> dict[int, dict[str, tup
         bind = node.attributes.get("bind")
         class_name = node.attributes.get("class")
         start = node.attributes.get("start")
-        if isinstance(bind, str) and isinstance(class_name, str) and class_name != "CTRL" and isinstance(start, int):
+        if _is_issuable_binding(bind, class_name) and isinstance(start, int):
             actions[start]["issue"].append(f"{bind}<-{node.id}")
     for binding in region.value_bindings:
         if not binding.live_intervals:
@@ -787,7 +792,7 @@ def _collect_region_subtree_actions(region_id: str, region_by_id: dict[str, UHIR
             bind = node.attributes.get("bind")
             class_name = node.attributes.get("class")
             start = node.attributes.get("start")
-            if isinstance(bind, str) and isinstance(class_name, str) and class_name != "CTRL" and isinstance(start, int):
+            if _is_issuable_binding(bind, class_name) and isinstance(start, int):
                 actions[start]["issue"].append(f"{bind}<-{node.id}")
         for binding in region.value_bindings:
             if not binding.live_intervals:

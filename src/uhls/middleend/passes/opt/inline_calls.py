@@ -72,6 +72,8 @@ def inline_calls(
     for function in result.functions:
         if function.name == "main":
             continue
+        if function.name == "test_top" and function.name not in requested_caller_set:
+            continue
         if requested_caller_set and function.name not in requested_caller_set:
             continue
         changed = True

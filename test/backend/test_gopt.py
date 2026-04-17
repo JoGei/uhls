@@ -226,6 +226,80 @@ class GraphOptimizerTests(unittest.TestCase):
         self.assertIn("sum_1", loop_phi_maps)
         self.assertIn("i_1", loop_phi_maps)
 
+    def test_translate_loop_dialect_does_not_treat_branch_merge_phi_as_loop_without_const_prop(self) -> None:
+        module = parse_module(
+            """
+            func dot4(A:i32[], B:i32[]) -> i32
+
+            block entry:
+                sum_0:i32 = const 0:i32
+                i_0:i32 = const 0:i32
+                br for_header_1
+
+
+            block for_header_1:
+                i_1:i32 = phi(entry: i_0, for_body_2: i_2)
+                sum_1:i32 = phi(entry: sum_0, for_body_2: sum_2)
+                t0_0:i1 = lt i_1, 4:i32
+                cbr t0_0, for_body_2, for_exit_4
+
+
+            block for_body_2:
+                t1_0:i32 = load A[i_1]
+                t2_0:i32 = load B[i_1]
+                t3_0:i32 = mul t1_0, t2_0
+                sum_2:i32 = add sum_1, t3_0
+                t4_0:i32 = add i_1, 1:i32
+                i_2:i32 = mov t4_0
+                br for_header_1
+
+
+            block for_exit_4:
+                t5_0:i1 = lt sum_1, 0:i32
+                cbr t5_0, if_then_5, if_end_7
+
+
+            block if_then_5:
+                sum_3:i32 = const 0:i32
+                br if_end_7
+
+
+            block if_end_7:
+                sum_4:i32 = phi(for_exit_4: sum_1, if_then_5: sum_3)
+                ret sum_4
+            """
+        )
+
+        design = run_gopt_passes(
+            lower_module_to_seq(module, top="dot4"),
+            [
+                create_builtin_gopt_pass("infer_loops"),
+                create_builtin_gopt_pass("translate_loop_dialect"),
+            ],
+        )
+
+        proc = design.get_region("proc_dot4")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        self.assertEqual([node.opcode for node in proc.nodes].count("loop"), 1)
+        self.assertEqual([node.opcode for node in proc.nodes].count("branch"), 1)
+        self.assertIsNone(design.get_region("loop_v9"))
+        relu_branch = next(node for node in proc.nodes if node.opcode == "branch")
+        relu_phi = next(node for node in proc.nodes if node.opcode == "phi" and node.operands == ("sum_1", "sum_3"))
+        ret = next(node for node in proc.nodes if node.opcode == "ret")
+        data_edges = {(edge.source, edge.target) for edge in proc.edges if edge.kind == "data"}
+        self.assertEqual(relu_branch.attributes.get("control_kind"), "branch")
+        self.assertIn((relu_phi.id, ret.id), data_edges)
+
+        predicated = run_gopt_passes(design, [create_builtin_gopt_pass("predicate")])
+        predicated_proc = predicated.get_region("proc_dot4")
+        self.assertIsNotNone(predicated_proc)
+        assert predicated_proc is not None
+        relu_cond = next(node for node in predicated_proc.nodes if node.opcode == "lt" and node.operands == ("sum_1", "0:i32"))
+        predicated_zero = next(node for node in predicated_proc.nodes if node.attributes.get("pred") == "t5_0")
+        predicated_data_edges = {(edge.source, edge.target) for edge in predicated_proc.edges if edge.kind == "data"}
+        self.assertIn((relu_cond.id, predicated_zero.id), predicated_data_edges)
+
     def test_project_to_seq_design_strips_later_stage_artifacts(self) -> None:
         design = parse_uhir(
             """

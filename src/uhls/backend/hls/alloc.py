@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import re
 
 from uhls.backend.hls.impl import MemoryPolicy, select_memory_implementation
-from uhls.backend.hls.lib import format_component_spec
+from uhls.backend.hls.lib import format_component_spec, parse_component_spec
 from uhls.backend.hls.uhir.model import (
     UHIRConstant,
     UHIRDesign,
@@ -27,6 +27,8 @@ from uhls.utils.dot import escape_dot_label
 
 _UIR_LANGUAGE_OPCODES = frozenset(COMPACT_OPCODE_LABELS)
 _CONTROL_FU = "CTRL"
+_ADAPT_FU = "ADAPT"
+_ADAPTER_OPS = frozenset({"sext", "zext", "trunc"})
 _FIXED_ALLOCATIONS = {
     "NOP": (_CONTROL_FU, 0, 0),
     "nop": (_CONTROL_FU, 0, 0),
@@ -46,9 +48,14 @@ _FIXED_ALLOCATIONS = {
     "param": (_CONTROL_FU, 0, 0),
     "sel": (_CONTROL_FU, 0, 0),
     "ret": (_CONTROL_FU, 0, 0),
+    "sext": (_ADAPT_FU, 0, 0),
+    "zext": (_ADAPT_FU, 0, 0),
+    "trunc": (_ADAPT_FU, 0, 0),
 }
 _ALLOCATION_ALGORITHMS = frozenset({"min_delay", "min_ii"})
-_STRUCTURAL_EXECUTABILITY_OPS = frozenset({"nop", "branch", "loop", "call", "phi", "print", "const", "param", "sel", "ret"})
+_STRUCTURAL_EXECUTABILITY_OPS = frozenset(
+    {"nop", "branch", "loop", "call", "phi", "print", "const", "param", "sel", "ret"}
+) | _ADAPTER_OPS
 _IMPLICIT_EXECUTABILITY_OPS = frozenset({"br", "cbr", "call", "const", "param", "phi", "print", "ret"})
 
 
@@ -92,7 +99,10 @@ class ExecutabilityGraph:
                 (
                     _normalize_fu_name(functional_unit),
                     _normalize_operation_name(operation),
-                    tuple((str(binding_name), str(binding_type)) for binding_name, binding_type in bindings),
+                    tuple(
+                        (_normalize_type_binding_name(binding_name), str(binding_type))
+                        for binding_name, binding_type in bindings
+                    ),
                 )
             )
         object.__setattr__(self, "functional_units", normalized_fus)
@@ -134,6 +144,25 @@ class AllocationCandidate:
     ii: int
     delay: int
     type_constraints: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
+class TypeAdapter:
+    """One explicit type adapter needed at a selected resource boundary."""
+
+    binding_name: str
+    opcode: str
+    source_type: str
+    target_type: str
+
+
+@dataclass(slots=True, frozen=True)
+class AllocationPlan:
+    """One resource allocation choice plus required type adapters."""
+
+    params: dict[str, str]
+    candidate: AllocationCandidate
+    adapters: tuple[TypeAdapter, ...] = ()
 
 
 def executability_graph_from_uhir(design: UHIRDesign) -> ExecutabilityGraph:
@@ -357,8 +386,12 @@ def _embed_executability_regions(
     retained_operations = list(dict.fromkeys(operation for _, operation, _, _ in retained_edges))
 
     structural_operations = [operation for operation in sorted(used_operations) if operation in _STRUCTURAL_EXECUTABILITY_OPS]
-    if structural_operations and _CONTROL_FU not in retained_fus:
+    control_operations = [operation for operation in structural_operations if operation not in _ADAPTER_OPS]
+    adapter_operations = [operation for operation in structural_operations if operation in _ADAPTER_OPS]
+    if control_operations and _CONTROL_FU not in retained_fus:
         retained_fus.append(_CONTROL_FU)
+    if adapter_operations and _ADAPT_FU not in retained_fus:
+        retained_fus.append(_ADAPT_FU)
     retained_operations.extend(operation for operation in structural_operations if operation not in retained_operations)
 
     region_id = _unique_region_id(taken_region_ids, "executability_graph")
@@ -384,7 +417,11 @@ def _embed_executability_regions(
     ]
     edges.extend(
         UHIREdge("exg", vertex_ids[("fu", _CONTROL_FU)], vertex_ids[("op", operation)], {"ii": 0, "d": 0}, directed=False)
-        for operation in structural_operations
+        for operation in control_operations
+    )
+    edges.extend(
+        UHIREdge("exg", vertex_ids[("fu", _ADAPT_FU)], vertex_ids[("op", operation)], {"ii": 0, "d": 0}, directed=False)
+        for operation in adapter_operations
     )
     return [UHIRRegion(id=region_id, kind="executability", nodes=nodes, edges=edges)]
 
@@ -446,11 +483,101 @@ def _allocate_region(
 ) -> UHIRRegion:
     allocated = UHIRRegion(id=region.id, kind=region.kind, parent=region.parent)
     allocated.region_refs = [UHIRRegionRef(ref.target) for ref in region.region_refs]
-    allocated.nodes = [
-        _allocate_node(node, candidates, value_types, memory_impls, algorithm=algorithm) for node in region.nodes
+
+    taken_node_ids = {node.id for node in region.nodes}
+    source_ids_by_node: dict[str, list[str]] = {}
+    for mapping in region.mappings:
+        source_ids_by_node.setdefault(mapping.node_id, []).append(mapping.source_id)
+
+    local_value_types = dict(value_types)
+    for node in region.nodes:
+        if node.result_type is None:
+            continue
+        for source_id in source_ids_by_node.get(node.id, ()):
+            local_value_types.setdefault(source_id, node.result_type)
+
+    value_rewrites: dict[str, str] = {}
+    final_node_by_original: dict[str, str] = {}
+    operand_adapter_edges: dict[tuple[str, str], str] = {}
+    extra_edges: list[UHIREdge] = []
+    nodes: list[UHIRNode] = []
+
+    for node in region.nodes:
+        rewritten_operands = tuple(value_rewrites.get(operand, operand) for operand in node.operands)
+        working_node = UHIRNode(node.id, node.opcode, rewritten_operands, node.result_type, dict(node.attributes))
+        allocated_node, adapters = _allocate_node_with_adapters(
+            working_node,
+            candidates,
+            local_value_types,
+            memory_impls,
+            algorithm=algorithm,
+        )
+        pre_adapters = [adapter for adapter in adapters if adapter.binding_name.startswith("operand")]
+        return_adapters = [adapter for adapter in adapters if adapter.binding_name == "return"]
+
+        operand_list = list(allocated_node.operands)
+        for adapter in pre_adapters:
+            index = int(adapter.binding_name.removeprefix("operand"))
+            source_operand = operand_list[index]
+            adapter_id = _unique_node_id(
+                taken_node_ids,
+                f"{allocated_node.id}_{adapter.binding_name}_{adapter.opcode}",
+                adapter.opcode,
+            )
+            adapter_node = _make_adapter_node(adapter_id, adapter, (source_operand,))
+            nodes.append(adapter_node)
+            operand_list[index] = adapter_id
+            producer = _producer_for_operand(source_operand, region, value_rewrites)
+            if producer is None:
+                producer = _region_source_node(region)
+            if producer is not None:
+                operand_adapter_edges[(allocated_node.id, producer)] = adapter_id
+                extra_edges.append(UHIREdge("data", producer, adapter_id))
+            extra_edges.append(UHIREdge("data", adapter_id, allocated_node.id))
+            local_value_types[adapter_id] = adapter.target_type
+
+        allocated_node = UHIRNode(
+            allocated_node.id,
+            allocated_node.opcode,
+            tuple(operand_list),
+            allocated_node.result_type,
+            dict(allocated_node.attributes),
+        )
+        nodes.append(allocated_node)
+        if allocated_node.result_type is not None:
+            local_value_types[allocated_node.id] = allocated_node.result_type
+
+        final_node_id = allocated_node.id
+        if return_adapters:
+            adapter = return_adapters[0]
+            adapter_id = _unique_node_id(
+                taken_node_ids,
+                f"{allocated_node.id}_return_{adapter.opcode}",
+                adapter.opcode,
+            )
+            adapter_node = _make_adapter_node(adapter_id, adapter, (allocated_node.id,))
+            nodes.append(adapter_node)
+            extra_edges.append(UHIREdge("data", allocated_node.id, adapter_id))
+            local_value_types[adapter_id] = adapter.target_type
+            final_node_id = adapter_id
+
+        final_node_by_original[node.id] = final_node_id
+        if final_node_id != node.id:
+            value_rewrites[node.id] = final_node_id
+        if node.result_type is not None:
+            local_value_types[node.id] = node.result_type
+        for source_id in source_ids_by_node.get(node.id, ()):
+            if final_node_id != node.id:
+                value_rewrites[source_id] = final_node_id
+            if node.result_type is not None:
+                local_value_types[source_id] = node.result_type
+
+    allocated.nodes = nodes
+    allocated.edges = _allocated_edges(region.edges, final_node_by_original, operand_adapter_edges, extra_edges)
+    allocated.mappings = [
+        UHIRSourceMap(final_node_by_original.get(mapping.node_id, mapping.node_id), mapping.source_id)
+        for mapping in region.mappings
     ]
-    allocated.edges = [UHIREdge(edge.kind, edge.source, edge.target, dict(edge.attributes)) for edge in region.edges]
-    allocated.mappings = [UHIRSourceMap(mapping.node_id, mapping.source_id) for mapping in region.mappings]
     allocated.value_bindings = [
         UHIRValueBinding(binding.producer, binding.register, binding.live_intervals)
         for binding in region.value_bindings
@@ -460,6 +587,101 @@ def _allocate_region(
     allocated.latency = region.latency
     allocated.initiation_interval = region.initiation_interval
     return allocated
+
+
+def _allocate_node_with_adapters(
+    node: UHIRNode,
+    candidates: dict[str, list[AllocationCandidate]],
+    value_types: dict[str, str],
+    memory_impls: dict[str, object],
+    *,
+    algorithm: str,
+) -> tuple[UHIRNode, tuple[TypeAdapter, ...]]:
+    allocated = _allocate_node(node, candidates, value_types, memory_impls, algorithm=algorithm)
+    plan = allocated.attributes.pop("_allocation_plan", None)
+    if not isinstance(plan, AllocationPlan):
+        return allocated, ()
+    adapters = plan.adapters
+    return_adapter = next((adapter for adapter in adapters if adapter.binding_name == "return"), None)
+    if return_adapter is not None:
+        allocated = UHIRNode(
+            allocated.id,
+            allocated.opcode,
+            allocated.operands,
+            return_adapter.source_type,
+            dict(allocated.attributes),
+        )
+    return allocated, adapters
+
+
+def _make_adapter_node(node_id: str, adapter: TypeAdapter, operands: tuple[str, ...]) -> UHIRNode:
+    return UHIRNode(
+        node_id,
+        adapter.opcode,
+        operands,
+        adapter.target_type,
+        {
+            "class": _ADAPT_FU,
+            "ii": 0,
+            "delay": 0,
+            "source_type": adapter.source_type,
+            "target_type": adapter.target_type,
+        },
+    )
+
+
+def _allocated_edges(
+    edges: list[UHIREdge],
+    final_node_by_original: dict[str, str],
+    operand_adapter_edges: dict[tuple[str, str], str],
+    extra_edges: list[UHIREdge],
+) -> list[UHIREdge]:
+    result: list[UHIREdge] = []
+    seen: set[tuple[str, str, str, tuple[tuple[str, str], ...], bool]] = set()
+
+    def append(edge: UHIREdge) -> None:
+        if edge.source == edge.target:
+            return
+        key = (
+            edge.kind,
+            edge.source,
+            edge.target,
+            tuple(sorted((key, repr(value)) for key, value in edge.attributes.items())),
+            edge.directed,
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        result.append(edge)
+
+    for edge in edges:
+        source = final_node_by_original.get(edge.source, edge.source)
+        target = edge.target
+        if edge.kind == "data":
+            target = operand_adapter_edges.get((edge.target, source), target)
+        append(UHIREdge(edge.kind, source, target, dict(edge.attributes), edge.directed))
+    for edge in extra_edges:
+        append(UHIREdge(edge.kind, edge.source, edge.target, dict(edge.attributes), edge.directed))
+    return result
+
+
+def _producer_for_operand(operand: str, region: UHIRRegion, value_rewrites: dict[str, str]) -> str | None:
+    if operand in value_rewrites.values():
+        return operand
+    for node in region.nodes:
+        if node.id == operand:
+            return value_rewrites.get(node.id, node.id)
+    for mapping in region.mappings:
+        if mapping.source_id == operand:
+            return value_rewrites.get(mapping.source_id, value_rewrites.get(mapping.node_id, mapping.node_id))
+    return None
+
+
+def _region_source_node(region: UHIRRegion) -> str | None:
+    for node in region.nodes:
+        if node.attributes.get("role") == "source":
+            return node.id
+    return None
 
 
 def _allocate_node(
@@ -491,42 +713,93 @@ def _allocate_node(
             else:
                 attributes["ii"] = memory_choice.store_ii
                 attributes["delay"] = memory_choice.store_delay
+            plan = _infer_memory_candidate_plan(node, memory_choice, value_types)
+            if plan.adapters:
+                attributes["_allocation_plan"] = plan
             return UHIRNode(node.id, node.opcode, node.operands, node.result_type, attributes)
 
     node_candidates = candidates.get(operation)
     if node_candidates is None:
         raise ValueError(f"no executability allocation available for node '{node.id}' with operation '{operation}'")
     compatible = [
-        (_infer_candidate_params(candidate, node, value_types), candidate)
+        plan
         for candidate in node_candidates
+        if (plan := _infer_candidate_plan(candidate, node, value_types)) is not None
     ]
-    compatible = [(params, candidate) for params, candidate in compatible if params is not None]
     if not compatible:
         raise ValueError(
             f"no typed executability allocation available for node '{node.id}' with operation '{operation}'"
         )
-    chosen_params, chosen_candidate = _choose_typed_allocation_candidate(compatible, algorithm=algorithm)
-    attributes["class"] = format_component_spec(chosen_candidate.functional_unit, chosen_params)
-    attributes["ii"] = chosen_candidate.ii
-    attributes["delay"] = chosen_candidate.delay
+    chosen_plan = _choose_typed_allocation_candidate(compatible, algorithm=algorithm)
+    attributes["class"] = format_component_spec(chosen_plan.candidate.functional_unit, chosen_plan.params)
+    attributes["ii"] = chosen_plan.candidate.ii
+    attributes["delay"] = chosen_plan.candidate.delay
+    if chosen_plan.adapters:
+        attributes["_allocation_plan"] = chosen_plan
     return UHIRNode(node.id, node.opcode, node.operands, node.result_type, attributes)
 
 
 def _choose_typed_allocation_candidate(
-    compatible: list[tuple[dict[str, str], AllocationCandidate]],
+    compatible: list[AllocationPlan],
     *,
     algorithm: str,
-) -> tuple[dict[str, str], AllocationCandidate]:
-    chosen_params, chosen_candidate = min(
+) -> AllocationPlan:
+    return min(
         compatible,
         key=lambda item: (
-            item[1].delay if algorithm == "min_delay" else item[1].ii,
-            item[1].ii if algorithm == "min_delay" else item[1].delay,
-            item[1].functional_unit,
-            tuple(sorted(item[0].items())),
+            item.candidate.delay if algorithm == "min_delay" else item.candidate.ii,
+            item.candidate.ii if algorithm == "min_delay" else item.candidate.delay,
+            len(item.adapters),
+            item.candidate.functional_unit,
+            tuple(sorted(item.params.items())),
         ),
     )
-    return chosen_params, chosen_candidate
+
+
+def _infer_memory_candidate_plan(
+    node: UHIRNode,
+    memory_choice: object,
+    value_types: dict[str, str],
+) -> AllocationPlan:
+    _component_name, params = parse_component_spec(memory_choice.component_spec)
+    word_type = params.get("word_t")
+    if not isinstance(word_type, str) or not word_type:
+        raise ValueError(
+            f"memory allocation for node '{node.id}' selected '{memory_choice.component_spec}' without word_t"
+        )
+    memref_type = value_types.get(node.operands[0]) if node.operands else None
+    if isinstance(memref_type, str) and memref_type.startswith("memref<"):
+        element_type, _depth_words = _parse_memref_type(memref_type)
+        if element_type != word_type:
+            raise ValueError(
+                f"memory allocation for node '{node.id}' selected resident word_t={word_type} for "
+                f"memref element type {element_type}; the current memory model requires one logical "
+                "element per resident word"
+            )
+    if node.opcode == "load":
+        type_constraints = (("operand1", "i32"), ("return", word_type))
+        candidate = AllocationCandidate(
+            memory_choice.component_spec,
+            memory_choice.load_ii,
+            memory_choice.load_delay,
+            type_constraints,
+        )
+    elif node.opcode == "store":
+        type_constraints = (("operand1", "i32"), ("operand2", word_type))
+        candidate = AllocationCandidate(
+            memory_choice.component_spec,
+            memory_choice.store_ii,
+            memory_choice.store_delay,
+            type_constraints,
+        )
+    else:
+        raise AssertionError(f"unexpected memory opcode '{node.opcode}'")
+    plan = _infer_candidate_plan(candidate, node, value_types)
+    if plan is None:
+        raise ValueError(
+            f"no typed memory allocation available for node '{node.id}' with resource '{memory_choice.component_spec}'"
+        )
+    return plan
 
 
 def _design_value_types(design: UHIRDesign) -> dict[str, str]:
@@ -536,40 +809,58 @@ def _design_value_types(design: UHIRDesign) -> dict[str, str]:
     for constant in design.constants:
         value_types[constant.name] = constant.type
     for region in design.regions:
+        node_by_id = {node.id: node for node in region.nodes}
         for node in region.nodes:
+            params = node.attributes.get("params")
+            param_types = node.attributes.get("param_types")
+            if isinstance(params, tuple) and isinstance(param_types, tuple) and len(params) == len(param_types):
+                for param, param_type in zip(params, param_types, strict=False):
+                    value_types[str(param)] = str(param_type)
             if node.result_type is not None:
                 value_types[node.id] = node.result_type
+        for mapping in region.mappings:
+            mapped_node = node_by_id.get(mapping.node_id)
+            if mapped_node is not None and mapped_node.result_type is not None:
+                value_types.setdefault(mapping.source_id, mapped_node.result_type)
     return value_types
 
 
-def _infer_candidate_params(
+def _infer_candidate_plan(
     candidate: AllocationCandidate,
     node: UHIRNode,
     value_types: dict[str, str],
-) -> dict[str, str] | None:
+) -> AllocationPlan | None:
     if not candidate.type_constraints:
-        return {}
+        return AllocationPlan({}, candidate)
     node_types = _node_binding_types(node, value_types)
     inferred: dict[str, str] = {}
+    adapters: list[TypeAdapter] = []
     for binding_name, expected_type in candidate.type_constraints:
+        binding_name = _normalize_type_binding_name(binding_name)
         actual_type = node_types.get(binding_name)
         if actual_type is None:
             return None
         if _looks_like_concrete_type(expected_type):
             if actual_type != expected_type:
-                return None
+                if _same_width_integer_types(actual_type, expected_type):
+                    continue
+                adapter = _type_adapter_for_binding(binding_name, actual_type, expected_type)
+                if adapter is None:
+                    return None
+                adapters.append(adapter)
             continue
         previous = inferred.get(expected_type)
         if previous is None:
             inferred[expected_type] = actual_type
         elif previous != actual_type:
             return None
-    return inferred
+    return AllocationPlan(inferred, candidate, tuple(adapters))
 
 
 def _node_binding_types(node: UHIRNode, value_types: dict[str, str]) -> dict[str, str]:
     binding_types: dict[str, str] = {}
     if node.result_type is not None:
+        binding_types["return"] = node.result_type
         binding_types["result"] = node.result_type
     operand_types: list[str | None] = []
     for operand in node.operands:
@@ -639,6 +930,54 @@ def _looks_like_literal_operand(operand: str) -> bool:
 
 def _looks_like_concrete_type(type_name: str) -> bool:
     return bool(type_name) and type_name[0] in {"i", "u"} and type_name[1:].isdigit()
+
+
+def _normalize_type_binding_name(binding_name: object) -> str:
+    text = str(binding_name)
+    return "return" if text == "result" else text
+
+
+def _type_adapter_for_binding(binding_name: str, actual_type: str, expected_type: str) -> TypeAdapter | None:
+    if binding_name == "return":
+        adapter_opcode = _integer_adapter_opcode(expected_type, actual_type)
+        if adapter_opcode is None:
+            return None
+        return TypeAdapter(binding_name, adapter_opcode, expected_type, actual_type)
+    if not binding_name.startswith("operand"):
+        return None
+    adapter_opcode = _integer_adapter_opcode(actual_type, expected_type)
+    if adapter_opcode is None:
+        return None
+    return TypeAdapter(binding_name, adapter_opcode, actual_type, expected_type)
+
+
+def _integer_adapter_opcode(source_type: str, target_type: str) -> str | None:
+    if source_type == target_type:
+        return None
+    source = _parse_integer_type(source_type)
+    target = _parse_integer_type(target_type)
+    if source is None or target is None:
+        return None
+    source_signed, source_width = source
+    _target_signed, target_width = target
+    if source_width == target_width:
+        return None
+    if source_width > target_width:
+        return "trunc"
+    return "sext" if source_signed else "zext"
+
+
+def _parse_integer_type(type_name: str) -> tuple[bool, int] | None:
+    match = re.fullmatch(r"([iu])(\d+)", type_name)
+    if match is None:
+        return None
+    return match.group(1) == "i", int(match.group(2))
+
+
+def _same_width_integer_types(left_type: str, right_type: str) -> bool:
+    left = _parse_integer_type(left_type)
+    right = _parse_integer_type(right_type)
+    return left is not None and right is not None and left[1] == right[1]
 
 
 def _design_memory_implementations(

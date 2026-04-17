@@ -111,12 +111,17 @@ for example:
 "types": {
   "operand0": "base_t",
   "operand1": "base_t",
-  "result": "base_t"
+  "return": "base_t"
 }
 ----
 
 This means that one `DIV<base_t=i8>` instance is eligible only for one
-`div(i8, i8) -> i8` operation, not for one `i32` division.
+`div(i8, i8) -> i8` operation, not for one `i32` division, unless the µhIR
+`alloc` stage has first materialized explicit resource-boundary adapters.
+Such adapters are structural `class=ADAPT` µhIR nodes with opcode `sext`,
+`zext`, or `trunc`, plus `source_type` and `target_type` attributes.
+The support contract declares the operand datatypes the resource expects and
+the return datatype that glue/RTL must consume.
 
 == Goals
 
@@ -635,6 +640,11 @@ The first bare-core memory contract remains intentionally simple:
 * one access per memory bundle per FSMD state
 * multiple accesses are allowed only when they are multiplexed over time by the
   schedule / bind / FSMD
+* address and data signals use the selected memory resource contract after
+  allocation-time adapters, currently `i32` addresses and the memory resource's
+  `word_t` data type
+* `word_t` is the physical resident word type and, until sub-word memory
+  lowering exists, must match the source `memref` element type
 
 This matches the existing single-interface assumption already used in `uglir`.
 

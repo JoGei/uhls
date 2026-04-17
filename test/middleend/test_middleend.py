@@ -1170,6 +1170,50 @@ block for_exit:
         self.assertIsNotNone(pruned.get_function("worker"))
         self.assertIsNone(pruned.get_function("helper"))
 
+    def test_inline_prune_preserves_dut_called_from_test_top_harness(self) -> None:
+        helper = Function(
+            name="helper",
+            params=[Parameter("x", "i32")],
+            return_type="i32",
+            blocks=[Block("entry", instructions=[BinaryOp("add", "y", "i32", "x", 1)], terminator=ReturnOp("y"))],
+        )
+        dut = Function(
+            name="dut",
+            params=[Parameter("x", "i32")],
+            return_type="i32",
+            blocks=[Block("entry", instructions=[CallOp("helper", ["x"], dest="y", type="i32")], terminator=ReturnOp("y"))],
+        )
+        test_top = Function(
+            name="test_top",
+            params=[Parameter("x", "i32")],
+            return_type="i32",
+            blocks=[Block("entry", instructions=[CallOp("dut", ["x"], dest="y", type="i32")], terminator=ReturnOp("y"))],
+        )
+        main = Function(
+            name="main",
+            params=[],
+            return_type="i32",
+            blocks=[Block("entry", instructions=[CallOp("test_top", [7], dest="z", type="i32")], terminator=ReturnOp("z"))],
+        )
+        module = Module(functions=[helper, dut, test_top, main])
+
+        inlined = inline_calls(module)
+        pruned = prune_functions_module(inlined)
+        verify_module(pruned)
+
+        self.assertIsNone(pruned.get_function("helper"))
+        self.assertIsNotNone(pruned.get_function("dut"))
+        self.assertIsNotNone(pruned.get_function("test_top"))
+        kept_test_top = pruned.get_function("test_top")
+        assert kept_test_top is not None
+        self.assertTrue(
+            any(
+                isinstance(instruction, CallOp) and instruction.callee == "dut"
+                for block in kept_test_top.blocks
+                for instruction in block.instructions
+            )
+        )
+
     def test_cse_function_eliminates_duplicate_expressions_and_rewrites_successor_uses(self) -> None:
         function = Function(
             name="cleanup",

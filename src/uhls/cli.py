@@ -219,6 +219,10 @@ _OPT_PASS_SPECS: tuple[OptPassSpec, ...] = (
     ),
 )
 
+_OPT_PIPELINE_ALIASES: dict[str, tuple[str, ...]] = {
+    "canonicalize": ("canonicalize_loops",),
+}
+
 
 def _implemented_opt_help() -> str:
     implemented = _implemented_opt_pass_names()
@@ -227,6 +231,15 @@ def _implemented_opt_help() -> str:
 
 def _registered_opt_help() -> str:
     return ", ".join(spec.name for spec in _OPT_PASS_SPECS) if _OPT_PASS_SPECS else "none"
+
+
+def _opt_pipeline_alias_help() -> str:
+    if not _OPT_PIPELINE_ALIASES:
+        return "none"
+    return ", ".join(
+        f"{name}={','.join(passes)}"
+        for name, passes in sorted(_OPT_PIPELINE_ALIASES.items())
+    )
 
 
 def _implemented_opt_pass_names() -> list[str]:
@@ -329,7 +342,15 @@ def _maybe_handle_opt_pass_help(argv: list[str]) -> int | None:
     if len(argv) != 3 or argv[0] != "opt" or argv[1] not in {"-h", "--help"}:
         return None
 
-    canonical = _opt_pass_canonical_name(argv[2].strip().lower().replace("-", "_"))
+    normalized = argv[2].strip().lower().replace("-", "_")
+    alias_pipeline = _OPT_PIPELINE_ALIASES.get(normalized)
+    if alias_pipeline is not None:
+        click.echo(f"{normalized}: pipeline alias for {','.join(alias_pipeline)}")
+        click.echo("status: implemented")
+        click.echo(f"example: uhls opt input.uir -p {normalized} --pass-arg TOP -o output.uir")
+        return 0
+
+    canonical = _opt_pass_canonical_name(normalized)
     if canonical is None:
         click.echo(f"error: unknown optimization pass '{argv[2]}'", err=True)
         return 1
@@ -769,6 +790,7 @@ def alloc_cmd(
         "\n"
         f"Implemented passes: {_implemented_opt_help()}.\n"
         f"Registered passes: {_registered_opt_help()}.\n"
+        f"Pipeline aliases: {_opt_pipeline_alias_help()}.\n"
         "External pass syntax: /path/to/pass.py:Symbol\n"
         "\n"
         "Example: uhls opt input.uir -p simplify_cfg,inline_calls --pass-arg dot4 -o output.uir\n"
@@ -805,7 +827,7 @@ def alloc_cmd(
 def opt_cmd(input_path: Path, passes: str, pass_args: tuple[str, ...], output: Path | None) -> None:
     """Run canonical µIR optimization pass pipelines."""
     module = _load_ir_file(input_path)
-    pipeline = [_lookup_opt_pass(name, pass_args) for name in passes.split(",") if name.strip()]
+    pipeline = [_lookup_opt_pass(name, pass_args) for name in _expand_opt_pipeline_names(passes)]
     if not pipeline:
         raise CLIError("no optimization passes were selected")
     context = PassContext(pass_args=tuple(pass_args))
@@ -2934,7 +2956,34 @@ def _lookup_opt_pass(name: str, pass_args: tuple[str, ...] = ()) -> object:
     try:
         return _opt_specs_by_cli_name()[normalized].factory()
     except KeyError as exc:
-        raise CLIError(f"unknown optimization pass '{name}'") from exc
+        supported = sorted(set(_opt_specs_by_cli_name()) | set(_OPT_PIPELINE_ALIASES))
+        raise CLIError(f"unknown optimization pass '{name}'; expected one of: {', '.join(supported)}") from exc
+
+
+def _expand_opt_pipeline_names(passes: str) -> list[str]:
+    expanded: list[str] = []
+    for name in passes.split(","):
+        stripped = name.strip()
+        if not stripped:
+            continue
+        expanded.extend(_expand_opt_pipeline_name(stripped, seen=()))
+    return expanded
+
+
+def _expand_opt_pipeline_name(name: str, *, seen: tuple[str, ...]) -> list[str]:
+    if _looks_like_external_python_symbol_spec(name):
+        return [name]
+    normalized = name.strip().lower().replace("-", "_")
+    alias_pipeline = _OPT_PIPELINE_ALIASES.get(normalized)
+    if alias_pipeline is None:
+        return [name]
+    if normalized in seen:
+        cycle = " -> ".join((*seen, normalized))
+        raise CLIError(f"optimization pipeline alias cycle detected: {cycle}")
+    expanded: list[str] = []
+    for alias_name in alias_pipeline:
+        expanded.extend(_expand_opt_pipeline_name(alias_name, seen=(*seen, normalized)))
+    return expanded
 
 
 def _looks_like_external_python_symbol_spec(name: str) -> bool:

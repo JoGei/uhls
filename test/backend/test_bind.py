@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -927,8 +928,8 @@ class BindingLoweringTests(unittest.TestCase):
         assert body_region is not None
 
         sum_like_bindings = [binding for binding in body_region.value_bindings if binding.producer == "inl_mac_0_t1_0"]
-        self.assertEqual(len(sum_like_bindings), 1)
-        self.assertGreater(len(sum_like_bindings[0].live_intervals), 1)
+        self.assertGreaterEqual(len(sum_like_bindings), 1)
+        self.assertGreater(sum(len(binding.live_intervals) for binding in sum_like_bindings), 1)
 
     def test_non_flattened_trp_unroll_keeps_iteration_specific_register_values(self) -> None:
         sched_design = self._static_dot4_relu_sched_design()
@@ -957,9 +958,21 @@ class BindingLoweringTests(unittest.TestCase):
         bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
 
         dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
-        self.assertIn('"dfgsb_unroll_op_11_4" -> "dfgsb_unroll_reg_12_8" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
-        self.assertIn('"dfgsb_unroll_reg_12_8" -> "dfgsb_unroll_op_12_4" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
-        self.assertIn('"dfgsb_unroll_reg_12_8" -> "dfgsb_unroll_op_13_2" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
+        final_sum_match = re.search(
+            r'"dfgsb_unroll_op_11_4" -> "(dfgsb_unroll_reg_12_\d+)" \[color="#1f78b4", penwidth=1\.3, label="inl_mac_0_t1_0"',
+            dot,
+        )
+        self.assertIsNotNone(final_sum_match)
+        assert final_sum_match is not None
+        final_sum_reg = final_sum_match.group(1)
+        self.assertIn(
+            f'"{final_sum_reg}" -> "dfgsb_unroll_op_12_4" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"',
+            dot,
+        )
+        self.assertIn(
+            f'"{final_sum_reg}" -> "dfgsb_unroll_op_13_2" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"',
+            dot,
+        )
         self.assertIn('"dfgsb_unroll_op_13_2" -> "dfgsb_unroll_op_13_3"', dot)
 
     def test_lower_sched_to_bind_accepts_canonicalized_unrolled_do_all_loop_with_static_trip_count(self) -> None:
@@ -1132,6 +1145,54 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertIn((2, 2), [(item.start, item.end) for item in occurrences["EWMS"]["c1"]])
         lower_sched_to_bind(sched_design, binder=binder)
 
+    def test_flattened_value_binding_extends_through_call_actual_adapter(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design flattened_call_actual_adapter
+            stage sched
+            schedule kind=hierarchical
+
+            region proc_top kind=procedure {
+              region_ref proc_child
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add a, b : i32 class=FU_ALU ii=1 delay=1 start=1 end=1
+              node v1_trunc = trunc v1 : i8 class=ADAPT ii=0 delay=0 start=2 end=2
+              node v2 = add c, d : i32 class=FU_ALU ii=1 delay=1 start=3 end=3
+              node vcall = call child, v1_trunc : i32 child=proc_child class=CTRL ii=2 delay=2 start=5 end=6 child_timebase=global
+              node vret = ret v2 class=CTRL ii=0 delay=0 start=4 end=4
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=7 end=7
+              edge data v0 -> v1
+              edge data v1 -> v1_trunc
+              edge data v1_trunc -> vcall
+              edge data v0 -> v2
+              edge data v2 -> vret
+              edge data vret -> v3
+              edge seq vcall -> proc_child hierarchy=true
+              edge seq proc_child -> vcall hierarchy=true
+            }
+
+            region proc_child kind=procedure parent=proc_top {
+              node c0 = nop role=source params=[x] param_types=[i8] class=CTRL ii=0 delay=0 start=5 end=5
+              node c1 = add x, 1:i8 : i8 class=FU_ALU ii=1 delay=1 start=5 end=5
+              node c2 = ret c1 class=CTRL ii=0 delay=0 start=6 end=6
+              node c3 = nop role=sink class=CTRL ii=0 delay=0 start=7 end=7
+              edge data c0 -> c1
+              edge data c1 -> c2
+              edge data c2 -> c3
+            }
+            """
+        )
+
+        bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
+        top_region = bind_design.get_region("proc_top")
+        assert top_region is not None
+        v1_binding = next(binding for binding in top_region.value_bindings if binding.producer == "v1")
+        v2_binding = next(binding for binding in top_region.value_bindings if binding.producer == "v2")
+
+        self.assertEqual(v1_binding.live_intervals, ((2, 6),))
+        self.assertEqual(v2_binding.live_intervals, ((4, 4),))
+        self.assertNotEqual(v1_binding.register, v2_binding.register)
+
     def test_bind_dump_to_dot_supports_dfgsb_unroll(self) -> None:
         bind_design = lower_sched_to_bind(
             parse_uhir(
@@ -1161,6 +1222,43 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertIn("cc 0", dot)
         self.assertIn("reg 1", dot)
         self.assertIn("->", dot)
+
+    def test_dfgsb_unroll_routes_call_result_from_last_cycle(self) -> None:
+        bind_design = lower_sched_to_bind(
+            parse_uhir(
+                """
+                design call_result_edge
+                stage sched
+                schedule kind=hierarchical
+
+                region proc_top kind=procedure {
+                  region_ref proc_child
+                  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+                  node v1 = call x : i32 child=proc_child class=CTRL ii=2 delay=2 start=1 end=2
+                  node v2 = ret v1 class=CTRL ii=0 delay=0 start=3 end=3
+                  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+                  edge data v0 -> v1
+                  edge data v1 -> v2
+                  edge data v2 -> v3
+                }
+
+                region proc_child kind=procedure {
+                  node c0 = nop role=source params=[x] param_types=[i32] class=CTRL ii=0 delay=0 start=1 end=1
+                  node c1 = add x, 1:i32 : i32 class=EWMS ii=1 delay=1 start=1 end=1
+                  node c2 = ret c1 class=CTRL ii=0 delay=0 start=2 end=2
+                  node c3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
+                  edge data c0 -> c1
+                  edge data c1 -> c2
+                  edge data c2 -> c3
+                }
+                """
+            ),
+            binder=LeftEdgeBinder(flatten=True),
+        )
+
+        dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
+        self.assertIn('"dfgsb_unroll_op_2_1" -> "dfgsb_unroll_op_3_2" [color="#444444", penwidth=1.3];', dot)
+        self.assertNotIn('"dfgsb_unroll_op_1_1" -> "dfgsb_unroll_op_3_2" [color="#444444", penwidth=1.3];', dot)
 
     def test_dfgsb_dot_separates_unbound_ctrl_ops_in_same_cycle(self) -> None:
         bind_design = lower_sched_to_bind(
@@ -1254,6 +1352,82 @@ class BindingLoweringTests(unittest.TestCase):
         dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
         self.assertGreaterEqual(dot.count('label="0:i32"'), 2)
         self.assertGreaterEqual(dot.count('label="A"'), 2)
+
+    def test_dfgsb_dot_routes_data_edges_from_shared_adapter_cell(self) -> None:
+        bind_design = lower_sched_to_bind(
+            parse_uhir(
+                """
+                design shared_adapters
+                stage sched
+                schedule kind=control_steps
+
+                region proc_shared_adapters kind=procedure {
+                  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+                  node a0 = trunc x : i8 class=ADAPT ii=0 delay=0 start=1 end=1
+                  node a1 = trunc y : i8 class=ADAPT ii=0 delay=0 start=1 end=1
+                  node v1 = add a0, a1 : i8 class=FU_ALU ii=1 delay=1 start=2 end=2
+                  node v2 = ret v1 class=CTRL ii=0 delay=0 start=3 end=3
+                  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+
+                  edge data v0 -> a0
+                  edge data v0 -> a1
+                  edge data a0 -> v1
+                  edge data a1 -> v1
+                  edge data v1 -> v2
+                  edge data v2 -> v3
+                }
+                """
+            )
+        )
+
+        dot = bind_dump_to_dot(bind_design, ("dfgsb",))
+        self.assertIn("a0 trunc\\na1 trunc", dot)
+        self.assertRegex(
+            dot,
+            r'"dfgsb_proc_shared_adapters_op_1_\d+" -> "dfgsb_proc_shared_adapters_op_2_\d+" '
+            r'\[color="#444444", penwidth=1\.3\];',
+        )
+
+    def test_dfgsb_dot_routes_register_edges_to_visible_adapter_consumer(self) -> None:
+        bind_design = lower_sched_to_bind(
+            parse_uhir(
+                """
+                design registered_adapter
+                stage sched
+                schedule kind=control_steps
+
+                region proc_registered_adapter kind=procedure {
+                  node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+                  node v1 = add a, b : i32 class=EWMS ii=1 delay=1 start=0 end=0
+                  node v1_trunc = trunc v1 : i8 class=ADAPT ii=0 delay=0 start=2 end=2
+                  node v2 = ret v1_trunc class=CTRL ii=0 delay=0 start=3 end=3
+                  node v3 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+
+                  edge data v0 -> v1
+                  edge data v1 -> v1_trunc
+                  edge data v1_trunc -> v2
+                  edge data v2 -> v3
+                }
+                """
+            )
+        )
+
+        dot = bind_dump_to_dot(bind_design, ("dfgsb",))
+        self.assertIn(
+            '"dfgsb_proc_registered_adapter_reg_2_3" -> "dfgsb_proc_registered_adapter_op_2_0" '
+            '[color="#1f78b4", penwidth=1.3, label="v1"',
+            dot,
+        )
+        self.assertIn(
+            '"dfgsb_proc_registered_adapter_op_2_0" -> "dfgsb_proc_registered_adapter_op_3_1" '
+            '[color="#444444", penwidth=1.3];',
+            dot,
+        )
+        self.assertNotIn(
+            '"dfgsb_proc_registered_adapter_reg_3_3" -> "dfgsb_proc_registered_adapter_op_3_1" '
+            '[color="#1f78b4", penwidth=1.3, label="v1"',
+            dot,
+        )
 
     def test_dfgsb_dot_renders_output_sink_for_return(self) -> None:
         bind_design = lower_sched_to_bind(

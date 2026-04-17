@@ -12,6 +12,8 @@ from uhls.backend.hls.uhir.model import UHIREdge, UHIRDesign, UHIRNode, UHIRRegi
 from uhls.backend.hls.uhir.timing import TimingExpr
 from uhls.utils.graph import intervals_overlap
 
+_NON_BINDABLE_CLASSES = frozenset({"CTRL", "ADAPT"})
+
 
 @dataclass(slots=True, frozen=True)
 class OperationBindingResult:
@@ -33,6 +35,8 @@ class BindingOccurrence:
     end: int
     domain: str
     branch_choices: frozenset[tuple[str, str]]
+    conflict_start: int | None = None
+    conflict_end: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -59,7 +63,7 @@ class OperationBinderBase(ABC):
         for region in design.regions:
             for node in region.nodes:
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 yield region, node
 
@@ -117,7 +121,7 @@ class OperationBinderBase(ABC):
         def visit_region(region: UHIRRegion, offset: int, branch_choices: tuple[tuple[str, str], ...], loop_domain: str | None) -> None:
             for node in region.nodes:
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 start, end = self.get_node_interval(region, node)
                 grouped[class_name][node.id].append(
@@ -148,7 +152,7 @@ class OperationBinderBase(ABC):
                 if node.result_type is None:
                     continue
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 consumers = (
                     self.get_flattened_value_consumers(design, region, node)
@@ -158,6 +162,13 @@ class OperationBinderBase(ABC):
                 if not consumers:
                     continue
                 live_start, live_end = self.get_value_interval(region, node, consumers)
+                conflict_start, conflict_end = self.get_value_conflict_interval(
+                    region,
+                    node,
+                    live_start,
+                    live_end,
+                    flatten=flatten,
+                )
                 value_type = self.get_value_type(region, node)
                 grouped[value_type][node.id].append(
                     BindingOccurrence(
@@ -167,6 +178,8 @@ class OperationBinderBase(ABC):
                         end=live_end + offset,
                         domain="global" if loop_domain is None else f"loop:{loop_domain}",
                         branch_choices=frozenset(branch_choices),
+                        conflict_start=conflict_start + offset,
+                        conflict_end=conflict_end + offset,
                     )
                 )
 
@@ -229,7 +242,7 @@ class OperationBinderBase(ABC):
             return False
         if not self._branch_choices_compatible(left.branch_choices, right.branch_choices):
             return False
-        return intervals_overlap((left.start, left.end), (right.start, right.end))
+        return intervals_overlap(_occurrence_conflict_interval(left), _occurrence_conflict_interval(right))
 
     def get_node_interval(self, region: UHIRRegion, node: UHIRNode) -> tuple[int, int]:
         """Return one bindable node's occupied inclusive interval."""
@@ -253,7 +266,7 @@ class OperationBinderBase(ABC):
     def get_node_class(self, region: UHIRRegion, node: UHIRNode) -> str:
         """Return one bindable node's allocated resource class."""
         class_name = node.attributes.get("class")
-        if not isinstance(class_name, str) or not class_name or class_name == "CTRL":
+        if not isinstance(class_name, str) or not class_name or class_name in _NON_BINDABLE_CLASSES:
             raise ValueError(f"bindable node '{region.id}/{node.id}' must declare one non-CTRL class")
         return class_name
 
@@ -372,14 +385,31 @@ class OperationBinderBase(ABC):
     def get_local_value_consumers(self, region: UHIRRegion, node: UHIRNode) -> list[ValueConsumerRef]:
         """Return one produced value's consumers that live inside the same SGU."""
         node_by_id = {candidate.id: candidate for candidate in region.nodes}
-        consumers: list[ValueConsumerRef] = []
+        outgoing_edges: dict[str, list[UHIREdge]] = defaultdict(list)
         for edge in self.iter_region_data_edges(region):
-            if edge.source != node.id:
-                continue
-            consumer = node_by_id[edge.target]
-            if consumer.opcode == "nop" and consumer.attributes.get("role") == "sink":
-                continue
-            consumers.append(ValueConsumerRef(region, consumer))
+            outgoing_edges[edge.source].append(edge)
+
+        consumers: list[ValueConsumerRef] = []
+        visited: set[str] = set()
+
+        def append_consumers(value_id: str) -> None:
+            if value_id in visited:
+                return
+            visited.add(value_id)
+            for edge in outgoing_edges.get(value_id, ()):
+                consumer = node_by_id[edge.target]
+                if consumer.opcode == "nop" and consumer.attributes.get("role") == "sink":
+                    continue
+                class_name = consumer.attributes.get("class")
+                if class_name == "ADAPT":
+                    prior_count = len(consumers)
+                    append_consumers(consumer.id)
+                    if len(consumers) == prior_count:
+                        consumers.append(ValueConsumerRef(region, consumer))
+                    continue
+                consumers.append(ValueConsumerRef(region, consumer))
+
+        append_consumers(node.id)
         return consumers
 
     def iter_bindable_values(self, design: UHIRDesign):
@@ -389,7 +419,7 @@ class OperationBinderBase(ABC):
                 if node.result_type is None:
                     continue
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 consumers = self.get_value_consumers(design, region, node)
                 if not consumers:
@@ -421,6 +451,27 @@ class OperationBinderBase(ABC):
         if live_end < live_start:
             raise ValueError(f"value '{region.id}/{producer.id}' has live_end < live_start")
         return live_start, live_end
+
+    def get_value_conflict_interval(
+        self,
+        region: UHIRRegion,
+        producer: UHIRNode,
+        live_start: int,
+        live_end: int,
+        *,
+        flatten: bool,
+    ) -> tuple[int, int]:
+        """Return the physical register occupancy used for value coloring.
+
+        Flattened hardware binding must avoid coalescing values whose possible
+        capture cycles collide. The emitted value-binding live interval remains
+        the logical consumer interval, while the conflict interval starts at the
+        producer's scheduled end to cover clocked capture before first use.
+        """
+        if not flatten:
+            return live_start, live_end
+        _producer_start, producer_end = self.get_node_interval(region, producer)
+        return min(producer_end, live_start), live_end
 
     def get_value_type(self, region: UHIRRegion, producer: UHIRNode) -> str:
         """Return one produced value's register type."""
@@ -542,6 +593,12 @@ def _node_children(node: UHIRNode) -> list[str]:
     return children
 
 
+def _occurrence_conflict_interval(occurrence: BindingOccurrence) -> tuple[int, int]:
+    start = occurrence.start if occurrence.conflict_start is None else occurrence.conflict_start
+    end = occurrence.end if occurrence.conflict_end is None else occurrence.conflict_end
+    return start, end
+
+
 def _root_region_ids(design: UHIRDesign) -> list[str]:
     referenced = {
         child_id
@@ -558,6 +615,8 @@ def _root_region_ids(design: UHIRDesign) -> list[str]:
 
 def _child_region_shift(node: UHIRNode, key: str) -> int:
     if key != "child":
+        return 0
+    if node.attributes.get("child_timebase") == "global":
         return 0
     node_start = node.attributes.get("start")
     if isinstance(node_start, int):

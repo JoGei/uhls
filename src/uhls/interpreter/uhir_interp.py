@@ -579,14 +579,26 @@ class UHIRInterpreter:
         incoming = node.attributes.get("incoming")
         if not isinstance(incoming, tuple) or len(incoming) != len(node.operands):
             raise InterpreterError(f"phi node '{node.id}' is missing valid incoming=[...] metadata")
+        if predecessor_label is not None:
+            for label, operand in zip(incoming, node.operands, strict=True):
+                if label == predecessor_label:
+                    return normalize_int(self._resolve_operand(operand, state), normalize_type(node.result_type))
         if predecessor_label is None:
+            fallback = self._resolve_latest_available_phi_operand(node, state)
+            if fallback is not None:
+                return fallback
             raise InterpreterError(f"phi node '{node.id}' requires one predecessor label")
-        for label, operand in zip(incoming, node.operands, strict=True):
-            if label == predecessor_label:
-                return normalize_int(self._resolve_operand(operand, state), normalize_type(node.result_type))
         raise InterpreterError(
             f"phi node '{node.id}' has no incoming value for predecessor '{predecessor_label}'"
         )
+
+    def _resolve_latest_available_phi_operand(self, node: UHIRNode, state: ExecutionState) -> int | None:
+        for operand in reversed(node.operands):
+            try:
+                return normalize_int(self._resolve_operand(operand, state), normalize_type(node.result_type))
+            except InterpreterError:
+                continue
+        return None
 
     def _assign_node(self, region_id: str, node: UHIRNode, value: int, state: ExecutionState) -> None:
         type_hint = normalize_type(node.result_type)

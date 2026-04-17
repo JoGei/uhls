@@ -6,7 +6,14 @@ import uhls.middleend.passes
 from uhls.frontend import lower_source_to_uir
 from uhls.interpreter import run_uir
 from uhls.middleend.passes.analyze import LivenessInfo, build_dfg, compute_dominators, detect_loops, dfg_pass, liveliness, liveliness_pass
-from uhls.middleend.passes.opt import CanonicalizeLoopsPass, SimplifyCFGPass, UnrollLoopsPass, inline_calls, simplify_cfg_function
+from uhls.middleend.passes.opt import (
+    CanonicalizeLoopsPass,
+    MovToAddZeroPass,
+    SimplifyCFGPass,
+    UnrollLoopsPass,
+    inline_calls,
+    simplify_cfg_function,
+)
 from uhls.middleend.passes.opt.const_prop import const_prop_function
 from uhls.middleend.passes.opt.copy_prop import copy_prop_function
 from uhls.middleend.passes.opt.cse import cse_function
@@ -66,6 +73,7 @@ class MiddleendPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "CopyPropPass"))
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "CSEPass"))
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "InlineCallsPass"))
+        self.assertTrue(hasattr(uhls.middleend.passes.opt, "MovToAddZeroPass"))
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "PruneFunctionsPass"))
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "SimplifyCFGPass"))
         self.assertTrue(hasattr(uhls.middleend.passes.opt, "UnrollLoopsPass"))
@@ -735,6 +743,48 @@ class OptPassTests(unittest.TestCase):
         self.assertIsInstance(result.blocks[-1].instructions[0], ConstOp)
         self.assertEqual(result.blocks[-1].instructions[0].value, 5)
         self.assertEqual(run_uir(result, {}).return_value, 5)
+
+    def test_mov_to_add_zero_rewrites_movs_for_all_destination_types(self) -> None:
+        function = Function(
+            name="mov_cleanup",
+            params=[
+                Parameter("a", "i32"),
+                Parameter("flag", "i1"),
+                Parameter("byte_in", "i8"),
+                Parameter("word_in", "i16"),
+                Parameter("packed_in", "u32"),
+            ],
+            return_type="i32",
+            blocks=[
+                Block(
+                    "entry",
+                    instructions=[
+                        UnaryOp("mov", "x", "i32", "a"),
+                        UnaryOp("mov", "flag_copy", "i1", "flag"),
+                        UnaryOp("mov", "byte_copy", "i8", "byte_in"),
+                        UnaryOp("mov", "word_copy", "i16", "word_in"),
+                        UnaryOp("mov", "packed_copy", "u32", "packed_in"),
+                    ],
+                    terminator=ReturnOp("x"),
+                )
+            ],
+        )
+
+        result = MovToAddZeroPass().run(function, PassContext())
+        verify_function(result)
+
+        for rewritten, expected_lhs, expected_type in zip(
+            result.blocks[0].instructions,
+            ("a", "flag", "byte_in", "word_in", "packed_in"),
+            ("i32", "i1", "i8", "i16", "u32"),
+            strict=True,
+        ):
+            self.assertIsInstance(rewritten, BinaryOp)
+            self.assertEqual(rewritten.opcode, "add")
+            self.assertEqual(rewritten.lhs, expected_lhs)
+            self.assertIsInstance(rewritten.rhs, Literal)
+            self.assertEqual(rewritten.rhs.value, 0)
+            self.assertEqual(str(rewritten.rhs.type), expected_type)
 
     def test_simplify_cfg_function_prunes_and_simplifies_cfg(self) -> None:
         function = Function(

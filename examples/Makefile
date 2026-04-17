@@ -5,6 +5,7 @@ export UHLS_ROOT ?= $(CURDIR)/..
 UHLS ?= $(UHLS_ROOT)/uhls
 DOT ?= dot
 YOSYS ?= yosys
+UHLS_DEPS := $(UHLS) $(shell find $(UHLS_ROOT)/src/uhls -type f \( -name '*.py' -o -name '*.json' \))
 
 STEM ?= dot4_relu
 SRC ?= $(STEM)/$(STEM).c
@@ -123,6 +124,17 @@ BIND_TRP_SVG := $(BUILD_DIR)/$(STEM).bind.trp.svg
 FSM_DOT := $(BUILD_DIR)/$(STEM).fsm.dot
 FSM_SVG := $(BUILD_DIR)/$(STEM).fsm.svg
 
+LEGALIZE_PASSES_EFFECTIVE := $(strip $(LEGALIZE_PASSES))
+ifeq ($(strip $(OPT_PASSES)),)
+ifeq ($(findstring mov_to_add_zero,$(LEGALIZE_PASSES_EFFECTIVE)),)
+ifneq ($(LEGALIZE_PASSES_EFFECTIVE),)
+LEGALIZE_PASSES_EFFECTIVE := $(LEGALIZE_PASSES_EFFECTIVE),mov_to_add_zero
+else
+LEGALIZE_PASSES_EFFECTIVE := mov_to_add_zero
+endif
+endif
+endif
+
 PIPELINE_ARTIFACTS := $(UIR) $(LEGALIZE_UIR) $(OPT_UIR) $(OPT2_UIR) $(SEQ_UHIR) $(GOPT_UHIR) $(ALLOC_UHIR) $(SCHED_UHIR) $(BIND_UHIR) $(FSM_UHIR) $(UGLIR) $(RTL)
 WRAPPED_PIPELINE_ARTIFACTS := $(PROT_WRAP_UGLIR) $(PROT_WRAP_RTL) $(PROT_WRAP_DRV)
 VIEW_ARTIFACTS := $(CFG_SVG) $(DFG_SVG) $(CDFG_SVG) $(SEQ_SVG) $(GOPT_SVG) $(ALLOC_SVG) $(BIND_SVG) $(BIND_COMPAT_SVG) $(BIND_CONFLICT_SVG) $(BIND_TRP_SVG) $(FSM_SVG) $(PROT_WRAP_MMIO) $(PROT_WRAP_MMIO_SVG)
@@ -130,7 +142,7 @@ ASIC_ARTIFACTS := $(ASIC_TOP) $(ASIC_SDC) $(ASIC_ORFS) $(ASIC_MACROS) $(ASIC_FLO
 
 .PHONY: all pipeline synth frontend middleend backend wrapped_backend wrapped views asic yosys_smoke orfs_run asic_gui asic_schem run_verilator clean
 
-all: synth views run_hw_interpret
+all: synth run_hw_interpret
 
 yosys: yosys_smoke
 
@@ -187,29 +199,46 @@ asic_gui: $(ASIC_ORFS_STAMP)
 asic_schem: $(ASIC_SCHEM_SVG)
 
 run_hw_interpret: $(UIR) $(PROT_WRAP_UGLIR)
-	$(UHLS) run $(UIR) --backend=$(RUN_BACKEND) --uglir $(PROT_WRAP_UGLIR)
+	@TMP_OUT="$$(mktemp)" ; \
+	STATUS=0 ; \
+	$(UHLS) run $(UIR) --backend=$(RUN_BACKEND) --uglir $(PROT_WRAP_UGLIR) >"$$TMP_OUT" 2>&1 || STATUS=$$? ; \
+	cat "$$TMP_OUT" ; \
+	if [ "$$STATUS" -ne 0 ]; then \
+		rm -f "$$TMP_OUT" ; \
+		exit "$$STATUS" ; \
+	fi ; \
+	RUN_RESULT="$$(awk '/^-?[0-9]+$$/ { value = $$0 } END { if (value != "") print value }' "$$TMP_OUT")" ; \
+	rm -f "$$TMP_OUT" ; \
+	if [ -z "$$RUN_RESULT" ]; then \
+		echo "error: could not determine hardware-backed run return value" >&2 ; \
+		exit 1 ; \
+	fi ; \
+	if [ "$$RUN_RESULT" -ne 0 ]; then \
+		echo "error: hardware-backed run returned $$RUN_RESULT" >&2 ; \
+		exit 1 ; \
+	fi
 
 $(BUILD_DIR):
 	mkdir -p $@
 
-$(UIR): $(SRC) | $(BUILD_DIR)
+$(UIR): $(SRC) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) parse $< -o $@
 
-$(LEGALIZE_UIR): $(UIR) | $(BUILD_DIR)
-	if [ -n "$(strip $(LEGALIZE_PASSES))" ]; then \
-		$(UHLS) opt $< -p $(LEGALIZE_PASSES) $(LEGALIZE_PASSES_ARGS) -o $@; \
+$(LEGALIZE_UIR): $(UIR) $(UHLS_DEPS) | $(BUILD_DIR)
+	if [ -n "$(strip $(LEGALIZE_PASSES_EFFECTIVE))" ]; then \
+		$(UHLS) opt $< -p $(LEGALIZE_PASSES_EFFECTIVE) $(LEGALIZE_PASSES_ARGS) -o $@; \
 	else \
 		cp $< $@; \
 	fi
 
-$(OPT_UIR): $(LEGALIZE_UIR) | $(BUILD_DIR)
+$(OPT_UIR): $(LEGALIZE_UIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	if [ -n "$(strip $(OPT_PASSES))" ]; then \
 		$(UHLS) opt $< -p $(OPT_PASSES) $(OPT_PASSES_ARGS) -o $@; \
 	else \
 		cp $< $@; \
 	fi
 
-$(OPT2_UIR): $(OPT_UIR) | $(BUILD_DIR)
+$(OPT2_UIR): $(OPT_UIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	if [ -n "$(strip $(OPT2_PASSES))" ]; then \
 		$(UHLS) opt $< -p $(OPT2_PASSES) $(OPT2_PASSES_ARGS) -o $@; \
 	else \
@@ -234,7 +263,7 @@ $(CDFG_DOT): $(OPT2_UIR) | $(BUILD_DIR)
 $(CDFG_SVG): $(CDFG_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(SEQ_UHIR): $(OPT2_UIR) | $(BUILD_DIR)
+$(SEQ_UHIR): $(OPT2_UIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) seq $< --top $(TOP) -o $@
 
 $(SEQ_DOT): $(SEQ_UHIR) | $(BUILD_DIR)
@@ -243,7 +272,7 @@ $(SEQ_DOT): $(SEQ_UHIR) | $(BUILD_DIR)
 $(SEQ_SVG): $(SEQ_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(GOPT_UHIR): $(SEQ_UHIR) | $(BUILD_DIR)
+$(GOPT_UHIR): $(SEQ_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) gopt $< -p $(GOPT_PASSES) $(GOPT_PASSES_ARGS) -o $@
 
 $(GOPT_DOT): $(GOPT_UHIR) | $(BUILD_DIR)
@@ -252,7 +281,7 @@ $(GOPT_DOT): $(GOPT_UHIR) | $(BUILD_DIR)
 $(GOPT_SVG): $(GOPT_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(ALLOC_UHIR): $(GOPT_UHIR) $(RES) $(VENDOR_RES) | $(BUILD_DIR)
+$(ALLOC_UHIR): $(GOPT_UHIR) $(RES) $(VENDOR_RES) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) alloc $< $(ALLOC_ARGS) -o $@
 
 $(ALLOC_DOT): $(ALLOC_UHIR) | $(BUILD_DIR)
@@ -261,10 +290,10 @@ $(ALLOC_DOT): $(ALLOC_UHIR) | $(BUILD_DIR)
 $(ALLOC_SVG): $(ALLOC_DOT) | $(BUILD_DIR)
 	$(DOT) -Tsvg $< -o $@
 
-$(SCHED_UHIR): $(ALLOC_UHIR) | $(BUILD_DIR)
+$(SCHED_UHIR): $(ALLOC_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) sched --algo $(SCHED_ALGO) $< -o $@
 
-$(BIND_UHIR): $(SCHED_UHIR) | $(BUILD_DIR)
+$(BIND_UHIR): $(SCHED_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) bind $< --algo $(BIND_ALGO) --flatten -o $@
 
 $(BIND_DOT): $(BIND_UHIR) | $(BUILD_DIR)
@@ -291,7 +320,7 @@ $(BIND_TRP_DOT): $(BIND_UHIR) | $(BUILD_DIR)
 $(BIND_TRP_SVG): $(BIND_TRP_DOT) | $(BUILD_DIR)
 	$(DOT) -Lg -Tsvg $< -o $@
 
-$(FSM_UHIR): $(BIND_UHIR) | $(BUILD_DIR)
+$(FSM_UHIR): $(BIND_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) fsm $< --encoding=$(FSM_ENCODING) -o $@
 
 $(FSM_DOT): $(FSM_UHIR) | $(BUILD_DIR)
@@ -300,19 +329,19 @@ $(FSM_DOT): $(FSM_UHIR) | $(BUILD_DIR)
 $(FSM_SVG): $(FSM_DOT) | $(BUILD_DIR)
 	$(DOT) -Lg -Tsvg $< -o $@
 
-$(UGLIR): $(FSM_UHIR) | $(BUILD_DIR)
+$(UGLIR): $(FSM_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) glue $(GLUE_ARGS) $< -o $@
 
-$(RTL): $(UGLIR) | $(BUILD_DIR)
+$(RTL): $(UGLIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) rtl $< --hdl=$(RTL_HDL) -o $@
 
-$(PROT_WRAP_UGLIR): $(FSM_UHIR) | $(BUILD_DIR)
+$(PROT_WRAP_UGLIR): $(FSM_UHIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) glue --wrap=$(GLUE_WRAP_NORM) --protocol=$(GLUE_PROTOCOL_NORM) $< -o $@
 
-$(PROT_WRAP_RTL): $(PROT_WRAP_UGLIR) | $(BUILD_DIR)
+$(PROT_WRAP_RTL): $(PROT_WRAP_UGLIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) rtl $< --hdl=$(RTL_HDL) -o $@
 
-$(PROT_WRAP_DRV): $(PROT_WRAP_UGLIR) | $(BUILD_DIR)
+$(PROT_WRAP_DRV): $(PROT_WRAP_UGLIR) $(UHLS_DEPS) | $(BUILD_DIR)
 	$(UHLS) drv $< --lang=$(DRV_LANG) -o $@
 
 $(PROT_WRAP_MMIO): $(PROT_WRAP_UGLIR) | $(BUILD_DIR)

@@ -98,6 +98,7 @@ from uhls.middleend.passes.opt import (
     CopyPropPass,
     DCEPass,
     InlineCallsPass,
+    MovToAddZeroPass,
     PruneFunctionsPass,
     SimplifyCFGPass,
     UnrollLoopsPass,
@@ -191,6 +192,13 @@ _OPT_PASS_SPECS: tuple[OptPassSpec, ...] = (
         factory=DCEPass,
         description="Remove operations whose results are unused and that have no required side effects.",
         example="uhls opt input.uir -p dce -o output.uir",
+    ),
+    OptPassSpec(
+        name="mov_to_add_zero",
+        factory=MovToAddZeroPass,
+        description="Rewrite mov aliases into explicit add-with-zero operations.",
+        example="uhls opt input.uir -p mov_to_add_zero -o output.uir",
+        aliases=("mov_add0",),
     ),
     OptPassSpec(
         name="prune_functions",

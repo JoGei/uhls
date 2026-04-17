@@ -357,7 +357,24 @@ def lower_fsm_to_uglir(design: UHIRDesign, component_library: dict[str, dict[str
             if entry_like and operand in phi_carries:
                 completion_steps = _loop_body_completion_steps(design, operand_region)
                 if completion_steps:
+                    operand_update_steps = _phi_carry_update_steps(
+                        design,
+                        operand,
+                        phi_carries,
+                        component_library,
+                    )
                     for update_step in completion_steps:
+                        state_code = top_state_codes.get(f"T{update_step}")
+                        if state_code is None:
+                            continue
+                        if update_step not in operand_update_steps:
+                            update_sources.append(
+                                (
+                                    _state_eq_expr(top_state_signal, state_code),
+                                    phi_carries[operand]["register"],
+                                )
+                            )
+                            continue
                         add_update_source(
                             update_step=update_step,
                             operand=operand,
@@ -1067,6 +1084,30 @@ def _phi_carry_specs(design: UHIRDesign) -> dict[str, dict[str, object]]:
 
 def _phi_carry_register_id(source_id: str) -> str:
     return f"phi_{source_id}"
+
+
+def _phi_carry_update_steps(
+    design: UHIRDesign,
+    source_id: str,
+    phi_carries: dict[str, dict[str, object]],
+    component_library: dict[str, dict[str, Any]] | None,
+) -> set[int]:
+    carry = phi_carries.get(source_id)
+    if carry is None:
+        return set()
+    incoming = tuple(carry["incoming"])
+    operands = tuple(carry["operands"])
+    entry_like = bool(incoming) and incoming[0] == "entry"
+    predecessor_update = _phi_carry_needs_predecessor_update(design, source_id)
+    update_steps: set[int] = set()
+    for operand in operands[1 if entry_like else 0:]:
+        operand_global_steps = _value_global_live_starts(design, operand)
+        for step in operand_global_steps:
+            if component_library is None or predecessor_update:
+                update_steps.add(max(step - 1, 0))
+            else:
+                update_steps.add(step)
+    return update_steps
 
 
 def _phi_carry_needs_predecessor_update(design: UHIRDesign, source_id: str) -> bool:
@@ -1846,7 +1887,8 @@ def _validate_memory_component_spec(
     actual_word_t = params.get("word_t")
     if actual_word_t is not None and actual_word_t != expected_word_t:
         raise ValueError(
-            f"memory port '{memory_name}' uses '{component_spec}' but top-level memref expects word_t={expected_word_t}"
+            f"memory port '{memory_name}' uses resident word_t={actual_word_t} in '{component_spec}' "
+            f"but the current memory model requires it to match memref element type {expected_word_t}"
         )
     actual_word_len = params.get("word_len")
     if expected_word_len is not None and actual_word_len is not None and actual_word_len != str(expected_word_len):
@@ -3061,6 +3103,18 @@ def _resolve_handoff_source(
     producer_region = region if local_producer is not None else _producer_region(design, value_id)
     identity_source = _identity_handoff_source(design, producer_region, producer_node)
     if identity_source is not None:
+        register = _register_for_value_at_step(design, value_id, consumer_start, occurrence_index=occurrence_index, region=region)
+        live_starts = _value_live_starts(design, value_id, region=producer_region)
+        if register is not None and consumer_start not in live_starts:
+            return _resolve_value_signal(
+                design,
+                value_id,
+                component_library,
+                occurrence_index,
+                consumer_start=consumer_start,
+                region=region,
+                allow_forward_handoff=False,
+            )
         operand_region, operand_value = identity_source
         return _resolve_handoff_source(
             design,
@@ -3356,7 +3410,7 @@ def _node_value_expr(
         if returned_value is None:
             return None
         child_region = design.get_region(node.attributes.get("child"))
-        producer_signal = _resolve_producer_signal(
+        value_signal = _resolve_value_signal(
             design,
             returned_value,
             component_library,
@@ -3364,9 +3418,9 @@ def _node_value_expr(
             consumer_start=consumer_start,
             region=child_region,
         )
-        if producer_signal is not None:
-            return producer_signal
-        return _resolve_value_signal(
+        if value_signal is not None:
+            return value_signal
+        return _resolve_producer_signal(
             design,
             returned_value,
             component_library,
@@ -3380,12 +3434,77 @@ def _node_value_expr(
         if isinstance(result_type, str) and result_type and ":" not in value:
             return f"{value}:{result_type}"
         return value
+    if node.opcode in {"sext", "zext", "trunc"} and len(node.operands) == 1:
+        operand_region, operand_value = _specialize_child_call_operand(design, region, node.operands[0])
+        operand_expr = _resolve_value_signal(
+            design,
+            operand_value,
+            component_library,
+            occurrence_index,
+            consumer_start=consumer_start,
+            region=operand_region,
+        )
+        source_type = node.attributes.get("source_type")
+        if not isinstance(source_type, str) or not source_type:
+            source_type = _value_type(design, operand_value, region=operand_region)
+        target_type = getattr(node, "result_type", None)
+        if isinstance(source_type, str) and isinstance(target_type, str):
+            return _adapter_expr(node.opcode, operand_expr, source_type, target_type)
+        return operand_expr
     if node.opcode == "sel" and len(node.operands) == 3:
         condition = _resolve_value_signal(design, node.operands[0], component_library, occurrence_index)
         true_value = _resolve_value_signal(design, node.operands[1], component_library, occurrence_index)
         false_value = _resolve_value_signal(design, node.operands[2], component_library, occurrence_index)
         return f"{condition} ? {true_value} : {false_value}"
     return None
+
+
+def _adapter_expr(opcode: str, operand_expr: str, source_type: str, target_type: str) -> str:
+    literal = _adapt_typed_literal(operand_expr, source_type, target_type)
+    if literal is not None:
+        return literal
+    source = _parse_integer_type(source_type)
+    target = _parse_integer_type(target_type)
+    if source is None or target is None:
+        return operand_expr
+    _source_signed, source_width = source
+    _target_signed, target_width = target
+    if source_width == target_width:
+        return operand_expr
+    if opcode == "trunc" or source_width > target_width:
+        return f"{operand_expr}[{target_width - 1}:0]"
+    if opcode == "zext":
+        return f"{{{target_width - source_width}'d0, {operand_expr}}}"
+    return f"{{{{{target_width - source_width}{{{operand_expr}[{source_width - 1}]}}}}, {operand_expr}}}"
+
+
+def _adapt_typed_literal(operand_expr: str, source_type: str, target_type: str) -> str | None:
+    match = re.fullmatch(r"(-?\d+):([iu]\d+)", operand_expr)
+    if match is None:
+        return None
+    source = _parse_integer_type(source_type)
+    target = _parse_integer_type(target_type)
+    if source is None or target is None:
+        return None
+    value = int(match.group(1))
+    source_signed, source_width = source
+    target_signed, target_width = target
+    source_mask = (1 << source_width) - 1
+    value &= source_mask
+    if source_signed and value >= (1 << (source_width - 1)):
+        value -= 1 << source_width
+    target_mask = (1 << target_width) - 1
+    value &= target_mask
+    if target_signed and value >= (1 << (target_width - 1)):
+        value -= 1 << target_width
+    return f"{value}:{target_type}"
+
+
+def _parse_integer_type(type_name: str) -> tuple[bool, int] | None:
+    match = re.fullmatch(r"([iu])(\d+)", type_name)
+    if match is None:
+        return None
+    return match.group(1) == "i", int(match.group(2))
 
 
 def _phi_handoff_operand_for_step(
@@ -3426,6 +3545,9 @@ def _producer_capture_steps_for_value(
     producer_region = region if region is not None else _producer_region(design, value_id)
     if producer_region is None:
         return _value_global_live_starts(design, value_id)
+    producer_node = _region_producer_node(producer_region, value_id)
+    if producer_node is not None and producer_node.id != value_id:
+        value_id = producer_node.id
     return _producer_global_capture_steps(
         design,
         producer_region.id,

@@ -12,6 +12,8 @@ from uhls.backend.hls.uhir.model import UHIREdge, UHIRDesign, UHIRNode, UHIRRegi
 from uhls.backend.hls.uhir.timing import TimingExpr
 from uhls.utils.graph import intervals_overlap
 
+_NON_BINDABLE_CLASSES = frozenset({"CTRL", "ADAPT"})
+
 
 @dataclass(slots=True, frozen=True)
 class OperationBindingResult:
@@ -61,7 +63,7 @@ class OperationBinderBase(ABC):
         for region in design.regions:
             for node in region.nodes:
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 yield region, node
 
@@ -119,7 +121,7 @@ class OperationBinderBase(ABC):
         def visit_region(region: UHIRRegion, offset: int, branch_choices: tuple[tuple[str, str], ...], loop_domain: str | None) -> None:
             for node in region.nodes:
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 start, end = self.get_node_interval(region, node)
                 grouped[class_name][node.id].append(
@@ -150,7 +152,7 @@ class OperationBinderBase(ABC):
                 if node.result_type is None:
                     continue
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 consumers = (
                     self.get_flattened_value_consumers(design, region, node)
@@ -264,7 +266,7 @@ class OperationBinderBase(ABC):
     def get_node_class(self, region: UHIRRegion, node: UHIRNode) -> str:
         """Return one bindable node's allocated resource class."""
         class_name = node.attributes.get("class")
-        if not isinstance(class_name, str) or not class_name or class_name == "CTRL":
+        if not isinstance(class_name, str) or not class_name or class_name in _NON_BINDABLE_CLASSES:
             raise ValueError(f"bindable node '{region.id}/{node.id}' must declare one non-CTRL class")
         return class_name
 
@@ -383,14 +385,31 @@ class OperationBinderBase(ABC):
     def get_local_value_consumers(self, region: UHIRRegion, node: UHIRNode) -> list[ValueConsumerRef]:
         """Return one produced value's consumers that live inside the same SGU."""
         node_by_id = {candidate.id: candidate for candidate in region.nodes}
-        consumers: list[ValueConsumerRef] = []
+        outgoing_edges: dict[str, list[UHIREdge]] = defaultdict(list)
         for edge in self.iter_region_data_edges(region):
-            if edge.source != node.id:
-                continue
-            consumer = node_by_id[edge.target]
-            if consumer.opcode == "nop" and consumer.attributes.get("role") == "sink":
-                continue
-            consumers.append(ValueConsumerRef(region, consumer))
+            outgoing_edges[edge.source].append(edge)
+
+        consumers: list[ValueConsumerRef] = []
+        visited: set[str] = set()
+
+        def append_consumers(value_id: str) -> None:
+            if value_id in visited:
+                return
+            visited.add(value_id)
+            for edge in outgoing_edges.get(value_id, ()):
+                consumer = node_by_id[edge.target]
+                if consumer.opcode == "nop" and consumer.attributes.get("role") == "sink":
+                    continue
+                class_name = consumer.attributes.get("class")
+                if class_name == "ADAPT":
+                    prior_count = len(consumers)
+                    append_consumers(consumer.id)
+                    if len(consumers) == prior_count:
+                        consumers.append(ValueConsumerRef(region, consumer))
+                    continue
+                consumers.append(ValueConsumerRef(region, consumer))
+
+        append_consumers(node.id)
         return consumers
 
     def iter_bindable_values(self, design: UHIRDesign):
@@ -400,7 +419,7 @@ class OperationBinderBase(ABC):
                 if node.result_type is None:
                     continue
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in _NON_BINDABLE_CLASSES:
                     continue
                 consumers = self.get_value_consumers(design, region, node)
                 if not consumers:

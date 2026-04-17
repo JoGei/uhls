@@ -137,6 +137,10 @@ def _enrich_ihp_memory_stub(component: dict[str, object], module_name: str) -> N
                 "ii": 1,
                 "d": 2,
                 "mode": "read",
+                "types": {
+                    "operand1": "i32",
+                    "return": "word_t",
+                },
                 "bind": {
                     "A_DLY": "true",
                     "A_MEN": "true",
@@ -150,6 +154,10 @@ def _enrich_ihp_memory_stub(component: dict[str, object], module_name: str) -> N
                 "ii": 1,
                 "d": 1,
                 "mode": "write",
+                "types": {
+                    "operand1": "i32",
+                    "operand2": "word_t",
+                },
                 "bind": {
                     "A_DLY": "true",
                     "A_MEN": "true",

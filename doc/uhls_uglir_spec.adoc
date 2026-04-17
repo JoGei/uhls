@@ -216,8 +216,25 @@ may become one concrete HDL instance like:
 DIV<W=8>
 ----
 
-The component library may also constrain which typed `µIR` operations one
+The component library should also declare which typed `µIR` operations one
 parameterized component instance may execute.
+Each support entry's `types` map is the resource contract:
+
+* `operandN` entries are the datatypes the resource expects at its input
+  boundary
+* `return` is the datatype the resource produces for the compiler to consume
+* the legacy key `result` may be accepted as an alias for `return`, but new
+  component libraries should prefer `return`
+
+Allocation and later glue lowering are responsible for provisioning operands
+that match the declared operand datatypes and for consuming the declared return
+datatype.
+If a semantic µIR operation has narrower or wider integer types than the
+selected support declares, `alloc` must materialize explicit µhIR
+resource-boundary adapters before glue lowering.
+These adapters are `class=ADAPT` µhIR nodes whose opcode is one of `sext`,
+`zext`, or `trunc`; their `source_type` and `target_type` attributes record
+the typed handoff being materialized.
 
 Example:
 
@@ -230,7 +247,7 @@ Example:
     "types": {
       "operand0": "base_t",
       "operand1": "base_t",
-      "result": "base_t"
+      "return": "base_t"
     }
   }
 }
@@ -241,7 +258,8 @@ This means:
 * `DIV<base_t=i8>` matches `div(i8, i8) -> i8`
 * `DIV<base_t=i32>` matches `div(i32, i32) -> i32`
 * `alloc` must not place one mismatched `i32` operation onto one `DIV<base_t=i8>`
-  instance
+  instance unless the µhIR `alloc` stage has materialized explicit
+  resource-boundary adapter nodes that satisfy the selected resource type model
 
 When the shared component library classifies components by `kind`, that kind
 should reflect the execution contract rather than only the implementation
@@ -337,7 +355,8 @@ state is part of the contract.
 The preferred style for parameterized functional units is:
 
 * use semantic component parameters such as `base_t`
-* express support compatibility in terms of `µIR` operand/result types
+* express support compatibility in terms of expected `µIR` operand datatypes and
+  declared return datatypes
 * map semantic parameters to foreign-HDL parameters only at the HDL linkage
   boundary
 
@@ -359,6 +378,11 @@ Current assumption:
 * one visible memory-interface bundle per top-level memory name
 * multiple scheduled/bound accesses may share that bundle when they are
   multiplexed over time onto the same bound memory resource
+* memory access operands reaching µglIR already satisfy the selected memory
+  resource contract, currently `i32` addresses and `word_t` load/store data
+  after any µhIR `class=ADAPT` nodes inserted by allocation
+* `word_t` is the physical resident word type; until sub-word memory lowering
+  exists, it must match the source `memref` element type
 * competing accesses to the same memory bundle in one FSMD state are currently
   invalid and should be rejected before or during µglIR lowering
 * explicit multi-port or arbitrated memory modeling is not yet part of µglIR

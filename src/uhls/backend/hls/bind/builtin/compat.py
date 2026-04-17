@@ -136,7 +136,7 @@ class CompatibilityBinder(OperationBinderBase):
         def visit_region(region, offset, branch_choices, loop_domain) -> None:
             for node in region.nodes:
                 class_name = node.attributes.get("class")
-                if not isinstance(class_name, str) or class_name == "CTRL":
+                if not isinstance(class_name, str) or class_name in {"CTRL", "ADAPT"}:
                     continue
                 start = node.attributes.get("start")
                 end = node.attributes.get("end")
@@ -180,7 +180,7 @@ class CompatibilityBinder(OperationBinderBase):
             for node in region.nodes:
                 value_type = node.result_type
                 class_name = node.attributes.get("class")
-                if value_type is None or not isinstance(class_name, str) or class_name == "CTRL":
+                if value_type is None or not isinstance(class_name, str) or class_name in {"CTRL", "ADAPT"}:
                     continue
                 consumers = self.get_local_value_consumers(region, node)
                 if not consumers:

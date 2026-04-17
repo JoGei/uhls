@@ -417,6 +417,7 @@ class ComponentLibraryImportTests(unittest.TestCase):
                 "ii": 1,
                 "d": 2,
                 "mode": "read",
+                "types": {"operand1": "i32", "return": "word_t"},
                 "bind": {
                     "A_DLY": "true",
                     "A_MEN": "true",
@@ -433,6 +434,7 @@ class ComponentLibraryImportTests(unittest.TestCase):
                 "ii": 1,
                 "d": 1,
                 "mode": "write",
+                "types": {"operand1": "i32", "operand2": "word_t"},
                 "bind": {
                     "A_DLY": "true",
                     "A_MEN": "true",

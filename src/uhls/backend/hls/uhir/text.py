@@ -804,7 +804,7 @@ def _validate_design(design: UHIRDesign) -> None:
             if design.stage in {"bind", "fsm"}:
                 bind_target = node.attributes.get("bind")
                 class_name = node.attributes.get("class")
-                if class_name != "CTRL":
+                if class_name not in {"CTRL", "ADAPT"}:
                     if not isinstance(bind_target, str) or bind_target not in resource_ids:
                         raise UHIRParseError(f"{design.stage}-stage node '{node.id}' must reference a declared resource")
                 elif bind_target is not None and (not isinstance(bind_target, str) or bind_target not in resource_ids):

@@ -503,7 +503,7 @@ def _collect_local_dfgsb_entries(design: UHIRDesign) -> list[_BoundOccurrence]:
             if node.result_type is None:
                 continue
             class_name = node.attributes.get("class")
-            if not isinstance(class_name, str) or class_name == "CTRL":
+            if not isinstance(class_name, str) or class_name in {"CTRL", "ADAPT"}:
                 continue
             all_consumers = helper.get_value_consumers(design, region, node)
             if not all_consumers:
@@ -1035,22 +1035,36 @@ def _render_dfgsb_dot_occurrence(
     layout: _DFGSBDotLayout,
 ) -> tuple[str, list[str]]:
     node_id = f"{cluster_id}_{row_kind}_{time_step}_{lane_index}"
+    _record_dfgsb_dot_occurrence_ports(layout, node_id, occupants, time_step)
     if len(occupants) == 1:
         entry = occupants[0]
         if entry.category == "operation":
             opcode = _compact_opcode(entry.opcode) if compact else entry.opcode
             label = f"{entry.display_id}\\n{opcode}\\n{_entry_bind_label(entry)}"
             shape = "ellipse"
-            layout.op_entry_nodes.setdefault((entry.region_id, entry.display_id), node_id)
-            layout.op_exit_nodes[(entry.region_id, entry.display_id)] = node_id
         else:
             label = _entry_bind_label(entry)
             shape = "box"
-            layout.reg_nodes[(entry.region_id, entry.display_id, time_step)] = node_id
         return node_id, [f'    "{node_id}" [label="{_escape_dot_label(label)}", shape={shape}, fillcolor="{fillcolor}"];']
 
     joined = "\\n".join(_entry_body(entry, compact=compact) for entry in occupants)
     return node_id, [f'    "{node_id}" [label="{_escape_dot_label(joined)}", shape=box, fillcolor="{fillcolor}"];']
+
+
+def _record_dfgsb_dot_occurrence_ports(
+    layout: _DFGSBDotLayout,
+    node_id: str,
+    occupants: list[_BoundOccurrence],
+    time_step: int,
+) -> None:
+    for entry in occupants:
+        if entry.category == "operation":
+            if entry.start == time_step:
+                layout.op_entry_nodes.setdefault((entry.region_id, entry.display_id), node_id)
+            if entry.end == time_step:
+                layout.op_exit_nodes[(entry.region_id, entry.display_id)] = node_id
+            continue
+        layout.reg_nodes[(entry.region_id, entry.display_id, time_step)] = node_id
 
 
 def _layout_op_entry_id(layout: _DFGSBDotLayout, region_id: str, display_id: str) -> str | None:
@@ -1137,6 +1151,7 @@ def _dot_dfgsb_region_output_edges(design: UHIRDesign, region: UHIRRegion, layou
 
 def _dot_dfgsb_region_data_edges(region: UHIRRegion, layout: _DFGSBDotLayout, helper: OperationBinderBase) -> list[str]:
     lines: list[str] = []
+    seen_edges: set[tuple[str, str]] = set()
     bound_producers = _bound_producer_node_ids(region)
     for node in region.nodes:
         if not _dfgsb_visible_opcode(node.opcode) or node.id in bound_producers:
@@ -1148,6 +1163,10 @@ def _dot_dfgsb_region_data_edges(region: UHIRRegion, layout: _DFGSBDotLayout, he
             target_id = _layout_op_entry_id(layout, region.id, target.id)
             if target_id is None:
                 continue
+            edge_key = (source_id, target_id)
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
             lines.append(f'  "{source_id}" -> "{target_id}" [color="#444444", penwidth=1.3];')
     return lines
 
@@ -1176,11 +1195,7 @@ def _dot_dfgsb_region_register_edges(
         producer_id = _layout_op_exit_id(layout, region.id, producer.id)
         if producer_id is None:
             continue
-        local_consumers = [
-            consumer
-            for consumer in helper.get_local_value_consumers(region, producer)
-            if _dfgsb_visible_opcode(consumer.node.opcode)
-        ]
+        local_consumers = _dfgsb_local_visible_consumers(region, producer, helper)
         external_consumers = [
             consumer
             for consumer in _dfgsb_value_consumers(design, region, producer, helper)
@@ -1273,7 +1288,8 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
     helper = OperationBinderBase()
     lines: list[str] = []
     seen_edges: set[tuple[str, str, str]] = set()
-    op_index: dict[tuple[str, str, str], str] = {}
+    op_entry_index: dict[tuple[str, str, str], str] = {}
+    op_exit_index: dict[tuple[str, str, str], str] = {}
     op_entries_by_node: dict[tuple[str, str], list[_BoundOccurrence]] = {}
     reg_entries_by_node: dict[tuple[str, str], list[_BoundOccurrence]] = {}
     producer_ref_by_name: dict[str, tuple[UHIRRegion, UHIRNode]] = {}
@@ -1285,11 +1301,15 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
 
     for entry in entries:
         if entry.category == "operation":
-            op_node_id = _layout_op_entry_id(layout, entry.region_id, entry.display_id)
-            if op_node_id is None:
+            op_entry_id = _layout_op_entry_id(layout, entry.region_id, entry.display_id)
+            op_exit_id = _layout_op_exit_id(layout, entry.region_id, entry.display_id)
+            if op_entry_id is None and op_exit_id is None:
                 continue
             suffix = _display_suffix(entry.node_id, entry.display_id)
-            op_index[(entry.region_id, entry.node_id, suffix)] = op_node_id
+            if op_entry_id is not None:
+                op_entry_index[(entry.region_id, entry.node_id, suffix)] = op_entry_id
+            if op_exit_id is not None:
+                op_exit_index[(entry.region_id, entry.node_id, suffix)] = op_exit_id
             op_entries_by_node.setdefault((entry.region_id, entry.node_id), []).append(entry)
         elif entry.category == "register":
             reg_entries_by_node.setdefault((entry.region_id, entry.node_id), []).append(entry)
@@ -1354,11 +1374,11 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
             if not _dfgsb_visible_opcode(node.opcode) or node.id in bound_producers:
                 continue
             for suffix in _suffixes_for_region_node(entries, region.id, node.id):
-                source_id = op_index.get((region.id, node.id, suffix))
+                source_id = op_exit_index.get((region.id, node.id, suffix))
                 if source_id is None:
                     continue
                 for target in _dfgsb_visible_targets(region, node.id, helper):
-                    target_id = op_index.get((region.id, target.id, suffix))
+                    target_id = op_entry_index.get((region.id, target.id, suffix))
                     if target_id is None:
                         continue
                     edge_key = (source_id, target_id, "data")
@@ -1382,18 +1402,14 @@ def _dot_dfgsb_unroll_edges(design: UHIRDesign, layout: _DFGSBDotLayout, entries
             ]
             if not producer_occurrences:
                 continue
-            consumers = [
-                consumer
-                for consumer in _dfgsb_value_consumers(design, region, producer, helper)
-                if _dfgsb_visible_opcode(consumer.node.opcode)
-            ]
+            consumers = _dfgsb_register_consumers(design, region, producer, helper)
             if not register_entries:
                 for suffix in _suffixes_for_region_node(entries, region.id, producer.id):
-                    source_id = op_index.get((region.id, producer.id, suffix))
+                    source_id = op_exit_index.get((region.id, producer.id, suffix))
                     if source_id is None:
                         continue
                     for target in _dfgsb_visible_targets(region, producer.id, helper):
-                        target_id = op_index.get((region.id, target.id, suffix))
+                        target_id = op_entry_index.get((region.id, target.id, suffix))
                         if target_id is None:
                             continue
                         edge_key = (source_id, target_id, "hidden")
@@ -1921,6 +1937,33 @@ def _dfgsb_value_consumers(
             continue
         seen.add(key)
         consumers.append(ValueConsumerRef(parent_region, parent_node, 0))
+    return consumers
+
+
+def _dfgsb_local_visible_consumers(
+    region: UHIRRegion,
+    producer: UHIRNode,
+    helper: OperationBinderBase,
+) -> list[ValueConsumerRef]:
+    return [ValueConsumerRef(region, target) for target in _dfgsb_visible_targets(region, producer.id, helper)]
+
+
+def _dfgsb_register_consumers(
+    design: UHIRDesign,
+    region: UHIRRegion,
+    producer: UHIRNode,
+    helper: OperationBinderBase,
+) -> list[ValueConsumerRef]:
+    consumers = _dfgsb_local_visible_consumers(region, producer, helper)
+    seen = {(consumer.region.id, consumer.node.id, consumer.start_shift) for consumer in consumers}
+    for consumer in _dfgsb_value_consumers(design, region, producer, helper):
+        if consumer.region.id == region.id or not _dfgsb_visible_opcode(consumer.node.opcode):
+            continue
+        key = (consumer.region.id, consumer.node.id, consumer.start_shift)
+        if key in seen:
+            continue
+        seen.add(key)
+        consumers.append(consumer)
     return consumers
 
 

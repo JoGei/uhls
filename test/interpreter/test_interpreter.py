@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass, field
 
-from uhls.backend.hls.uhir import create_builtin_gopt_pass, lower_module_to_seq, run_gopt_passes
+from uhls.backend.hls.uhir import create_builtin_gopt_pass, lower_module_to_seq, parse_uhir, run_gopt_passes
 from uhls.interpreter import run_uhir, run_uir
 from uhls.middleend.uir import BinaryOp, Block as UIRBlock, CallOp, Function as UIRFunction, Module, Parameter, ReturnOp, parse_module
 
@@ -429,6 +429,46 @@ class InterpreterTests(unittest.TestCase):
         )
 
         self.assertEqual(result.return_value, 10)
+
+    def test_uhir_executes_parsed_seq_arithmetic_and_memory(self) -> None:
+        """Seq-stage µhIR text should run directly through the µhIR interpreter."""
+
+        design = parse_uhir(
+            """
+            design direct_seq
+            stage seq
+            input  A : memref<i32, 2>
+            input  x : i32
+            output result : i32
+            const  K = 3 : i32
+
+            region proc_direct_seq kind=procedure {
+              node v0 = nop role=source
+              node v1 = load A[1:i32] : i32
+              node v2 = add v1, x : i32
+              node v3 = add v2, K : i32
+              node v4 = store A[0:i32], v3
+              node v5 = ret v3
+              node v6 = nop role=sink
+
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+              edge data v4 -> v5
+              edge data v5 -> v6
+            }
+            """
+        )
+
+        result = run_uhir(
+            design,
+            arguments={"x": 5},
+            arrays={"A": {"data": [0, 7], "element_type": "i32"}},
+        )
+
+        self.assertEqual(result.return_value, 15)
+        self.assertEqual(result.state.memory.snapshot()["A"], [15, 7])
 
     def test_uhir_executes_explicit_static_loop_after_gopt(self) -> None:
         """Seq-stage µhIR should execute explicit/static loop dialect forms too."""

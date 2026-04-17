@@ -31,10 +31,10 @@ jobs:
     container: ${{ matrix.container.name }}:${{ matrix.container.version }}-${{ matrix.os.name }}-${{ matrix.os.version }}
 
     steps:
-      - name: install git on container
-        run: |
-          apt update && apt install -y git
-
+      # provided through eda-osic-tools
+      #- name: install git on container
+      #  run: |
+      #    apt update && apt install -y git
       - name: Clone repo
         uses: actions/checkout@v4
         with:
@@ -91,10 +91,10 @@ jobs:
     container: ${{ matrix.container.name }}:${{ matrix.container.version }}-${{ matrix.os.name }}-${{ matrix.os.version }}
 
     steps:
-      - name: install git on container
-        run: |
-          apt update && apt install -y git
-
+      # provided through eda-osic-tools
+      #- name: install git on container
+      #  run: |
+      #    apt update && apt install -y git
       - name: Clone repo
         uses: actions/checkout@v4
         with:
@@ -154,9 +154,10 @@ jobs:
     container: ${{ matrix.container.name }}:${{ matrix.container.version }}-${{ matrix.os.name }}-${{ matrix.os.version }}
 
     steps:
-      - name: install git on container
-        run: |
-          apt update && apt install -y git
+      # provided through eda-osic-tools
+      #- name: install git on container
+      #  run: |
+      #    apt update && apt install -y git
 
       - name: Clone repo
         uses: actions/checkout@v4

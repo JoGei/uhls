@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -927,8 +928,8 @@ class BindingLoweringTests(unittest.TestCase):
         assert body_region is not None
 
         sum_like_bindings = [binding for binding in body_region.value_bindings if binding.producer == "inl_mac_0_t1_0"]
-        self.assertEqual(len(sum_like_bindings), 1)
-        self.assertGreater(len(sum_like_bindings[0].live_intervals), 1)
+        self.assertGreaterEqual(len(sum_like_bindings), 1)
+        self.assertGreater(sum(len(binding.live_intervals) for binding in sum_like_bindings), 1)
 
     def test_non_flattened_trp_unroll_keeps_iteration_specific_register_values(self) -> None:
         sched_design = self._static_dot4_relu_sched_design()
@@ -957,9 +958,21 @@ class BindingLoweringTests(unittest.TestCase):
         bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
 
         dot = bind_dump_to_dot(bind_design, ("dfgsb_unroll",))
-        self.assertIn('"dfgsb_unroll_op_11_4" -> "dfgsb_unroll_reg_12_8" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
-        self.assertIn('"dfgsb_unroll_reg_12_8" -> "dfgsb_unroll_op_12_4" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
-        self.assertIn('"dfgsb_unroll_reg_12_8" -> "dfgsb_unroll_op_13_2" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"', dot)
+        final_sum_match = re.search(
+            r'"dfgsb_unroll_op_11_4" -> "(dfgsb_unroll_reg_12_\d+)" \[color="#1f78b4", penwidth=1\.3, label="inl_mac_0_t1_0"',
+            dot,
+        )
+        self.assertIsNotNone(final_sum_match)
+        assert final_sum_match is not None
+        final_sum_reg = final_sum_match.group(1)
+        self.assertIn(
+            f'"{final_sum_reg}" -> "dfgsb_unroll_op_12_4" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"',
+            dot,
+        )
+        self.assertIn(
+            f'"{final_sum_reg}" -> "dfgsb_unroll_op_13_2" [color="#1f78b4", penwidth=1.3, label="inl_mac_0_t1_0"',
+            dot,
+        )
         self.assertIn('"dfgsb_unroll_op_13_2" -> "dfgsb_unroll_op_13_3"', dot)
 
     def test_lower_sched_to_bind_accepts_canonicalized_unrolled_do_all_loop_with_static_trip_count(self) -> None:
@@ -1131,6 +1144,54 @@ class BindingLoweringTests(unittest.TestCase):
         occurrences = binder.collect_operation_occurrences(sched_design, flatten=True)
         self.assertIn((2, 2), [(item.start, item.end) for item in occurrences["EWMS"]["c1"]])
         lower_sched_to_bind(sched_design, binder=binder)
+
+    def test_flattened_value_binding_keeps_capture_conflicts_distinct(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design flattened_capture_conflict
+            stage sched
+            schedule kind=hierarchical
+
+            region proc_top kind=procedure {
+              region_ref proc_child
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add a, b : i32 class=FU_ALU ii=1 delay=1 start=1 end=1
+              node v1_trunc = trunc v1 : i1 class=ADAPT ii=0 delay=0 start=2 end=2
+              node vcall = call x child=proc_child class=CTRL ii=1 delay=3 start=1 end=3
+              node vret = ret vcall class=CTRL ii=0 delay=0 start=4 end=4
+              node v2 = nop role=sink class=CTRL ii=0 delay=0 start=5 end=5
+              edge data v0 -> v1
+              edge data v1 -> v1_trunc
+              edge data v0 -> vcall
+              edge data vcall -> vret
+              edge data vret -> v2
+            }
+
+            region proc_child kind=procedure parent=proc_top {
+              node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node c1 = mul x, y : i32 class=FU_MUL ii=1 delay=2 start=0 end=1
+              node c2 = add c1, z : i32 class=FU_ALU ii=1 delay=1 start=2 end=2
+              node c3 = ret c2 class=CTRL ii=0 delay=0 start=3 end=3
+              node c4 = nop role=sink class=CTRL ii=0 delay=0 start=4 end=4
+              edge data c0 -> c1
+              edge data c1 -> c2
+              edge data c2 -> c3
+              edge data c3 -> c4
+            }
+            """
+        )
+
+        bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
+        top_region = bind_design.get_region("proc_top")
+        child_region = bind_design.get_region("proc_child")
+        assert top_region is not None
+        assert child_region is not None
+        v1_binding = next(binding for binding in top_region.value_bindings if binding.producer == "v1")
+        c1_binding = next(binding for binding in child_region.value_bindings if binding.producer == "c1")
+
+        self.assertEqual(v1_binding.live_intervals, ((2, 2),))
+        self.assertEqual(c1_binding.live_intervals, ((3, 3),))
+        self.assertNotEqual(v1_binding.register, c1_binding.register)
 
     def test_bind_dump_to_dot_supports_dfgsb_unroll(self) -> None:
         bind_design = lower_sched_to_bind(

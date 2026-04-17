@@ -559,6 +559,8 @@ def _root_region_ids(design: UHIRDesign) -> list[str]:
 def _child_region_shift(node: UHIRNode, key: str) -> int:
     if key != "child":
         return 0
+    if node.attributes.get("child_timebase") == "global":
+        return 0
     node_start = node.attributes.get("start")
     if isinstance(node_start, int):
         return node_start

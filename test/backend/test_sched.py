@@ -189,6 +189,53 @@ class SchedulingLoweringTests(unittest.TestCase):
         self.assertEqual(callee.latency, 3)
         self.assertEqual(caller.latency, 10)
 
+    def test_lower_alloc_to_sched_instantiates_shared_call_regions(self) -> None:
+        alloc_design = parse_uhir(
+            """
+            design shared_calls
+            stage alloc
+
+            region proc_caller kind=procedure {
+              region_ref proc_callee
+              node v0 = nop role=source class=CTRL ii=0 delay=0
+              node v1 = call callee, x : i32 child=proc_callee class=CTRL ii=0 delay=0
+              node v2 = call callee, v1 : i32 child=proc_callee class=CTRL ii=0 delay=0
+              node v3 = ret v2 class=CTRL ii=0 delay=0
+              node v4 = nop role=sink class=CTRL ii=0 delay=0
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+            }
+
+            region proc_callee kind=procedure {
+              node c0 = nop role=source class=CTRL ii=0 delay=0
+              node c1 = add x, 1 : i32 class=FU_FAST_ADD ii=1 delay=1
+              node c2 = ret c1 class=CTRL ii=0 delay=0
+              node c3 = nop role=sink class=CTRL ii=0 delay=0
+              edge data c0 -> c1
+              edge data c1 -> c2
+              edge data c2 -> c3
+            }
+            """
+        )
+
+        sched_design = lower_alloc_to_sched(alloc_design)
+
+        caller = sched_design.get_region("proc_caller")
+        self.assertIsNotNone(caller)
+        assert caller is not None
+        call_children = [node.attributes["child"] for node in caller.nodes if node.opcode == "call"]
+        self.assertEqual(call_children[0], "proc_callee")
+        self.assertEqual(len(set(call_children)), 2)
+        self.assertIn(call_children[1], [ref.target for ref in caller.region_refs])
+        for child_id in call_children:
+            child = sched_design.get_region(child_id)
+            self.assertIsNotNone(child)
+            assert child is not None
+            self.assertEqual(child.kind, "procedure")
+            self.assertIsNotNone(child.latency)
+
     def test_lower_alloc_to_sched_accepts_symbolic_schedule_result_for_flat_region(self) -> None:
         alloc_design = lower_seq_to_alloc(
             lower_module_to_seq(

@@ -19,22 +19,22 @@
         "y": { "dir": "output", "type": "i32" }
       },
       "supports": {
-        "add": { "ii": 1, "d": 1, "opcode": 0, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "and": { "ii": 1, "d": 1, "opcode": 1, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "eq": { "ii": 1, "d": 1, "opcode": 2, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "ge": { "ii": 1, "d": 1, "opcode": 3, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "gt": { "ii": 1, "d": 1, "opcode": 4, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "le": { "ii": 1, "d": 1, "opcode": 5, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "lt": { "ii": 1, "d": 1, "opcode": 6, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "mov": { "ii": 1, "d": 1, "opcode": 7, "bind": { "a": "operand0", "y": "result" } },
-        "ne": { "ii": 1, "d": 1, "opcode": 8, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "neg": { "ii": 1, "d": 1, "opcode": 9, "bind": { "a": "operand0", "y": "result" } },
-        "not": { "ii": 1, "d": 1, "opcode": 10, "bind": { "a": "operand0", "y": "result" } },
-        "or": { "ii": 1, "d": 1, "opcode": 11, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "shl": { "ii": 1, "d": 1, "opcode": 12, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "shr": { "ii": 1, "d": 1, "opcode": 13, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "sub": { "ii": 1, "d": 1, "opcode": 14, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
-        "xor": { "ii": 1, "d": 1, "opcode": 15, "bind": { "a": "operand0", "b": "operand1", "y": "result" } }
+        "add": { "ii": 1, "d": 1, "opcode": 0, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "and": { "ii": 1, "d": 1, "opcode": 1, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "eq": { "ii": 1, "d": 1, "opcode": 2, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "ge": { "ii": 1, "d": 1, "opcode": 3, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "gt": { "ii": 1, "d": 1, "opcode": 4, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "le": { "ii": 1, "d": 1, "opcode": 5, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "lt": { "ii": 1, "d": 1, "opcode": 6, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "mov": { "ii": 1, "d": 1, "opcode": 7, "types": { "operand0": "i32", "return": "i32" }, "bind": { "a": "operand0", "y": "result" } },
+        "ne": { "ii": 1, "d": 1, "opcode": 8, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "neg": { "ii": 1, "d": 1, "opcode": 9, "types": { "operand0": "i32", "return": "i32" }, "bind": { "a": "operand0", "y": "result" } },
+        "not": { "ii": 1, "d": 1, "opcode": 10, "types": { "operand0": "i32", "return": "i32" }, "bind": { "a": "operand0", "y": "result" } },
+        "or": { "ii": 1, "d": 1, "opcode": 11, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "shl": { "ii": 1, "d": 1, "opcode": 12, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "shr": { "ii": 1, "d": 1, "opcode": 13, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "sub": { "ii": 1, "d": 1, "opcode": 14, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } },
+        "xor": { "ii": 1, "d": 1, "opcode": 15, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y": "result" } }
       }
     },
     "GEN_MUL_PSEUDOPIPE_II1D3": {
@@ -58,7 +58,7 @@
         "y_lo": { "dir": "output", "type": "i32" }
       },
       "supports": {
-        "mul": { "ii": 1, "d": 2, "bind": { "a": "operand0", "b": "operand1", "y_lo": "result" } }
+        "mul": { "ii": 1, "d": 2, "types": { "operand0": "i32", "operand1": "i32", "return": "i32" }, "bind": { "a": "operand0", "b": "operand1", "y_lo": "result" } }
       }
     },
     "GEN_DIV_PSEUDOPIPE_II1D3": {
@@ -93,14 +93,14 @@
           "ii": 1,
           "d": 3,
           "opcode": 0,
-          "types": { "operand0": "base_t", "operand1": "base_t", "result": "base_t" },
+          "types": { "operand0": "base_t", "operand1": "base_t", "return": "base_t" },
           "bind": { "a": "operand0", "b": "operand1", "div": "result" }
         },
         "mod": {
           "ii": 1,
           "d": 3,
           "opcode": 1,
-          "types": { "operand0": "base_t", "operand1": "base_t", "result": "base_t" },
+          "types": { "operand0": "base_t", "operand1": "base_t", "return": "base_t" },
           "bind": { "a": "operand0", "b": "operand1", "mod": "result" }
         }
       }

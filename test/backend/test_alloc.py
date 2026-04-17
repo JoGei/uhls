@@ -370,6 +370,81 @@ class AllocationLoweringTests(unittest.TestCase):
         self.assertEqual(param_adapter.attributes["source_type"], "i8")
         self.assertEqual(param_adapter.result_type, "i32")
 
+    def test_lower_seq_to_alloc_materializes_memory_load_type_adapters(self) -> None:
+        seq_design = parse_uhir(
+            """
+            design typed_load
+            stage seq
+            input  A : memref<i32, 4>
+            input  i : i8
+            output result : i8
+
+            region proc_typed_load kind=procedure {
+              node v0 = nop role=source
+              node v1 = load A, i : i8
+              node v2 = ret v1
+              node v3 = nop role=sink
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+            }
+            """
+        )
+
+        alloc_design = lower_seq_to_alloc(seq_design, executability_graph=_memory_executability_graph())
+        proc = alloc_design.get_region("proc_typed_load")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+
+        addr_adapter = next(node for node in proc.nodes if node.opcode == "sext" and node.operands == ("i",))
+        load_node = next(node for node in proc.nodes if node.id == "v1")
+        result_adapter = next(node for node in proc.nodes if node.opcode == "trunc" and node.operands == ("v1",))
+        ret_node = next(node for node in proc.nodes if node.id == "v2")
+
+        self.assertEqual(addr_adapter.result_type, "i32")
+        self.assertEqual(load_node.result_type, "i32")
+        self.assertEqual(result_adapter.result_type, "i8")
+        self.assertEqual(load_node.operands, ("A", addr_adapter.id))
+        self.assertEqual(ret_node.operands, (result_adapter.id,))
+
+    def test_lower_seq_to_alloc_materializes_memory_store_type_adapters(self) -> None:
+        seq_design = parse_uhir(
+            """
+            design typed_store
+            stage seq
+            input  C : memref<i32, 4>
+            input  i : i16
+            input  x : i8
+            output result : i32
+
+            region proc_typed_store kind=procedure {
+              node v0 = nop role=source
+              node v1 = store C, i, x
+              node v2 = const 0 : i32
+              node v3 = ret v2
+              node v4 = nop role=sink
+              edge data v0 -> v1
+              edge data v1 -> v2
+              edge data v2 -> v3
+              edge data v3 -> v4
+            }
+            """
+        )
+
+        alloc_design = lower_seq_to_alloc(seq_design, executability_graph=_memory_executability_graph())
+        proc = alloc_design.get_region("proc_typed_store")
+        self.assertIsNotNone(proc)
+        assert proc is not None
+
+        addr_adapter = next(node for node in proc.nodes if node.opcode == "sext" and node.operands == ("i",))
+        data_adapter = next(node for node in proc.nodes if node.opcode == "sext" and node.operands == ("x",))
+        store_node = next(node for node in proc.nodes if node.id == "v1")
+
+        self.assertEqual(addr_adapter.attributes["target_type"], "i32")
+        self.assertEqual(data_adapter.attributes["source_type"], "i8")
+        self.assertEqual(data_adapter.result_type, "i32")
+        self.assertEqual(store_node.operands, ("C", addr_adapter.id, data_adapter.id))
+
     def test_lower_seq_to_alloc_autoram_selects_vendor_memory_macro(self) -> None:
         seq_design = parse_uhir(
             """

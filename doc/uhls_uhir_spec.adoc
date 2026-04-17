@@ -758,6 +758,30 @@ explicitly in the allocated µhIR graph.
 Allocation must not leave this adaptation implicit for µglIR or RTL lowering to
 guess later.
 
+Memory supports use the same `types` mechanism, but with the logical memory
+object itself kept outside the scalar resource type contract.
+The `word_t` parameter is the physical resident word type of the selected
+memory resource.
+For the current one-element-per-resident-word memory model:
+
+* `load <mem>, <addr> : <semantic-type>` expects `operand1=i32` for the address
+  and `return=word_t` for the physical memory word returned by the selected
+  memory resource
+* `store <mem>, <addr>, <value>` expects `operand1=i32` for the address and
+  `operand2=word_t` for the physical memory word written to the selected memory
+  resource
+
+The `word_t` parameter is resolved from the selected memory component
+specialization, for example `GEN_FF_MEM<word_t=i32,word_len=4>`.
+Until sub-word memory lowering exists, `word_t` must match the element type of
+the top-level `memref<T, N>`.
+If the semantic address, loaded value, or stored value type differs from the
+selected memory contract by a legal integer adaptation, `alloc` must materialize
+the same `sext`, `zext`, or `trunc` adapter nodes used for arithmetic resources.
+Sub-word lane extraction, byte-enable generation, and read-modify-write
+adaptation for multiple resident widths are intentionally left to a later
+memory model extension.
+
 === Required elements
 
 A valid `alloc` file must contain:

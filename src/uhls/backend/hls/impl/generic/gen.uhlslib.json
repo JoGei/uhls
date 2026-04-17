@@ -134,8 +134,8 @@
         "rdata": { "dir": "output", "type": "word_t" }
       },
       "supports": {
-        "load": { "ii": 1, "d": 1, "mode": "read", "bind": { "addr": "operand1", "rdata": "result", "we": "false" } },
-        "store": { "ii": 1, "d": 1, "mode": "write", "bind": { "addr": "operand1", "wdata": "operand2", "we": "true" } }
+        "load": { "ii": 1, "d": 1, "mode": "read", "types": { "operand1": "i32", "return": "word_t" }, "bind": { "addr": "operand1", "rdata": "result", "we": "false" } },
+        "store": { "ii": 1, "d": 1, "mode": "write", "types": { "operand1": "i32", "operand2": "word_t" }, "bind": { "addr": "operand1", "wdata": "operand2", "we": "true" } }
       }
     }
   }

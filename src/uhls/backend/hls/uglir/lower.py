@@ -1846,7 +1846,8 @@ def _validate_memory_component_spec(
     actual_word_t = params.get("word_t")
     if actual_word_t is not None and actual_word_t != expected_word_t:
         raise ValueError(
-            f"memory port '{memory_name}' uses '{component_spec}' but top-level memref expects word_t={expected_word_t}"
+            f"memory port '{memory_name}' uses resident word_t={actual_word_t} in '{component_spec}' "
+            f"but the current memory model requires it to match memref element type {expected_word_t}"
         )
     actual_word_len = params.get("word_len")
     if expected_word_len is not None and actual_word_len is not None and actual_word_len != str(expected_word_len):

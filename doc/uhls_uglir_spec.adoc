@@ -378,6 +378,11 @@ Current assumption:
 * one visible memory-interface bundle per top-level memory name
 * multiple scheduled/bound accesses may share that bundle when they are
   multiplexed over time onto the same bound memory resource
+* memory access operands reaching µglIR already satisfy the selected memory
+  resource contract, currently `i32` addresses and `word_t` load/store data
+  after any µhIR `class=ADAPT` nodes inserted by allocation
+* `word_t` is the physical resident word type; until sub-word memory lowering
+  exists, it must match the source `memref` element type
 * competing accesses to the same memory bundle in one FSMD state are currently
   invalid and should be rejected before or during µglIR lowering
 * explicit multi-port or arbitrated memory modeling is not yet part of µglIR

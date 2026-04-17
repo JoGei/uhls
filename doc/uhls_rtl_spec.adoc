@@ -640,6 +640,11 @@ The first bare-core memory contract remains intentionally simple:
 * one access per memory bundle per FSMD state
 * multiple accesses are allowed only when they are multiplexed over time by the
   schedule / bind / FSMD
+* address and data signals use the selected memory resource contract after
+  allocation-time adapters, currently `i32` addresses and the memory resource's
+  `word_t` data type
+* `word_t` is the physical resident word type and, until sub-word memory
+  lowering exists, must match the source `memref` element type
 
 This matches the existing single-interface assumption already used in `uglir`.
 

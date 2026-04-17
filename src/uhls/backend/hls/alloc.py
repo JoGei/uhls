@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import re
 
 from uhls.backend.hls.impl import MemoryPolicy, select_memory_implementation
-from uhls.backend.hls.lib import format_component_spec
+from uhls.backend.hls.lib import format_component_spec, parse_component_spec
 from uhls.backend.hls.uhir.model import (
     UHIRConstant,
     UHIRDesign,
@@ -713,6 +713,9 @@ def _allocate_node(
             else:
                 attributes["ii"] = memory_choice.store_ii
                 attributes["delay"] = memory_choice.store_delay
+            plan = _infer_memory_candidate_plan(node, memory_choice, value_types)
+            if plan.adapters:
+                attributes["_allocation_plan"] = plan
             return UHIRNode(node.id, node.opcode, node.operands, node.result_type, attributes)
 
     node_candidates = candidates.get(operation)
@@ -753,6 +756,52 @@ def _choose_typed_allocation_candidate(
     )
 
 
+def _infer_memory_candidate_plan(
+    node: UHIRNode,
+    memory_choice: object,
+    value_types: dict[str, str],
+) -> AllocationPlan:
+    _component_name, params = parse_component_spec(memory_choice.component_spec)
+    word_type = params.get("word_t")
+    if not isinstance(word_type, str) or not word_type:
+        raise ValueError(
+            f"memory allocation for node '{node.id}' selected '{memory_choice.component_spec}' without word_t"
+        )
+    memref_type = value_types.get(node.operands[0]) if node.operands else None
+    if isinstance(memref_type, str) and memref_type.startswith("memref<"):
+        element_type, _depth_words = _parse_memref_type(memref_type)
+        if element_type != word_type:
+            raise ValueError(
+                f"memory allocation for node '{node.id}' selected resident word_t={word_type} for "
+                f"memref element type {element_type}; the current memory model requires one logical "
+                "element per resident word"
+            )
+    if node.opcode == "load":
+        type_constraints = (("operand1", "i32"), ("return", word_type))
+        candidate = AllocationCandidate(
+            memory_choice.component_spec,
+            memory_choice.load_ii,
+            memory_choice.load_delay,
+            type_constraints,
+        )
+    elif node.opcode == "store":
+        type_constraints = (("operand1", "i32"), ("operand2", word_type))
+        candidate = AllocationCandidate(
+            memory_choice.component_spec,
+            memory_choice.store_ii,
+            memory_choice.store_delay,
+            type_constraints,
+        )
+    else:
+        raise AssertionError(f"unexpected memory opcode '{node.opcode}'")
+    plan = _infer_candidate_plan(candidate, node, value_types)
+    if plan is None:
+        raise ValueError(
+            f"no typed memory allocation available for node '{node.id}' with resource '{memory_choice.component_spec}'"
+        )
+    return plan
+
+
 def _design_value_types(design: UHIRDesign) -> dict[str, str]:
     value_types: dict[str, str] = {}
     for port in [*design.inputs, *design.outputs]:
@@ -760,6 +809,7 @@ def _design_value_types(design: UHIRDesign) -> dict[str, str]:
     for constant in design.constants:
         value_types[constant.name] = constant.type
     for region in design.regions:
+        node_by_id = {node.id: node for node in region.nodes}
         for node in region.nodes:
             params = node.attributes.get("params")
             param_types = node.attributes.get("param_types")
@@ -768,6 +818,10 @@ def _design_value_types(design: UHIRDesign) -> dict[str, str]:
                     value_types[str(param)] = str(param_type)
             if node.result_type is not None:
                 value_types[node.id] = node.result_type
+        for mapping in region.mappings:
+            mapped_node = node_by_id.get(mapping.node_id)
+            if mapped_node is not None and mapped_node.result_type is not None:
+                value_types.setdefault(mapping.source_id, mapped_node.result_type)
     return value_types
 
 

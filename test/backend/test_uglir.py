@@ -477,6 +477,8 @@ class UGLIRLoweringTests(unittest.TestCase):
             stage fsm
             schedule kind=hierarchical
             input  x : i32
+            input  y : i32
+            input  z : i32
             output result : i32
             resources {
               fu alu0 : ALU
@@ -503,7 +505,7 @@ class UGLIRLoweringTests(unittest.TestCase):
             region proc_top kind=procedure {
               region_ref proc_child
               node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
-              node v1 = call child, x : i32 child=proc_child class=CTRL ii=1 delay=1 start=0 end=0
+              node v1 = call child, x, y, z : i32 child=proc_child class=CTRL ii=1 delay=1 start=0 end=0
               node v2 = ret v1 class=CTRL ii=0 delay=0 start=1 end=1
               node v3 = nop role=sink class=CTRL ii=0 delay=0 start=2 end=2
               edge data v0 -> v1
@@ -514,7 +516,7 @@ class UGLIRLoweringTests(unittest.TestCase):
             }
 
             region proc_child kind=procedure {
-              node c0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node c0 = nop role=source params=[a_0, b_0, c_0] param_types=[i32, i32, i32] class=CTRL ii=0 delay=0 start=0 end=0
               node c1 = add c_0, 1:i32 : i32 class=ALU ii=1 delay=1 start=0 end=0 bind=alu0
               node c2 = nop role=sink class=CTRL ii=0 delay=0 start=1 end=1
               edge data c0 -> c1
@@ -559,7 +561,7 @@ class UGLIRLoweringTests(unittest.TestCase):
 
         rendered = format_uglir(uglir_design)
         self.assertNotIn("c_0", rendered)
-        self.assertIn("SRC_X", rendered)
+        self.assertIn("SRC_Z", rendered)
 
     def test_lower_fsm_to_uglir_keeps_duplicated_source_ids_region_local(self) -> None:
         fsm_design = parse_uhir(

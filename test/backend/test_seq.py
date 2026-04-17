@@ -73,7 +73,12 @@ class SequencingGraphLoweringTests(unittest.TestCase):
         assert proc is not None
         self.assertIn("proc_callee", [ref.target for ref in proc.region_refs])
         self.assertIn("call", [node.opcode for node in proc.nodes])
-        self.assertIsNotNone(design.get_region("proc_callee"))
+        callee_proc = design.get_region("proc_callee")
+        self.assertIsNotNone(callee_proc)
+        assert callee_proc is not None
+        callee_source = next(node for node in callee_proc.nodes if node.opcode == "nop" and node.attributes.get("role") == "source")
+        self.assertEqual(callee_source.attributes["params"], ("x",))
+        self.assertEqual(callee_source.attributes["param_types"], ("i32",))
 
         call_node = next(node for node in proc.nodes if node.opcode == "call")
         ret_node = next(node for node in proc.nodes if node.opcode == "ret")

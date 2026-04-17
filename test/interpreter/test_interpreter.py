@@ -594,6 +594,43 @@ class InterpreterTests(unittest.TestCase):
 
         self.assertEqual(result.return_value, 8)
 
+    def test_uhir_executes_interprocedural_call_with_declared_param_order(self) -> None:
+        """Callee argument binding should follow the function signature, not body use order."""
+
+        callee = UIRFunction(
+            name="mac",
+            params=[Parameter("a_0", "i32"), Parameter("b_0", "i32"), Parameter("c_0", "i32")],
+            return_type="i32",
+            blocks=[
+                UIRBlock(
+                    "entry",
+                    instructions=[
+                        BinaryOp("add", "acc_0", "i32", "c_0", 0),
+                        BinaryOp("mul", "mul_0", "i32", "a_0", "b_0"),
+                        BinaryOp("add", "acc_1", "i32", "acc_0", "mul_0"),
+                    ],
+                    terminator=ReturnOp("acc_1"),
+                )
+            ],
+        )
+        caller = UIRFunction(
+            name="caller",
+            params=[],
+            return_type="i32",
+            blocks=[
+                UIRBlock(
+                    "entry",
+                    instructions=[CallOp("mac", [2, 3, 5], dest="r", type="i32")],
+                    terminator=ReturnOp("r"),
+                )
+            ],
+        )
+
+        design = lower_module_to_seq(Module(functions=[callee, caller]), top="caller")
+        result = run_uhir(design)
+
+        self.assertEqual(result.return_value, 11)
+
 
 if __name__ == "__main__":
     unittest.main()

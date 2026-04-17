@@ -1132,6 +1132,54 @@ class BindingLoweringTests(unittest.TestCase):
         self.assertIn((2, 2), [(item.start, item.end) for item in occurrences["EWMS"]["c1"]])
         lower_sched_to_bind(sched_design, binder=binder)
 
+    def test_flattened_value_binding_extends_through_call_actual_adapter(self) -> None:
+        sched_design = parse_uhir(
+            """
+            design flattened_call_actual_adapter
+            stage sched
+            schedule kind=hierarchical
+
+            region proc_top kind=procedure {
+              region_ref proc_child
+              node v0 = nop role=source class=CTRL ii=0 delay=0 start=0 end=0
+              node v1 = add a, b : i32 class=FU_ALU ii=1 delay=1 start=1 end=1
+              node v1_trunc = trunc v1 : i8 class=ADAPT ii=0 delay=0 start=2 end=2
+              node v2 = add c, d : i32 class=FU_ALU ii=1 delay=1 start=3 end=3
+              node vcall = call child, v1_trunc : i32 child=proc_child class=CTRL ii=2 delay=2 start=5 end=6 child_timebase=global
+              node vret = ret v2 class=CTRL ii=0 delay=0 start=4 end=4
+              node v3 = nop role=sink class=CTRL ii=0 delay=0 start=7 end=7
+              edge data v0 -> v1
+              edge data v1 -> v1_trunc
+              edge data v1_trunc -> vcall
+              edge data v0 -> v2
+              edge data v2 -> vret
+              edge data vret -> v3
+              edge seq vcall -> proc_child hierarchy=true
+              edge seq proc_child -> vcall hierarchy=true
+            }
+
+            region proc_child kind=procedure parent=proc_top {
+              node c0 = nop role=source params=[x] param_types=[i8] class=CTRL ii=0 delay=0 start=5 end=5
+              node c1 = add x, 1:i8 : i8 class=FU_ALU ii=1 delay=1 start=5 end=5
+              node c2 = ret c1 class=CTRL ii=0 delay=0 start=6 end=6
+              node c3 = nop role=sink class=CTRL ii=0 delay=0 start=7 end=7
+              edge data c0 -> c1
+              edge data c1 -> c2
+              edge data c2 -> c3
+            }
+            """
+        )
+
+        bind_design = lower_sched_to_bind(sched_design, binder=LeftEdgeBinder(flatten=True))
+        top_region = bind_design.get_region("proc_top")
+        assert top_region is not None
+        v1_binding = next(binding for binding in top_region.value_bindings if binding.producer == "v1")
+        v2_binding = next(binding for binding in top_region.value_bindings if binding.producer == "v2")
+
+        self.assertEqual(v1_binding.live_intervals, ((2, 6),))
+        self.assertEqual(v2_binding.live_intervals, ((4, 4),))
+        self.assertNotEqual(v1_binding.register, v2_binding.register)
+
     def test_bind_dump_to_dot_supports_dfgsb_unroll(self) -> None:
         bind_design = lower_sched_to_bind(
             parse_uhir(

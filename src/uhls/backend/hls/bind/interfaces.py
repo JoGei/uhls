@@ -374,14 +374,31 @@ class OperationBinderBase(ABC):
     def get_local_value_consumers(self, region: UHIRRegion, node: UHIRNode) -> list[ValueConsumerRef]:
         """Return one produced value's consumers that live inside the same SGU."""
         node_by_id = {candidate.id: candidate for candidate in region.nodes}
-        consumers: list[ValueConsumerRef] = []
+        outgoing_edges: dict[str, list[UHIREdge]] = defaultdict(list)
         for edge in self.iter_region_data_edges(region):
-            if edge.source != node.id:
-                continue
-            consumer = node_by_id[edge.target]
-            if consumer.opcode == "nop" and consumer.attributes.get("role") == "sink":
-                continue
-            consumers.append(ValueConsumerRef(region, consumer))
+            outgoing_edges[edge.source].append(edge)
+
+        consumers: list[ValueConsumerRef] = []
+        visited: set[str] = set()
+
+        def append_consumers(value_id: str) -> None:
+            if value_id in visited:
+                return
+            visited.add(value_id)
+            for edge in outgoing_edges.get(value_id, ()):
+                consumer = node_by_id[edge.target]
+                if consumer.opcode == "nop" and consumer.attributes.get("role") == "sink":
+                    continue
+                class_name = consumer.attributes.get("class")
+                if class_name == "ADAPT":
+                    prior_count = len(consumers)
+                    append_consumers(consumer.id)
+                    if len(consumers) == prior_count:
+                        consumers.append(ValueConsumerRef(region, consumer))
+                    continue
+                consumers.append(ValueConsumerRef(region, consumer))
+
+        append_consumers(node.id)
         return consumers
 
     def iter_bindable_values(self, design: UHIRDesign):

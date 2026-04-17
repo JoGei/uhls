@@ -1099,14 +1099,12 @@ def _phi_carry_update_steps(
     operands = tuple(carry["operands"])
     entry_like = bool(incoming) and incoming[0] == "entry"
     predecessor_update = _phi_carry_needs_predecessor_update(design, source_id)
+    update_offset = 1 if component_library is None or predecessor_update else 0
     update_steps: set[int] = set()
     for operand in operands[1 if entry_like else 0:]:
         operand_global_steps = _value_global_live_starts(design, operand)
         for step in operand_global_steps:
-            if component_library is None or predecessor_update:
-                update_steps.add(max(step - 1, 0))
-            else:
-                update_steps.add(step)
+            update_steps.add(max(step - update_offset, 0))
     return update_steps
 
 

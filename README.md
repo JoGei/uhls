@@ -9,7 +9,7 @@
 
 > µhLS is a compact, hackable HLS toolchain that lowers C through explicit IRs to software drivers, RTL, and ASIC flows.
 > µhLS stays intentionally small, explicit, and easy to modify for simplicity.
-> µhLS uses a typed, block-based Three-Address-Code IR, µIR, with explicit control-flow edges and no implicit fallthrough and scalar SSA form for easy middle-end analyses and optimizations. Memory accesses are explicit through load/store operations. For software code generation, µIR is extended with direct calls; a later backend-lowering stage may introduce pseudo-operations such as `param` to model calling conventions.
+> µhLS uses a typed, block-based Three-Address-Code IR, µIR, with explicit control-flow edges and no implicit fallthrough and scalar SSA form for easy middle-end analyses and optimizations. Memory accesses are explicit through load/store operations.
 
 ## µhLS flow diagram
 

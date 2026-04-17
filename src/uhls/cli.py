@@ -294,10 +294,6 @@ def _opt_pass_canonical_name(name: str) -> str | None:
     return None if spec is None else spec.name
 
 
-def _opt_pipeline_aliases_by_cli_name() -> dict[str, tuple[str, ...]]:
-    return {name: passes for name, passes in _OPT_PIPELINE_ALIASES.items()}
-
-
 def _implemented_gopt_help() -> str:
     implemented = _implemented_gopt_pass_names()
     return ", ".join(implemented) if implemented else "none"
@@ -347,7 +343,7 @@ def _maybe_handle_opt_pass_help(argv: list[str]) -> int | None:
         return None
 
     normalized = argv[2].strip().lower().replace("-", "_")
-    alias_pipeline = _opt_pipeline_aliases_by_cli_name().get(normalized)
+    alias_pipeline = _OPT_PIPELINE_ALIASES.get(normalized)
     if alias_pipeline is not None:
         click.echo(f"{normalized}: pipeline alias for {','.join(alias_pipeline)}")
         click.echo("status: implemented")

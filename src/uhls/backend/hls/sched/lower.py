@@ -89,14 +89,11 @@ def _build_hierarchy(
     for region in region_by_id.values():
         for node in region.nodes:
             child_ids = _hierarchy_children(node)
-            if node.opcode == "loop":
-                pass
-            elif len(child_ids) > 1:
-                if node.opcode != "branch":
-                    raise NotImplementedError(
-                        f"sched lowering currently supports only call, branch, and loop hierarchy; "
-                        f"region '{region.id}' node '{node.id}' uses unsupported '{node.opcode}' timing"
-                    )
+            if len(child_ids) > 1 and node.opcode not in {"branch", "loop"}:
+                raise NotImplementedError(
+                    f"sched lowering currently supports only call, branch, and loop hierarchy; "
+                    f"region '{region.id}' node '{node.id}' uses unsupported '{node.opcode}' timing"
+                )
             for child_id in child_ids:
                 if child_id not in region_by_id:
                     raise ValueError(f"region '{region.id}' references unknown child region '{child_id}'")

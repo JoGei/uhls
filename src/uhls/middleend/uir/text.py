@@ -9,6 +9,9 @@ from uhls.middleend.uir.block import Block
 from uhls.middleend.uir.function import Function
 from uhls.middleend.uir.module import Module
 from uhls.middleend.uir.ops import (
+    _BINARY_OPS,
+    _COMPARE_OPS,
+    _UNARY_OPS,
     BinaryOp,
     BranchOp,
     CallOp,
@@ -35,9 +38,6 @@ _CALL_RE = re.compile(r"^call\s+([A-Za-z_]\w*)\((.*)\)$")
 _LOWERED_CALL_RE = re.compile(r"^call\s+([A-Za-z_]\w*)\s*,\s*(\d+)$")
 _TYPED_LITERAL_RE = re.compile(r"^(-?\d+):(i1|i8|i16|i32|u8|u16|u32)$")
 _BARE_INT_RE = re.compile(r"^-?\d+$")
-_UNARY_OPS = frozenset({"mov", "neg", "not"})
-_BINARY_OPS = frozenset({"add", "sub", "mul", "and", "or", "xor", "shl", "shr"})
-_COMPARE_OPS = frozenset({"eq", "ne", "lt", "le", "gt", "ge"})
 
 
 class IRParseError(ValueError):

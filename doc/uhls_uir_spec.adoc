@@ -160,6 +160,8 @@ Function parameters are SSA definitions.
 * `x:T = add a, b`
 * `x:T = sub a, b`
 * `x:T = mul a, b`
+* `x:T = div a, b`
+* `x:T = mod a, b`
 * `x:T = and a, b`
 * `x:T = or a, b`
 * `x:T = xor a, b`

@@ -267,6 +267,29 @@ block entry:
         self.assertEqual(caller.blocks[0].instructions[3].arg_count, 3)
         self.assertIn("out:i32 = call foo, 3", rendered)
 
+    def test_textual_uir_parser_supports_division_and_modulo(self) -> None:
+        module = parse_module(
+            """func arith(x:i32, y:i32) -> i32
+
+block entry:
+    q:i32 = div x, y
+    r:i32 = mod x, y
+    z:i32 = add q, r
+    ret z
+"""
+        )
+
+        verify_module(module, require_ssa=True)
+        function = module.get_function("arith")
+        self.assertIsNotNone(function)
+        assert function is not None
+        rendered = pretty(module)
+        self.assertIn("q:i32 = div x, y", rendered)
+        self.assertIn("r:i32 = mod x, y", rendered)
+
+        result = run_uir(function, {"x": 17, "y": 5}, module=module)
+        self.assertEqual(result.return_value, 5)
+
 
 class PassManagerTests(unittest.TestCase):
     """Coverage for the shared pass-manager framework."""

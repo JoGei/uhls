@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source /eda-osic-tools/env.sh /eda-osic-tools/.env
+if [[ -n "${VENV_ROOT:-}" && -f "${VENV_ROOT}/bin/activate" ]]; then
+    # shellcheck disable=SC1090
+    source "${VENV_ROOT}/bin/activate"
+fi
+
+exec python3 "$@"

@@ -1,0 +1,37 @@
+{
+  "name": "uhls",
+  "image": "tumeda/eda-osic-tools:latest-default-ubuntu-latest",
+  "containerEnv": {
+    "PYTHONPATH": "${containerWorkspaceFolder}/src"
+  },
+  "postCreateCommand": "/usr/bin/bash .devcontainer/post-create.sh",
+  "customizations": {
+    "codespaces": {
+      "openFiles": [
+        "README.md",
+        "doc/notebooks/uir_cookbook.ipynb"
+      ]
+    },
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.devcontainer/uhls-python",
+        "python.analysis.extraPaths": [
+          "src"
+        ],
+        "python.testing.unittestEnabled": true,
+        "python.testing.unittestArgs": [
+          "-v",
+          "-s",
+          "test",
+          "-p",
+          "test_*.py"
+        ]
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter"
+      ]
+    }
+  }
+}

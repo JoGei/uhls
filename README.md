@@ -255,6 +255,34 @@ pip install -r requirements.txt
 make -C examples STEM=dot4_relu asic
 ```
 
+## quick start with Dev Containers / Codespaces:
+
+> This repository also ships a devcontainer configuration in `.devcontainer/` based on [tumeda/eda-osic-tools](https://github.com/tum-ei-eda/eda-osic-tools/). It is intended to work in both local VS Code Dev Containers and GitHub Codespaces.
+
+### local VS Code
+
+1. Install the `Dev Containers` extension in VS Code.
+2. Open the repository root in VS Code.
+3. Run (`Ctrl+Shift+P >`) `Dev Containers: Reopen in Container`.
+4. Wait for the container build and the post-create setup to finish.
+
+### GitHub Codespaces
+
+1. Open the repository on GitHub.
+2. Create a new Codespace from the branch you want to work on.
+3. Wait for the Codespace setup to finish.
+
+After startup, the container should already have the EDA tool environment loaded plus Python/Jupyter support for the cookbook notebooks. A quick smoke test is:
+
+```bash
+python3 -c "import uhls; print('ok')"
+which yosys
+which openroad
+python3 -m unittest discover -s test -v
+```
+
+To try the notebook workflow, open `doc/notebooks/uir_cookbook.ipynb` and run the setup cell.
+
 > **Warning**
 > This project started as a baseline project to teach university-level courses on HLS algorithms and hardware compilers and heavily relied on LLM-based coding agents to "glue" together the different tools, abstraction levels, and building the µhLS framework. As such many design decisions, such as "*why python only?*" might seem off, but µhLS *tries* to keep it simple.
 > More detailed specifications and reasonings can be found in `doc/*spec.adoc`.

@@ -13,3 +13,4 @@ This directory collects design notes, specifications, cookbook material, generat
 == Directories
 
 * xref:figs/[`figs/`] - logos and flow-diagram sources/rendered assets used by the documentation.
+* xref:notebooks/[`notebooks/`] - notebook-based examples and generated exports, including the µIR cookbook notebook. See xref:notebooks/uhls_cookbook.adoc[µhLS Cookbook] for more details.

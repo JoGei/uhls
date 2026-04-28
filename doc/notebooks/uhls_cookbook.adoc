@@ -1,0 +1,82 @@
+= µhLS Cookbooks
+:toc:
+:toclevels: 3
+
+== Goal
+
+This cookbook is the practical entry point for learning and extending µhLS.
+
+It is intentionally organized by IR and workflow, not by implementation package.
+The main executable examples live in Jupyter notebooks under `doc/notebooks/`.
+This document is the map that tells you where to start.
+
+Use this together with the formal specs:
+
+* `doc/uhls_uir_spec.adoc`
+* `doc/uhls_uhir_spec.adoc`
+* `doc/uhls_uglir_spec.adoc`
+
+== How To Use This Cookbook
+
+Recommended flow:
+
+. open the relevant notebook
+. run the setup cells
+. execute the examples end-to-end
+. modify the example cells for your own experiment
+. if the result is useful, export the pass or helper into a standalone Python file
+
+The notebooks are meant to be interactive workbooks, not just rendered documentation.
+
+== Frontend
+
+The frontend cookbook material currently starts in the µIR notebook:
+
+* `link:notebooks/uir_cookbook.ipynb[doc/notebooks/uir_cookbook.ipynb]`
+
+Topics covered there:
+
+* parsing C into canonical µIR
+* inspecting functions, blocks, instructions, and terminators
+* formatting and validating µIR
+* running parsed µIR with the interpreter
+* using `main` and `uhls_printf` for integrated testbenches
+
+== Middleend
+
+The middleend cookbook material currently starts in the same µIR notebook:
+
+* `link:notebooks/uir_cookbook.ipynb[doc/notebooks/uir_cookbook.ipynb]`
+
+Topics covered there:
+
+* running built-in µIR passes
+* writing a minimal external pass
+* prototyping an algebraic-identity pass
+* understanding CFG and `phi` pitfalls
+* exporting notebook-defined logic as a standalone external pass module
+
+Useful source companions:
+
+* `src/uhls/middleend/passes/opt/simplify_cfg.py`
+* `src/uhls/middleend/passes/opt/copy_prop.py`
+
+== Backend
+
+NOTE: t.b.d.
+
+Backend cookbook notebooks are not drafted yet, but the intended shape is:
+
+* one notebook for µhIR
+* one notebook for µglIR
+
+Planned topics:
+
+* `seq` and `gopt`
+* alloc / sched / bind / fsm progression
+* glue / rtl lowering
+* viewing and inspecting backend artifacts
+
+== Current Notebook Index
+
+* `link:notebooks/uir_cookbook.ipynb[µIR Cookbook Notebook]`

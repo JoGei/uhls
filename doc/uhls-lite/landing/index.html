@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Explore the µhLS high-level synthesis toolchain in a browser with JupyterLite and Pyodide.">
+    <title>µhLS browser playground</title>
+    <link rel="icon" href="favicon.ico">
+    <link rel="stylesheet" href="landing.css">
+    <!-- JupyterLite reads this marker from ancestor pages while resolving its
+         base URL. Keep it even though this page does not load the application. -->
+    <script id="jupyter-config-data" type="application/json" data-jupyter-lite-root=".">{}</script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="µhLS home">
+        <img src="uhls-logo.svg" alt="" width="53" height="38">
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="lab/index.html">Notebook lab</a>
+        <a href="https://github.com/JoGei/uhls">Source code</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">JupyterLite + Pyodide</p>
+          <h1>A small HLS compiler,<br>running in your browser.</h1>
+          <p class="lede">
+            Explore the compiler pipeline from C and µIR through middle-end
+            transformations and hardware resource mapping—without installing
+            µhLS locally.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="lab/index.html?path=uir_cookbook.ipynb">Open the frontend lab</a>
+          </div>
+        </div>
+
+        <div class="code-card" aria-label="Example µIR transformation">
+          <div class="code-titlebar">
+            <span></span><span></span><span></span>
+            <strong>example.uir</strong>
+          </div>
+          <pre><code><span class="muted">// C enters the frontend</span>
+<span class="keyword">func</span> <span class="symbol">@main</span>() -&gt; i32 {
+  %sum = add 7, 1 : i32
+  %out = mul %sum, 2 : i32
+  return %out
+}
+
+<span class="muted">// passes make the dataflow explicit</span>
+<span class="result">PASS: result = 16</span></code></pre>
+        </div>
+      </section>
+
+      <section class="features" aria-labelledby="explore-heading">
+        <div class="section-heading">
+          <p class="eyebrow">Choose a lab</p>
+          <h2 id="explore-heading">Three stages of the µhLS pipeline</h2>
+        </div>
+        <div class="feature-grid">
+          <a class="lab-card" href="lab/index.html?path=uir_cookbook.ipynb">
+            <div class="lab-meta">
+              <span class="number">01</span>
+              <span class="lab-status available">Available</span>
+            </div>
+            <h3>Frontend lab</h3>
+            <p>Lower C to µIR, inspect its typed control flow, interpret programs, and explore static analyses and optimization passes.</p>
+            <span class="lab-action">Open lab <span aria-hidden="true">→</span></span>
+          </a>
+          <article class="lab-card planned">
+            <div class="lab-meta">
+              <span class="number">02</span>
+              <span class="lab-status">Coming soon</span>
+            </div>
+            <h3>Midend lab</h3>
+            <p>Lower µIR to µhIR, study canonical forms, and apply middle-end transformations and optimizations.</p>
+            <span class="lab-action">Notebook in preparation</span>
+          </article>
+          <article class="lab-card planned">
+            <div class="lab-meta">
+              <span class="number">03</span>
+              <span class="lab-status">Coming soon</span>
+            </div>
+            <h3>Backend lab</h3>
+            <p>Explore HLS resource allocation, scheduling, binding, and the resource maps that lead toward RTL.</p>
+            <span class="lab-action">Notebook in preparation</span>
+          </article>
+        </div>
+      </section>
+
+      <aside class="runtime-note">
+        <div>
+          <p class="eyebrow">How it runs</p>
+          <h2>No Python backend</h2>
+        </div>
+        <p>
+          µhLS-lite runs locally in your browser—no notebook server is involved.
+          Starting a notebook downloads the Python runtime and several
+          dependencies, so an internet connection is still required.
+        </p>
+      </aside>
+    </main>
+
+    <footer>
+      <span>µhLS browser demo</span>
+      <a href="https://github.com/JoGei/uhls">github.com/JoGei/uhls</a>
+    </footer>
+  </body>
+</html>

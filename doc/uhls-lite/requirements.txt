@@ -1,0 +1,10 @@
+# Tested direct build dependencies; transitive dependencies are not fully locked.
+# These do not by themselves install packages in Pyodide.
+jupyterlite-core==0.8.5
+jupyterlite-pyodide-kernel==0.8.6
+jupyter-server==2.21.1
+anywidget==0.11.0
+ipywidgets==8.1.9
+build==1.6.1
+setuptools==84.0.0
+wheel==0.48.0

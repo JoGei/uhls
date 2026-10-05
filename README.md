@@ -4,12 +4,15 @@
 
 [![License](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
 [![CI](https://github.com/JoGei/uhls/actions/workflows/ci.yml/badge.svg)](https://github.com/JoGei/uhls/actions/workflows/ci.yml)
+[![Pages](https://github.com/JoGei/uhls/actions/workflows/uhls-lite-pages.yml/badge.svg)](https://jogei.github.io/uhls/)
 
 ## tldr
 
 > µhLS is a compact, hackable HLS toolchain that lowers C through explicit IRs to software drivers, RTL, and ASIC flows.
 > µhLS stays intentionally small, explicit, and easy to modify for simplicity.
 > µhLS uses a typed, block-based Three-Address-Code IR, µIR, with explicit control-flow edges and no implicit fallthrough and scalar SSA form for easy middle-end analyses and optimizations. Memory accesses are explicit through load/store operations.
+
+**Try it:** Explore µhLS in the [interactive browser labs](https://jogei.github.io/uhls/)—powered by JupyterLite and Pyodide/WebAssembly, with no local setup required.
 
 ## µhLS flow diagram
 
@@ -176,7 +179,7 @@ A minimal frontend flow from C to RTL (via C->µIR->µhIR->µglIR->.v):
 ./uhls run dot4_relu.opt.uir
 ```
 
-**middlend**
+**midend**
 
 ```bash
 ./uhls seq dot4_relu.opt.uir --top dot4_relu -o dot4_relu.uhir

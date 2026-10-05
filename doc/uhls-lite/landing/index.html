@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Explore the µhLS high-level synthesis toolchain in a browser with JupyterLite and Pyodide.">
-    <title>µhLS browser playground</title>
+    <title>µhLS-lite: a tiny HLS tool running in your browser</title>
     <link rel="icon" href="favicon.ico">
     <link rel="stylesheet" href="landing.css">
     <!-- JupyterLite reads this marker from ancestor pages while resolving its
@@ -26,31 +26,45 @@
       <section class="hero">
         <div class="hero-copy">
           <p class="eyebrow">JupyterLite + Pyodide</p>
-          <h1>A small HLS compiler,<br>running in your browser.</h1>
+          <h1>µhLS-lite:<br>a tiny HLS tool<br>running in your<br>browser.</h1>
           <p class="lede">
-            Explore the compiler pipeline from C and µIR through middle-end
-            transformations and hardware resource mapping—without installing
-            µhLS locally.
+            Explore C-to-µIR lowering, µhIR graph optimization, and the HLS
+            backend’s allocation, scheduling, binding, and resource maps—all
+            without installing µhLS locally.
           </p>
           <div class="actions">
             <a class="button primary" href="lab/index.html?path=frontend_lab.ipynb">Open the frontend lab</a>
           </div>
         </div>
 
-        <div class="code-card" aria-label="Example µIR transformation">
+        <div class="code-card" aria-label="Example C to scheduled µhIR flow">
           <div class="code-titlebar">
             <span></span><span></span><span></span>
-            <strong>example.uir</strong>
+            <strong>foo.c → foo.sched.uhir</strong>
           </div>
-          <pre><code><span class="muted">// C enters the frontend</span>
-<span class="keyword">func</span> <span class="symbol">@main</span>() -&gt; i32 {
-  %sum = add 7, 1 : i32
-  %out = mul %sum, 2 : i32
-  return %out
+          <pre><code><span class="muted">// foo.c:</span>
+<span class="keyword">int32_t</span> <span class="symbol">foo</span>(int32_t x) {
+  <span class="keyword">return</span> (x + 1) * 2;
 }
 
-<span class="muted">// passes make the dataflow explicit</span>
-<span class="result">PASS: result = 16</span></code></pre>
+<span class="muted">// foo.uir:</span>
+<span class="keyword">func</span> <span class="symbol">foo</span>(x_0:i32) -&gt; i32
+<span class="keyword">block</span> entry:
+  t0_0:i32 = add x_0, 1:i32
+  t1_0:i32 = mul t0_0, 2:i32
+  ret t1_0
+
+<span class="muted">// foo.sched.uhir:</span>
+<span class="keyword">design</span> <span class="symbol">foo</span>
+<span class="keyword">stage</span> sched
+<span class="keyword">schedule</span> kind=hierarchical
+<span class="keyword">region</span> proc_foo kind=procedure {
+  node v1 = add x_0, 1:i32 : i32 class=ALU ii=1 delay=1 start=0 end=0
+  node v2 = mul t0_0, 2:i32 : i32 class=MUL ii=1 delay=2 start=1 end=2
+  <span class="result">latency 4</span>
+}
+
+<span class="muted">// next: binding → FSM → µglIR → RTL</span></code></pre>
         </div>
       </section>
 

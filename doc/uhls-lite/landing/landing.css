@@ -112,7 +112,7 @@ p {
 h1 {
   max-width: 760px;
   margin-bottom: 24px;
-  font-size: clamp(3rem, 6.8vw, 5.7rem);
+  font-size: clamp(3rem, 5.4vw, 4.5rem);
   line-height: 0.97;
   letter-spacing: -0.065em;
 }
@@ -207,11 +207,13 @@ h1 {
 }
 
 pre {
-  min-height: 310px;
+  min-height: 0;
   margin: 0;
-  padding: 30px;
+  padding: 24px;
   overflow: auto;
-  font: 500 0.88rem/1.8 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font: 500 0.72rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .muted {

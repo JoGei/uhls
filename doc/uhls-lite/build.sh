@@ -12,11 +12,14 @@ if [[ ${#WHEELS[@]} -ne 1 || ! -f "${WHEELS[0]}" ]]; then
 fi
 (
   cd "$BUILD/lite"
-  jupyter lite build \
-    --lite-dir . \
-    --contents content \
-    --no-sourcemaps \
+  LITE_ARGS=(
+    --lite-dir .
+    --contents content
+    --no-sourcemaps
     --output-dir ../site
+  )
+  jupyter lite build "${LITE_ARGS[@]}"
+  jupyter lite check "${LITE_ARGS[@]}"
 )
 if [[ -f "$BUILD/site/lab/favicon.ico" ]]; then
   cp "$BUILD/site/lab/favicon.ico" "$BUILD/site/favicon.ico"

@@ -23,7 +23,7 @@ python -m http.server 8000 --bind 127.0.0.1 --directory doc/uhls-lite/_build/sit
 ```
 
 Open `http://localhost:8000/`, not the HTML file directly. The landing page links
-to the available frontend lab and indexes the planned midend and backend labs;
+to the frontend, midend, and backend labs;
 JupyterLite is also available directly at `http://localhost:8000/lab/index.html`.
 Keep the HTTP server running while testing.
 Stop it with Ctrl+C when finished. The server only serves files: notebook Python
@@ -31,27 +31,24 @@ runs inside the browser via Pyodide. Internet is needed for initial installation
 and the external runtime dependencies listed below; local testing is not the same
 as a fully offline deployment.
 
+The browser downloads Pyodide and Python packages from jsDelivr, PyPI, and
+files.pythonhosted.org. Graph views download the exactly pinned Viz.js module
+from esm.sh. The µhLS wheel, all three cookbooks, and the smoke-test notebook are
+served by the Pages site itself; native Graphviz, Verilator, Yosys, and OpenROAD
+are not used.
+
 Open `00_smoke_test.ipynb`, choose **Python (Pyodide)** if prompted, and run both
 code cells. It asserts that `sys.platform == "emscripten"`; expected output includes
-`platform = emscripten` and ends with `PASS: both return 16`. Then open
-`uir_cookbook.ipynb` and use **Run → Run All Cells**.
+`platform = emscripten` and ends with `PASS: both return 16`. Then use
+**Run → Run All Cells** in `frontend_lab.ipynb`, `midend_lab.ipynb`, and
+`backend_lab.ipynb`. The build script runs JupyterLite's static-site
+integrity checks with the same content and source-map options used for the build.
 
-For a static-site integrity check after building, run this while the virtual
-environment is active. Running it from `_build/lite/` keeps JupyterLite's task
-database out of the repository root.
-
-```bash
-(
-  cd doc/uhls-lite/_build/lite
-  jupyter lite check --lite-dir . --output-dir ../site
-)
-```
-
-After changing compiler sources or the original cookbook, rebuild with
+After changing compiler sources or an original cookbook, rebuild with
 `bash doc/uhls-lite/build.sh`. Restart the browser kernel for a new compiler
 revision. Browser-saved notebook copies can mask updated bundled notebooks;
 export work you need before clearing site data or use a separate browser profile.
-The generated browser notebook is a copy: edit the original cookbook for changes
+The generated browser notebooks are copies: edit the original cookbooks for changes
 that should be included in later builds.
 
 ## Troubleshooting
@@ -79,9 +76,10 @@ are outside the starter's scope. Use the existing compiler's Python APIs.
    pure-Python wheel named `uhls-browser-demo`. Its import package remains `uhls`.
    Sources and requirements contribute to a content-hashed version. Nothing is
    uploaded to PyPI.
-2. Copies `doc/notebooks/uir_cookbook.ipynb` into the generated content. Its setup
-   installs the bundled wheel through `piplite` instead of finding a Git checkout.
-   A separate smoke-test notebook checks the compiler without graphs.
+2. Copies the µIR, µhIR, and HLS backend cookbooks from `doc/notebooks/` into the
+   generated content. Their setup installs the bundled wheel through `piplite`
+   instead of finding a Git checkout. A separate smoke-test notebook checks the
+   compiler without graphs.
 3. Adapts display-only `graphviz.Source` calls to a small anywidget/Viz.js helper.
    It does not implement Graphviz's `.render()` or subprocess APIs.
 4. Builds the static site without JavaScript source maps in

@@ -7,7 +7,9 @@ on:
     paths:
       - "src/uhls/**"
       - "doc/figs/uhls_logo.svg"
-      - "doc/notebooks/uir_cookbook.ipynb"
+      - "doc/notebooks/backend_lab.ipynb"
+      - "doc/notebooks/midend_lab.ipynb"
+      - "doc/notebooks/frontend_lab.ipynb"
       - "doc/uhls-lite/**"
       - "requirements.txt"
       - ".github/workflows/uhls-lite-pages.yml"

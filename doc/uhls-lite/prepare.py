@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Stage a browser copy of the current µIR cookbook; never edit the originals.
+"""Stage browser copies of the µhLS cookbooks; never edit the originals.
 
-Run from a checkout containing src/uhls and doc/notebooks/uir_cookbook.ipynb.
+Run from a checkout containing src/uhls and the cookbook notebooks.
 Only this script's _build directory is replaced, with a safety marker check.
 """
 from __future__ import annotations
@@ -21,6 +21,11 @@ SETUP_START = "repo_root = Path.cwd().resolve()"
 SETUP_IMPORT = "from uhls.frontend import lower_source_to_uir"
 SETUP_PRINT = 'print(f"repo_root = {repo_root}")'
 MARKER = ".generated-by-uhls-lite"
+COOKBOOKS = (
+    "frontend_lab.ipynb",
+    "midend_lab.ipynb",
+    "backend_lab.ipynb",
+)
 
 
 def source_text(cell: dict) -> str:
@@ -154,15 +159,28 @@ print("PASS: both return 16")
 
 def prepare(repo: Path, workspace: Path, helper: Path, text_only: bool = False) -> str:
     src = repo / "src" / "uhls"
-    notebook = repo / "doc" / "notebooks" / "uir_cookbook.ipynb"
-    if not src.is_dir() or not notebook.is_file():
-        raise ValueError("Run against a µhLS checkout containing src/uhls and doc/notebooks/uir_cookbook.ipynb")
+    notebook_dir = repo / "doc" / "notebooks"
+    notebooks = {name: notebook_dir / name for name in COOKBOOKS}
+    missing = [path for path in notebooks.values() if not path.is_file()]
+    if not src.is_dir() or missing:
+        missing_text = ", ".join(str(path) for path in missing)
+        raise ValueError(
+            f"Run against a µhLS checkout containing src/uhls and all cookbooks; missing: {missing_text}"
+        )
     if workspace.is_symlink():
         raise ValueError("Refusing to replace a symlink workspace")
     reqs = dependencies(repo)
     version = fingerprint(src, reqs)
-    original = json.loads(notebook.read_text(encoding="utf-8"))
-    adapted = adapt_notebook(original, version, helper.read_text(encoding="utf-8"), text_only)
+    graph_source = helper.read_text(encoding="utf-8")
+    adapted = {
+        name: adapt_notebook(
+            json.loads(path.read_text(encoding="utf-8")),
+            version,
+            graph_source,
+            text_only,
+        )
+        for name, path in notebooks.items()
+    }
     if workspace.exists():
         if not (workspace / MARKER).is_file():
             raise ValueError(f"Refusing to replace unmarked directory {workspace}")
@@ -185,7 +203,8 @@ def prepare(repo: Path, workspace: Path, helper: Path, text_only: bool = False) 
     content = workspace / "lite" / "content"
     content.mkdir(parents=True)
     (workspace / "lite" / "pypi").mkdir()
-    for name, nb in [("uir_cookbook.ipynb", adapted), ("00_smoke_test.ipynb", smoke_notebook(version))]:
+    content_notebooks = {"00_smoke_test.ipynb": smoke_notebook(version), **adapted}
+    for name, nb in content_notebooks.items():
         (content / name).write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     (workspace / "version.txt").write_text(version + "\n", encoding="utf-8")
     return version
@@ -202,7 +221,7 @@ def main() -> int:
     except (OSError, ValueError, SyntaxError, KeyError) as error:
         print(f"Preparation failed: {error}", file=sys.stderr)
         return 1
-    print(f"Prepared {DISTRIBUTION} {version}; original sources and cookbook unchanged.")
+    print(f"Prepared {DISTRIBUTION} {version}; original sources and cookbooks unchanged.")
     return 0
 
 

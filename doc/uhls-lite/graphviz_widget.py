@@ -10,7 +10,7 @@ import traitlets
 class DotGraph(anywidget.AnyWidget):
     dot = traitlets.Unicode().tag(sync=True)
     _esm = """
-    // Major-version pin for this prototype. Pin an exact version for deployment.
+    // Exact version pin; the module is still fetched from esm.sh at runtime.
     const vizPromise = import("https://esm.sh/@viz-js/viz@3.31.0")
       .then(({ instance }) => instance());
 

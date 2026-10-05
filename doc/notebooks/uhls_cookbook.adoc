@@ -1,82 +1,150 @@
-= µhLS Cookbooks
+= µhLS Labs
 :toc:
 :toclevels: 3
 
 == Goal
 
-This cookbook is the practical entry point for learning and extending µhLS.
+The three executable labs are a guided tour through the µhLS compilation flow:
 
-It is intentionally organized by IR and workflow, not by implementation package.
-The main executable examples live in Jupyter notebooks under `doc/notebooks/`.
-This document is the map that tells you where to start.
+[source,text]
+----
+C / µC -> canonical µIR -> sequencing µhIR -> allocation -> scheduling -> binding
+----
 
-Use this together with the formal specs:
+They are organized by compiler stage and intermediate representation rather than
+by Python package. Every example is complete and executable: the notebooks are
+showcases for exploration, not assignments with TODOs or submission machinery.
 
-* `doc/uhls_uir_spec.adoc`
-* `doc/uhls_uhir_spec.adoc`
-* `doc/uhls_uglir_spec.adoc`
+[cols="1,2,3",options="header"]
+|===
+|Stage |Notebook |Main boundary
 
-== How To Use This Cookbook
+|Frontend
+|link:frontend_lab.ipynb[`frontend_lab.ipynb`]
+|C to canonical µIR, followed by µIR analysis and transformation
 
-Recommended flow:
+|Midend
+|link:midend_lab.ipynb[`midend_lab.ipynb`]
+|Canonical µIR to sequencing µhIR and static graph canonicalization
 
-. open the relevant notebook
-. run the setup cells
-. execute the examples end-to-end
-. modify the example cells for your own experiment
-. if the result is useful, export the pass or helper into a standalone Python file
+|Backend
+|link:backend_lab.ipynb[`backend_lab.ipynb`]
+|Sequencing graph to allocated, scheduled, and bound hardware resources
+|===
 
-The notebooks are meant to be interactive workbooks, not just rendered documentation.
+Use the labs together with the formal IR specifications:
 
-== Frontend
+* link:../uhls_uir_spec.adoc[µIR specification]
+* link:../uhls_uhir_spec.adoc[µhIR specification]
+* link:../uhls_uglir_spec.adoc[µglIR specification]
 
-The frontend cookbook material currently starts in the µIR notebook:
+== Running The Labs
 
-* `link:notebooks/uir_cookbook.ipynb[doc/notebooks/uir_cookbook.ipynb]`
+For local development, open a notebook from `doc/notebooks/`, run its setup cell,
+then use *Run -> Run All Cells*. The setup locates the repository checkout and
+imports µhLS from `src/`. The graph cells use `graphviz.Source`, so native graph
+display also requires a working Graphviz installation.
 
-Topics covered there:
+The same source notebooks are adapted into the browser-based JupyterLite site.
+There, Python runs through Pyodide and DOT graphs are rendered through Viz.js;
+native Graphviz and the native EDA tools are not invoked. Build and preview
+instructions, including the remaining network dependencies, are documented in
+link:../uhls-lite/README.md[the JupyterLite demo README].
 
-* parsing C into canonical µIR
-* inspecting functions, blocks, instructions, and terminators
-* formatting and validating µIR
-* running parsed µIR with the interpreter
-* using `main` and `uhls_printf` for integrated testbenches
+A useful workflow is:
 
-== Middleend
+. run the relevant lab end to end;
+. inspect the textual IR and graph views at each boundary;
+. change the input kernel, pass pipeline, or hardware model;
+. verify and interpret intermediate results where that representation supports it;
+. move reusable experiments into a standalone pass or library component.
 
-The middleend cookbook material currently starts in the same µIR notebook:
+== Frontend Lab: C To µIR
 
-* `link:notebooks/uir_cookbook.ipynb[doc/notebooks/uir_cookbook.ipynb]`
+Notebook: link:frontend_lab.ipynb[`frontend_lab.ipynb`]
 
-Topics covered there:
+The frontend lab introduces canonical µIR as typed, block-based SSA. It starts
+with small C kernels, validates the lowered modules, and runs them with the µIR
+interpreter. An integrated `main` function and `uhls_printf` demonstrate how a
+software testbench and its kernel can live in one source module.
 
-* running built-in µIR passes
-* writing a minimal external pass
-* prototyping an algebraic-identity pass
-* understanding CFG and `phi` pitfalls
-* exporting notebook-defined logic as a standalone external pass module
+The remaining sections use µIR as an interactive compiler workbench:
 
-Useful source companions:
+* inline a `mac` helper, prune its unreachable definition, and clean up the
+  result with propagation, dead-code elimination, and CFG simplification;
+* inspect CFG, DFG, and combined CDFG views;
+* prototype a complete external algebraic-identity pass;
+* simplify control flow while maintaining `phi` predecessor labels;
+* canonicalize several early returns into one return block and a `phi` value;
+* detect a fixed-trip loop, unroll it by two, and canonicalize the result; and
+* use verification and interpreter comparisons to check that rewrites preserve
+  behavior.
 
-* `src/uhls/middleend/passes/opt/simplify_cfg.py`
-* `src/uhls/middleend/passes/opt/copy_prop.py`
+This material includes transformations sometimes described as early middle-end
+work. It remains in the frontend lab because canonical µIR is the central artifact
+being introduced and manipulated.
 
-== Backend
+Useful source companions include:
 
-NOTE: t.b.d.
+* link:../../src/uhls/frontend/lower.py[`src/uhls/frontend/lower.py`]
+* link:../../src/uhls/interpreter/uir_interp.py[`src/uhls/interpreter/uir_interp.py`]
+* link:../../src/uhls/middleend/passes/opt/inline_calls.py[`inline_calls.py`]
+* link:../../src/uhls/middleend/passes/opt/simplify_cfg.py[`simplify_cfg.py`]
+* link:../../src/uhls/middleend/passes/opt/unroll_loops.py[`unroll_loops.py`]
 
-Backend cookbook notebooks are not drafted yet, but the intended shape is:
+== Midend Lab: µIR To µhIR
 
-* one notebook for µhIR
-* one notebook for µglIR
+Notebook: link:midend_lab.ipynb[`midend_lab.ipynb`]
 
-Planned topics:
+The midend lab follows a fixed-trip kernel across the representation boundary.
+It first produces and cleans canonical µIR, then lowers that module into the
+technology-independent sequencing form of µhIR.
 
-* `seq` and `gopt`
-* alloc / sched / bind / fsm progression
-* glue / rtl lowering
-* viewing and inspecting backend artifacts
+It demonstrates:
 
-== Current Notebook Index
+* regions, operation nodes, dependency edges, and hierarchical graph structure;
+* textual µhIR formatting, parsing, and an exact round-trip check;
+* DOT rendering of the raw and graph-optimized sequencing designs;
+* the `infer_loops`, `translate_loop_dialect`, `infer_static`, and
+  `simplify_static_control` graph-optimization stages; and
+* the transition from source-level loop control to an explicit
+  `static_trip_count` property consumed by later HLS stages.
 
-* `link:notebooks/uir_cookbook.ipynb[µIR Cookbook Notebook]`
+The resulting graph intentionally has no implementation classes, cycle numbers,
+or concrete functional-unit instances yet. Those decisions belong to the backend
+lab.
+
+Useful source companions include:
+
+* link:../../src/uhls/backend/hls/seq.py[`src/uhls/backend/hls/seq.py`]
+* link:../../src/uhls/backend/hls/uhir/[`src/uhls/backend/hls/uhir/`]
+* link:../../src/uhls/backend/hls/uhir/gopt/[`src/uhls/backend/hls/uhir/gopt/`]
+
+== Backend Lab: Allocate, Schedule, And Bind
+
+Notebook: link:backend_lab.ipynb[`backend_lab.ipynb`]
+
+The backend lab uses a fork-and-join kernel with two independent additions and a
+multiply. This exposes operation parallelism, multi-cycle latency, and concrete
+resource conflicts without requiring a large design.
+
+It demonstrates:
+
+* constructing an executability graph that maps opcodes to implementation
+  classes, initiation intervals, and delays;
+* allocation with specialized ALU and multiplier classes plus a generic fallback;
+* ASAP scheduling into zero-based control-step intervals;
+* left-edge binding of operations to functional-unit instances;
+* register binding from value live ranges; and
+* DFG-with-schedule-and-binding, time-resource-plane, and conflict-graph views.
+
+The lab makes the boundaries explicit: allocation selects implementation classes,
+scheduling selects time intervals, and binding creates instances. It stops before
+FSM, µglIR, RTL generation, simulation, synthesis, and physical implementation;
+those native-tool flows are outside this browser showcase.
+
+Useful source companions include:
+
+* link:../../src/uhls/backend/hls/alloc.py[`src/uhls/backend/hls/alloc.py`]
+* link:../../src/uhls/backend/hls/sched/[`src/uhls/backend/hls/sched/`]
+* link:../../src/uhls/backend/hls/bind/[`src/uhls/backend/hls/bind/`]
